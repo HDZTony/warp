@@ -1,0 +1,42 @@
+[package]
+name = "wormhole-native-ui"
+version = "0.0.0"
+edition = "2021"
+authors.workspace = true
+publish = false
+license = "MIT"
+description = "Wormhole WarpUI sidecar: native RDP popout windows and future Agent terminal UI"
+
+[[bin]]
+name = "wormhole-native-ui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+asset_cache.workspace = true
+async-channel.workspace = true
+axum = "0.7"
+clap = { version = "4", features = ["derive"] }
+display-core = { path = "../../../../crates/display-core" }
+futures.workspace = true
+log.workspace = true
+pathfinder_color.workspace = true
+pathfinder_geometry.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+warpui.workspace = true
+warpui_core.workspace = true
+wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", features = [
+  "iroh-transport",
+  "media-ffmpeg",
+  "rdp",
+  "vram-capture",
+  "opus-audio",
+  "clipboard-sync",
+] }
+wormhole-native-ipc = { path = "../../../../crates/wormhole-native-ipc" }
