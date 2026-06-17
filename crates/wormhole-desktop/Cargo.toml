@@ -1,21 +1,26 @@
 [package]
-name = "wormhole-native-ui"
+name = "wormhole-desktop"
 version = "0.0.0"
 edition = "2021"
 authors.workspace = true
 publish = false
 license = "MIT"
-description = "Wormhole WarpUI sidecar: native RDP popout windows and future Agent terminal UI"
+description = "Wormhole desktop (Warp native UI + wormhole-desktop-core)"
 
 [[bin]]
-name = "wormhole-native-ui"
+name = "wormhole-desktop"
 path = "src/main.rs"
+
+[features]
+default = ["telegram-bridge", "media-ffmpeg", "remote-desktop"]
+telegram-bridge = ["wormhole-desktop-core/telegram-bridge"]
+media-ffmpeg = ["wormhole-desktop-core/media-ffmpeg"]
+remote-desktop = ["wormhole-desktop-core/remote-desktop"]
 
 [dependencies]
 anyhow.workspace = true
 asset_cache.workspace = true
 async-channel.workspace = true
-axum = "0.7"
 clap = { version = "4", features = ["derive"] }
 command.workspace = true
 display-core = { path = "../../../../crates/display-core" }
@@ -28,7 +33,6 @@ portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = { version = "2", default-features = false, features = ["json"] }
@@ -36,6 +40,7 @@ uuid = { version = "1", features = ["v4"] }
 vt100 = "0.15"
 warpui.workspace = true
 warpui_core.workspace = true
+wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false }
 wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", features = [
   "iroh-transport",
   "media-ffmpeg",
@@ -49,3 +54,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 computer-use = { path = "../../../../crates/computer-use" }
+
+[target.'cfg(windows)'.dependencies]
+wormhole-desktop-platform-windows = { path = "../../../../crates/wormhole-desktop-platform-windows" }
+windows-sys = { version = "0.61", features = [
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+] }

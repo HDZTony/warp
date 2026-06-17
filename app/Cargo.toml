@@ -23,6 +23,11 @@ path = "src/bin/oss.rs"
 test = false
 
 [[bin]]
+name = "warp-oss-wormhole"
+path = "src/bin/wormhole_embed.rs"
+test = false
+
+[[bin]]
 name = "warp"
 path = "src/bin/local.rs"
 test = false
@@ -233,6 +238,7 @@ warp-workflows.workspace = true
 warp_assets.workspace = true
 warp_completer.workspace = true
 warp_core.workspace = true
+wormhole_embed.workspace = true
 warp_editor.workspace = true
 warp_graphql.workspace = true
 warp_js = { workspace = true, optional = true }

@@ -4093,7 +4093,11 @@ impl Workspace {
                     false, /* hide_homepage */
                     ctx,
                 );
-                self.check_and_trigger_onboarding(ctx);
+                if wormhole_embed::is_embedded() {
+                    self.bootstrap_wormhole_embed_codex(ctx);
+                } else {
+                    self.check_and_trigger_onboarding(ctx);
+                }
             }
             false
         } else {
@@ -7604,6 +7608,9 @@ impl Workspace {
     }
 
     fn should_trigger_get_started_onboarding(&self, ctx: &mut ViewContext<Self>) -> bool {
+        if wormhole_embed::is_embedded() {
+            return false;
+        }
         // Onboarding requires a real user to interact with it; suppress when
         // running in a headless mode like the SDK/CLI.
         if !AppExecutionMode::as_ref(ctx).can_show_onboarding() {
@@ -7642,6 +7649,12 @@ impl Workspace {
     /// If the user is new and therefore has not seen the in app onboarding,
     /// triggers the welcome block to be shown after bootstrapping is completed.
     fn check_and_trigger_onboarding(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if wormhole_embed::is_embedded() {
+            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+                auth_manager.set_user_onboarded(ctx);
+            });
+            return false;
+        }
         // Onboarding requires a real user to interact with it; suppress when
         // running in a headless mode like the SDK/CLI.
         if !AppExecutionMode::as_ref(ctx).can_show_onboarding() {
@@ -18466,8 +18479,42 @@ impl Workspace {
         });
     }
 
+    /// Spawn Codex CLI in the first terminal tab when embedded inside Wormhole.
+    fn bootstrap_wormhole_embed_codex(&mut self, ctx: &mut ViewContext<Self>) {
+        if !wormhole_embed::take_embed_bootstrap_slot() {
+            return;
+        }
+        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+            auth_manager.set_user_onboarded(ctx);
+        });
+        let command = wormhole_embed::default_codex_launch_command();
+        let initial_load_complete = UpdateManager::as_ref(ctx).initial_load_complete();
+        ctx.spawn(initial_load_complete, move |me, _, ctx| {
+            if me.active_session_view(ctx).is_none() {
+                me.add_new_session_tab_with_default_mode(
+                    NewSessionSource::Window,
+                    None,
+                    None,
+                    None,
+                    false,
+                    ctx,
+                );
+            }
+            if let Some(terminal_view) = me.active_session_view(ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.input().update(ctx, |input, ctx| {
+                        input.try_execute_command(&command, ctx);
+                    });
+                });
+            }
+        });
+    }
+
     /// Opens the Codex modal.
     pub fn open_codex_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if wormhole_embed::is_embedded() {
+            return;
+        }
         self.current_workspace_state.is_codex_modal_open = true;
         ctx.focus(&self.codex_modal);
         ctx.notify();

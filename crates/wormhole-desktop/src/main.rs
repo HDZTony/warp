@@ -1,0 +1,128 @@
+mod agent_events_view;
+mod agent_terminal_view;
+#[cfg(any(windows, target_os = "macos"))]
+mod computer_use_view;
+mod coordinator;
+mod cursor_agent_view;
+mod rdp_extras_ui;
+mod rdp_host_control_view;
+mod rdp_invoke;
+mod rdp_view;
+mod shell_bridge;
+mod ui;
+mod ui_text;
+mod workspace_rdp_view;
+mod workspace_session_hud_view;
+
+mod assets;
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use clap::Parser;
+use coordinator::{CoordinatorState, CoordinatorView};
+use tracing_subscriber::EnvFilter;
+use ui::app_shell::AppShellView;
+use ui::codex_provider_import_model::new_shared_import_model;
+use ui::core_handle::CoreHandle;
+use pathfinder_geometry::vector::vec2f;
+use warpui::platform::{AppBuilder, AppCallbacks, WindowBounds};
+use wormhole_desktop_core::bootstrap_desktop;
+
+#[derive(Debug, Parser)]
+#[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
+struct Args {
+    /// Wormhole data directory (`%LOCALAPPDATA%\\Wormhole` on Windows).
+    #[arg(long, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
+}
+
+fn default_data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("WORMHOLE_DATA_DIR") {
+        let path = PathBuf::from(dir.trim());
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    if let Ok(dir) = std::env::var("LOCALAPPDATA") {
+        PathBuf::from(dir).join("Wormhole")
+    } else if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        PathBuf::from(home).join(".wormhole")
+    } else {
+        PathBuf::from("./wormhole-data")
+    }
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("wormhole_desktop=info".parse()?),
+        )
+        .init();
+
+    let args = Args::parse();
+    let mut data_dir = args.data_dir.unwrap_or_else(default_data_dir);
+
+    #[cfg(windows)]
+    let mut pending_deeplink: Option<String> = None;
+    #[cfg(windows)]
+    {
+        use wormhole_desktop_platform_windows::{
+            handle_startup_args, register_single_instance, DeepLinkState, TrayController,
+        };
+        let deep_link = DeepLinkState::default();
+        let argv: Vec<String> = std::env::args().collect();
+        if let Some(from_arg) = handle_startup_args(&argv, &deep_link) {
+            data_dir = from_arg;
+        }
+        if let Ok(guard) = deep_link.pending_url.lock() {
+            pending_deeplink = guard.clone();
+        }
+        if !register_single_instance("dev.wormhole.desktop") {
+            anyhow::bail!("another Wormhole desktop instance is already running");
+        }
+        let _tray = TrayController::spawn("Wormhole")?;
+    }
+    #[cfg(not(windows))]
+    let pending_deeplink: Option<String> = None;
+
+    std::fs::create_dir_all(&data_dir)?;
+
+    let tokio = tokio::runtime::Runtime::new()?;
+    let desktop_runtime = tokio.block_on(bootstrap_desktop(Some(data_dir.clone()), None))?;
+    let core = CoreHandle::new(desktop_runtime, tokio);
+
+    let coordinator = Arc::new(Mutex::new(CoordinatorState::new(data_dir.clone())));
+
+    tracing::info!(
+        data_dir = %data_dir.display(),
+        "wormhole-desktop starting WarpUI shell"
+    );
+
+    let app_builder = AppBuilder::new(AppCallbacks::default(), Box::new(assets::EmptyAssets), None);
+    let import_model = new_shared_import_model();
+    let coordinator_for_shell = coordinator.clone();
+    let core_for_shell = core.clone();
+    let import_model_for_shell = import_model.clone();
+    let pending_for_shell = pending_deeplink;
+    let _ = app_builder.run(move |ctx| {
+        ctx.add_window(
+            warpui::AddWindowOptions {
+                title: Some("Wormhole".to_string()),
+                window_bounds: WindowBounds::ExactSize(vec2f(1280.0, 840.0)),
+                ..Default::default()
+            },
+            move |view_ctx| {
+                AppShellView::new(
+                    view_ctx,
+                    core_for_shell,
+                    coordinator_for_shell,
+                    import_model_for_shell,
+                    pending_for_shell,
+                )
+            },
+        );
+    });
+    Ok(())
+}

@@ -1,0 +1,127 @@
+use std::sync::{Arc, Mutex};
+
+use warpui::elements::{ChildView, Container, Flex, ParentElement, Scrollable, ScrollableElement};
+use warpui::fonts::FamilyId;
+use warpui::{AppContext, Element, Entity, View, ViewContext};
+use pathfinder_geometry::vector::vec2f;
+
+use crate::ui::chat::bubble::ChatBubbleView;
+use crate::ui::chat::shell::ConversationSelection;
+use crate::ui::core_handle::CoreHandle;
+use crate::ui::theme;
+use crate::ui_text;
+use wormhole_desktop_core::chat_commands::{chat_list_messages, ChatMessageDto, ListChatMessagesParams};
+
+pub struct ChatThreadView {
+    core: CoreHandle,
+    selection: ConversationSelection,
+    font: FamilyId,
+    loaded_for: Option<String>,
+    messages: Vec<ChatMessageDto>,
+    bubbles: Vec<warpui::ViewHandle<ChatBubbleView>>,
+}
+
+impl ChatThreadView {
+    pub fn new(
+        ctx: &mut ViewContext<Self>,
+        core: CoreHandle,
+        selection: ConversationSelection,
+    ) -> Self {
+        let font = crate::ui::fonts::load_ui_font(ctx);
+        let view = Self {
+            core,
+            selection,
+            font,
+            loaded_for: None,
+            messages: Vec::new(),
+            bubbles: Vec::new(),
+        };
+        view.start_poll(ctx);
+        view
+    }
+
+    fn start_poll(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            },
+            |view, _, ctx| {
+                view.poll_selection(ctx);
+                view.start_poll(ctx);
+            },
+        );
+    }
+
+    fn poll_selection(&mut self, ctx: &mut ViewContext<Self>) {
+        let current = self.selection.lock().ok().and_then(|g| g.clone());
+        if current == self.loaded_for {
+            return;
+        }
+        self.loaded_for = current.clone();
+        if let Some(conv_id) = current {
+            let core = self.core.clone();
+            ctx.spawn(
+                async move {
+                    let runtime = core.runtime();
+                    let params = ListChatMessagesParams {
+                        conv_id,
+                        limit: Some(50),
+                        before: None,
+                    };
+                    chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await
+                },
+                |view, output, ctx| {
+                match output {
+                    Ok(messages) => {
+                        view.messages = messages;
+                        view.rebuild_bubbles(ctx);
+                    }
+                    Err(_) => {
+                        view.messages.clear();
+                        view.bubbles.clear();
+                    }
+                }
+                ctx.notify();
+            },
+            );
+        } else {
+            self.messages.clear();
+            self.bubbles.clear();
+            ctx.notify();
+        }
+    }
+
+    fn rebuild_bubbles(&mut self, ctx: &mut ViewContext<Self>) {
+        self.bubbles.clear();
+        for msg in &self.messages {
+            let body = msg.body.clone();
+            let author = msg.author_endpoint.clone();
+            self.bubbles
+                .push(ctx.add_view(move |ctx| ChatBubbleView::new(ctx, author, body)));
+        }
+    }
+}
+
+impl Entity for ChatThreadView {
+    type Event = ();
+}
+
+impl View for ChatThreadView {
+    fn ui_name() -> &'static str {
+        "ChatThreadView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        let mut col = Flex::column();
+        col.add_child(ui_text::title("消息", self.font).finish());
+        if self.messages.is_empty() {
+            col.add_child(ui_text::body("选择左侧会话", self.font).finish());
+        }
+        for bubble in &self.bubbles {
+            col.add_child(ChildView::new(bubble).finish());
+        }
+        Container::new(col.finish())
+                    .with_background(theme::panel())
+                    .with_uniform_padding(8.0).finish()
+    }
+}

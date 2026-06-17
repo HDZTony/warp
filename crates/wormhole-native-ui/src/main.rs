@@ -1,8 +1,20 @@
-mod assets;
+mod agent_events_view;
+mod agent_terminal_view;
+#[cfg(any(windows, target_os = "macos"))]
+mod computer_use_view;
 mod coordinator;
+mod cursor_agent_view;
 mod daemon;
+mod rdp_extras_ui;
+mod rdp_host_control_view;
 mod rdp_invoke;
 mod rdp_view;
+mod shell_bridge;
+mod ui_text;
+mod workspace_rdp_view;
+mod workspace_session_hud_view;
+
+mod assets;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

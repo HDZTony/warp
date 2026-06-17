@@ -1,0 +1,210 @@
+use pathfinder_color::ColorU;
+use warpui::elements::{
+    Border, ChildView, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Flex, MainAxisSize, ParentElement, Radius, Shrinkable,
+};
+use warpui::fonts::FamilyId;
+use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle};
+
+use crate::coordinator::{CoordinatorState, CoordinatorView};
+use crate::ui::chat::ChatShellView;
+use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
+use crate::ui::core_handle::CoreHandle;
+use crate::ui::devices_view::DevicesView;
+use crate::ui::display_view::DisplayView;
+use crate::ui::settings_view::SettingsView;
+use crate::ui::sync_views::SyncView;
+use crate::ui::theme;
+use crate::ui::toolbox_view::ToolboxView;
+use crate::ui::w_drive_view::WDriveView;
+use crate::ui::warp_embed_view::{WarpEmbedAction, WarpEmbedView};
+use crate::ui_text;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppTab {
+    WDrive,
+    Devices,
+    Display,
+    Chat,
+    Warp,
+    Toolbox,
+    Settings,
+}
+
+#[derive(Debug, Clone)]
+pub enum AppShellAction {
+    SelectTab(AppTab),
+}
+
+pub struct AppShellView {
+    tab: AppTab,
+    core: CoreHandle,
+    coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
+    coordinator_view: ViewHandle<CoordinatorView>,
+    w_drive: ViewHandle<WDriveView>,
+    devices: ViewHandle<DevicesView>,
+    display: ViewHandle<DisplayView>,
+    chat: ViewHandle<ChatShellView>,
+    warp: ViewHandle<WarpEmbedView>,
+    toolbox: ViewHandle<ToolboxView>,
+    settings: ViewHandle<SettingsView>,
+    font: FamilyId,
+}
+
+impl AppShellView {
+    pub fn new(
+        ctx: &mut ViewContext<Self>,
+        core: CoreHandle,
+        coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
+        import_model: SharedCodexProviderImportModel,
+        pending_deeplink: Option<String>,
+    ) -> Self {
+        let font = crate::ui::fonts::load_ui_font(ctx);
+        let coordinator_view =
+            ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
+        let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
+        let devices = ctx.add_view(|ctx| DevicesView::new(ctx, core.clone()));
+        let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
+        let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
+        let warp = ctx.add_view(|ctx| WarpEmbedView::new(ctx, core.clone()));
+        let toolbox = ctx.add_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
+        let settings = ctx.add_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
+        let mut tab = AppTab::Chat;
+        if let Some(url) = pending_deeplink {
+            tab = AppTab::Settings;
+            let settings_handle = settings.clone();
+            ctx.update_view(&settings_handle, |view, ctx| view.open_deeplink_url(url, ctx));
+        }
+        Self {
+            tab,
+            core,
+            coordinator,
+            coordinator_view,
+            w_drive,
+            devices,
+            display,
+            chat,
+            warp,
+            toolbox,
+            settings,
+            font,
+        }
+    }
+
+    fn tab_label(tab: AppTab) -> &'static str {
+        match tab {
+            AppTab::WDrive => "W 盘",
+            AppTab::Devices => "设备",
+            AppTab::Display => "显示器",
+            AppTab::Chat => "聊天",
+            AppTab::Warp => "Warp",
+            AppTab::Toolbox => "工具箱",
+            AppTab::Settings => "设置",
+        }
+    }
+
+    fn tabs() -> [AppTab; 7] {
+        [
+            AppTab::WDrive,
+            AppTab::Devices,
+            AppTab::Display,
+            AppTab::Chat,
+            AppTab::Warp,
+            AppTab::Toolbox,
+            AppTab::Settings,
+        ]
+    }
+
+    fn tab_bar(&self) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        for tab in Self::tabs() {
+            let selected = self.tab == tab;
+            let bg = if selected {
+                theme::accent_bg(40)
+            } else {
+                ColorU::new(0, 0, 0, 0)
+            };
+            let label = ui_text::body(Self::tab_label(tab), self.font)
+                .with_color(if selected { theme::accent() } else { theme::text() })
+                .finish();
+            let tab_btn = Container::new(
+                EventHandler::new(label)
+                    .on_left_mouse_down(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(AppShellAction::SelectTab(tab));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_background(bg)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish();
+            row.add_child(tab_btn);
+        }
+        Container::new(row.finish())
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_uniform_padding(8.0)
+            .finish()
+    }
+
+    fn body(&self) -> Box<dyn Element> {
+        let content: Box<dyn Element> = match self.tab {
+            AppTab::WDrive => ChildView::new(&self.w_drive).finish(),
+            AppTab::Devices => ChildView::new(&self.devices).finish(),
+            AppTab::Display => ChildView::new(&self.display).finish(),
+            AppTab::Chat => ChildView::new(&self.chat).finish(),
+            AppTab::Warp => ChildView::new(&self.warp).finish(),
+            AppTab::Toolbox => ChildView::new(&self.toolbox).finish(),
+            AppTab::Settings => ChildView::new(&self.settings).finish(),
+        };
+        Flex::column()
+            .with_child(self.tab_bar())
+            .with_child(
+                Shrinkable::new(
+                    1.0,
+                    Container::new(content).with_uniform_padding(12.0).finish(),
+                )
+                .finish(),
+            )
+            .with_child(Shrinkable::new(0.0, ChildView::new(&self.coordinator_view).finish()).finish())
+            .finish()
+    }
+}
+
+impl Entity for AppShellView {
+    type Event = ();
+}
+
+impl View for AppShellView {
+    fn ui_name() -> &'static str {
+        "AppShellView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        Container::new(self.body())
+            .with_background(theme::canvas())
+            .with_uniform_padding(0.0)
+            .finish()
+    }
+}
+
+impl TypedActionView for AppShellView {
+    type Action = AppShellAction;
+
+    fn handle_action(&mut self, action: &AppShellAction, ctx: &mut ViewContext<Self>) {
+        match action {
+            AppShellAction::SelectTab(tab) => {
+                let warp_visible = *tab == AppTab::Warp;
+                let warp_handle = self.warp.clone();
+                ctx.update_view(&warp_handle, |view, ctx| {
+                    view.set_tab_visible(warp_visible, ctx);
+                });
+                self.tab = *tab;
+                ctx.notify();
+            }
+        }
+    }
+}

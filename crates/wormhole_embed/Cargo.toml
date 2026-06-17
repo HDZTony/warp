@@ -1,0 +1,17 @@
+[package]
+name = "wormhole_embed"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+publish = false
+license = "MIT"
+description = "Wormhole embedding helpers for the Warp app fork"
+
+[dependencies]
+anyhow.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
