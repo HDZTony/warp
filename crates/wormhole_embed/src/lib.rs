@@ -97,17 +97,20 @@ pub fn apply_codex_launch_env(
 }
 
 fn prepend_path(dir: &Path) {
-    let dir = dir.to_string_lossy();
-    let entry = std::env::join_paths([dir.as_ref()]).unwrap_or_else(|_| dir.into());
+    let dir_buf = dir.to_path_buf();
     match std::env::var_os("PATH") {
         Some(existing) => {
-            let mut paths = vec![entry];
-            paths.extend(std::env::split_paths(&existing));
+            let mut paths: Vec<PathBuf> = std::env::split_paths(&existing).collect();
+            paths.insert(0, dir_buf);
             if let Ok(merged) = std::env::join_paths(paths) {
                 std::env::set_var("PATH", merged);
             }
         }
-        None => std::env::set_var("PATH", entry),
+        None => {
+            if let Ok(merged) = std::env::join_paths([&dir]) {
+                std::env::set_var("PATH", merged);
+            }
+        }
     }
 }
 

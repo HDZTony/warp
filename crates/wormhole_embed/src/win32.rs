@@ -1,7 +1,8 @@
 use std::ffi::c_void;
 
 use anyhow::{Context, Result};
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
     SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HWND_BOTTOM, SWP_NOACTIVATE,
@@ -16,7 +17,7 @@ struct SearchState {
 pub fn find_visible_window_for_pid(pid: u32) -> Option<HWND> {
     let mut search = SearchState { pid, hwnd: None };
     unsafe {
-        let _ = EnumWindows(Some(enum_for_pid), &mut search as *mut _ as LPARAM);
+        let _ = EnumWindows(Some(enum_for_pid), LPARAM(&mut search as *mut _ as isize));
     }
     search.hwnd
 }
@@ -29,7 +30,7 @@ unsafe extern "system" fn enum_for_pid(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let mut window_pid = 0u32;
     let _ = GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
     if window_pid == search.pid {
-        let parent = GetParent(hwnd);
+        let parent = GetParent(hwnd).unwrap_or(HWND::default());
         if parent.0.is_null() {
             search.hwnd = Some(hwnd);
             return BOOL(0);
@@ -47,7 +48,7 @@ pub fn embed_window_into_host(child: HWND, host: HWND) -> Result<()> {
         let style = (style as u32) & !WS_POPUP.0;
         let style = style | WS_CHILD.0;
         SetWindowLongPtrW(child, GWL_STYLE, style as _);
-        SetParent(child, host).context("SetParent failed")?;
+        SetParent(child, Some(host)).context("SetParent failed")?;
         let _ = ShowWindow(child, SW_SHOW);
     }
     Ok(())
@@ -60,7 +61,7 @@ pub fn resize_embedded(child: HWND, width: i32, height: i32) {
     unsafe {
         let _ = SetWindowPos(
             child,
-            HWND_BOTTOM,
+            Some(HWND_BOTTOM),
             0,
             0,
             width.max(1),
