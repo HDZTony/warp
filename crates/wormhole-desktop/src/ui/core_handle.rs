@@ -34,6 +34,6 @@ impl CoreHandle {
     }
 
     pub fn app_state(&self) -> &wormhole_desktop_core::state::AppState {
-        &self.runtime().state
+        &self.runtime.state
     }
 }

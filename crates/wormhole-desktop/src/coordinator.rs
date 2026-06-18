@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
-use warpui::elements::Rect;
+use warpui::elements::{ConstrainedBox, Rect};
 use warpui::platform::{TerminationMode, WindowBounds};
 use warpui::{
     AddWindowOptions, AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View,
@@ -832,9 +832,14 @@ impl View for CoordinatorView {
     }
 
     fn render(&self, _: &AppContext) -> Box<dyn Element> {
-        Rect::new()
-            .with_background_color(ColorU::new(0, 0, 0, 0))
-            .finish()
+        ConstrainedBox::new(
+            Rect::new()
+                .with_background_color(ColorU::new(0, 0, 0, 0))
+                .finish(),
+        )
+        .with_width(1.0)
+        .with_height(1.0)
+        .finish()
     }
 }
 

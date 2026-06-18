@@ -40,6 +40,7 @@ pub struct AppShellView {
     tab: AppTab,
     core: CoreHandle,
     coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
+    #[allow(dead_code)]
     coordinator_view: ViewHandle<CoordinatorView>,
     w_drive: ViewHandle<WDriveView>,
     devices: ViewHandle<DevicesView>,
@@ -169,7 +170,6 @@ impl AppShellView {
                 )
                 .finish(),
             )
-            .with_child(Shrinkable::new(0.0, ChildView::new(&self.coordinator_view).finish()).finish())
             .finish()
     }
 }

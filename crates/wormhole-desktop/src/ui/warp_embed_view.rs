@@ -64,12 +64,12 @@ impl WarpEmbedView {
         }
         self.visible = visible;
         if visible {
-            ctx.dispatch_typed_action(WarpEmbedAction::Spawn);
+            self.spawn_child(ctx);
         }
         #[cfg(windows)]
         {
             if let Some(host) = self.state.lock().expect("embed state").host_hwnd {
-                wormhole_desktop_platform_windows::set_host_visible(host, visible);
+                wormhole_desktop_platform_windows::set_host_visible(host as _, visible);
             }
         }
         ctx.notify();
@@ -104,11 +104,13 @@ impl WarpEmbedView {
             #[cfg(windows)]
             let host_hwnd = {
                 let parent = wormhole_desktop_platform_windows::find_window_by_title("Wormhole");
-                parent.and_then(|p| {
-                    wormhole_desktop_platform_windows::create_host_panel(
-                        p, HOST_X, HOST_Y, HOST_W, HOST_H,
-                    )
-                })
+                parent
+                    .and_then(|p| {
+                        wormhole_desktop_platform_windows::create_host_panel(
+                            p, HOST_X, HOST_Y, HOST_W, HOST_H,
+                        )
+                    })
+                    .map(|hwnd| hwnd as isize)
             };
             #[cfg(not(windows))]
             let host_hwnd: Option<isize> = None;
@@ -147,14 +149,14 @@ impl WarpEmbedView {
                     if let Some(hwnd) =
                         wormhole_desktop_platform_windows::find_visible_top_level_window_for_pid(pid)
                     {
-                        if wormhole_desktop_platform_windows::embed_child_into_host(hwnd, host)
+                        if wormhole_desktop_platform_windows::embed_child_into_host(hwnd, host as _)
                             .is_ok()
                         {
                             wormhole_desktop_platform_windows::resize_embedded_child(
                                 hwnd, HOST_W, HOST_H,
                             );
                             let mut state = shared.lock().expect("embed state");
-                            state.child_hwnd = Some(hwnd);
+                            state.child_hwnd = Some(hwnd as isize);
                             state.status = "Warp 已嵌入".to_string();
                             return;
                         }
@@ -240,7 +242,7 @@ impl Drop for WarpEmbedView {
         }
         #[cfg(windows)]
         if let Some(host) = state.host_hwnd.take() {
-            wormhole_desktop_platform_windows::destroy_host(host);
+            wormhole_desktop_platform_windows::destroy_host(host as _);
         }
     }
 }

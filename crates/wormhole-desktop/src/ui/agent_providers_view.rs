@@ -21,6 +21,7 @@ pub enum AgentProvidersAction {
     Refresh,
     Activate(String),
     Delete(String),
+    QueryUsage(String),
     ConfirmImport,
     CancelImport,
     ParseClipboard,
@@ -159,6 +160,23 @@ impl AgentProvidersView {
         );
     }
 
+    fn query_usage(&mut self, id: String, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_provider_commands::query_agent_provider_usage(&state, id).await
+            },
+            |view, output, ctx| {
+                view.status = match output {
+                    Ok(result) => format_usage_result(&result),
+                    Err(err) => err,
+                };
+                ctx.notify();
+            },
+        );
+    }
+
     fn parse_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
         let text = read_clipboard_text().unwrap_or_default();
         let url = text
@@ -202,7 +220,7 @@ impl AgentProvidersView {
         col.add_child(ui_text::title("确认导入 Codex 供应商", self.font).finish());
         col.add_child(
             ui_text::body(
-                "请核对信息。用量查询脚本本期仅保存元数据，不会自动执行。",
+                "请核对信息。导入后可在列表中点击「查询用量」执行 CC Switch 同款脚本。",
                 self.font,
             )
             .with_color(theme::muted())
@@ -346,6 +364,13 @@ impl View for AgentProvidersView {
                         AgentProvidersAction::Activate(id),
                     ));
                 }
+                if provider.usage_enabled {
+                    let usage_id = provider.id.clone();
+                    row.add_child(self.action_button(
+                        "查询用量",
+                        AgentProvidersAction::QueryUsage(usage_id),
+                    ));
+                }
                 let delete_id = provider.id.clone();
                 row.add_child(self.action_button(
                     "删除",
@@ -364,6 +389,42 @@ impl View for AgentProvidersView {
     }
 }
 
+fn format_usage_result(result: &wormhole_desktop_core::agent_provider_commands::AgentUsageResultDto) -> String {
+    if !result.success {
+        return result
+            .error
+            .clone()
+            .unwrap_or_else(|| "用量查询失败".into());
+    }
+    let Some(items) = result.data.as_ref().filter(|items| !items.is_empty()) else {
+        return "用量查询成功，但无数据".into();
+    };
+    let first = &items[0];
+    if first.is_valid == Some(false) {
+        return first
+            .invalid_message
+            .clone()
+            .unwrap_or_else(|| "用量无效".into());
+    }
+    let mut parts = Vec::new();
+    if let Some(plan) = &first.plan_name {
+        parts.push(plan.clone());
+    }
+    if let (Some(remaining), Some(unit)) = (first.remaining, &first.unit) {
+        parts.push(format!("剩余 {remaining} {unit}"));
+    } else if let (Some(used), Some(total)) = (first.used, first.total) {
+        parts.push(format!("已用 {used} / {total}"));
+    }
+    if let Some(extra) = &first.extra {
+        parts.push(extra.clone());
+    }
+    if parts.is_empty() {
+        "用量查询成功".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 impl TypedActionView for AgentProvidersView {
     type Action = AgentProvidersAction;
 
@@ -372,6 +433,7 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::Refresh => self.refresh(ctx),
             AgentProvidersAction::Activate(id) => self.activate(id.clone(), ctx),
             AgentProvidersAction::Delete(id) => self.delete(id.clone(), ctx),
+            AgentProvidersAction::QueryUsage(id) => self.query_usage(id.clone(), ctx),
             AgentProvidersAction::ParseClipboard => self.parse_clipboard(ctx),
             AgentProvidersAction::CancelImport => {
                 close_preview(&self.import_model);
