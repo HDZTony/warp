@@ -4,7 +4,9 @@ use std::time::Duration;
 use pathfinder_color::ColorU;
 use warpui::elements::{Container, Flex, MainAxisSize, ParentElement, Text};
 use warpui::fonts::{Cache as FontCache, FamilyId};
-use warpui::{AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext};
+use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
+};
 
 use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::rdp_extras_ui::link_label;
@@ -107,12 +109,10 @@ impl WorkspaceSessionHudView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(2));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -143,16 +143,8 @@ impl View for WorkspaceSessionHudView {
     }
 
     fn render(&self, _: &AppContext) -> Box<dyn Element> {
-        let _ = self
-            .generation
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0);
-        let body = self
-            .body
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let _ = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let body = self.body.lock().map(|s| s.clone()).unwrap_or_default();
 
         let focus = link_label("聚焦 Workspace 窗", self.font, false, {
             let this = self.session_id.clone();

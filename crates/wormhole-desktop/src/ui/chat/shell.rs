@@ -22,9 +22,11 @@ pub struct ChatShellView {
 impl ChatShellView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let selection = Arc::new(Mutex::new(None));
-        let sidebar = ctx.add_view(|ctx| ChatSidebarView::new(ctx, core.clone(), selection.clone()));
+        let sidebar =
+            ctx.add_view(|ctx| ChatSidebarView::new(ctx, core.clone(), selection.clone()));
         let thread = ctx.add_view(|ctx| ChatThreadView::new(ctx, core.clone(), selection.clone()));
-        let compose = ctx.add_view(|ctx| ChatComposeView::new(ctx, core.clone(), selection.clone()));
+        let compose =
+            ctx.add_view(|ctx| ChatComposeView::new(ctx, core.clone(), selection.clone()));
         let agents = ctx.add_view(|ctx| AgentThreadsSidebar::new(ctx, core));
         Self {
             selection,

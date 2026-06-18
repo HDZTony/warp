@@ -4,11 +4,11 @@ use std::time::Duration;
 use pathfinder_color::ColorU;
 use serde::Deserialize;
 use serde_json::Value;
-use warpui::elements::{
-    ConstrainedBox, Container, Flex, MainAxisSize, ParentElement, Text,
-};
+use warpui::elements::{ConstrainedBox, Container, Flex, MainAxisSize, ParentElement, Text};
 use warpui::fonts::{Cache as FontCache, FamilyId};
-use warpui::{AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext};
+use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
+};
 
 use crate::ui_text;
 use wormhole_desktop_rdp::RdpRuntime;
@@ -61,9 +61,7 @@ impl AgentEventsView {
         let events_log = Arc::new(Mutex::new(format!(
             "远程 Agent 任务事件 · {task_id}\n目标节点: {target_node}\n\n"
         )));
-        let sidebar = Arc::new(Mutex::new(
-            "任务详情\n────────\n等待事件…\n".to_string(),
-        ));
+        let sidebar = Arc::new(Mutex::new("任务详情\n────────\n等待事件…\n".to_string()));
         let status = Arc::new(Mutex::new("轮询事件流…".to_string()));
         let cursor = Arc::new(Mutex::new(0u64));
         let generation = Arc::new(Mutex::new(1u64));
@@ -87,12 +85,10 @@ impl AgentEventsView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(500));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(500));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -167,10 +163,7 @@ impl AgentEventsView {
                 .and_then(|v| v.as_str())
                 .unwrap_or("info")
                 .to_uppercase();
-            let message = event
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let message = event.get("message").and_then(|v| v.as_str()).unwrap_or("");
             log.push_str(&format!("[{timestamp}] {level} {message}\n"));
         }
         drop(log);
@@ -261,10 +254,7 @@ impl View for AgentEventsView {
             .with_child(sidebar_body)
             .finish();
 
-        Flex::column()
-            .with_child(header)
-            .with_child(split)
-            .finish()
+        Flex::column().with_child(header).with_child(split).finish()
     }
 }
 

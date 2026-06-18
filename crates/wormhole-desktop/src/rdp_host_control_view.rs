@@ -3,18 +3,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pathfinder_color::ColorU;
-use warpui::elements::{Container, DispatchEventResult, EventHandler, Flex, MainAxisSize, ParentElement};
+use warpui::elements::{
+    Container, DispatchEventResult, EventHandler, Flex, MainAxisSize, ParentElement,
+};
 use warpui::fonts::{Cache as FontCache, FamilyId};
-use warpui::{AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext};
+use warpui::{
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
+};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_rdp::settings::{load_settings, save_settings, RdpSettings};
+use wormhole_desktop_rdp::wol::send_magic_packet;
 use wormhole_desktop_rdp::{
     apply_host_side_effects, format_addressbook_entries, format_entries, generate_totp_secret,
     list as list_audit, load_addressbook, logon_task_installed, trim as trim_audit,
-    upsert_addressbook_entry, windows_service_installed, RemoteDesktopSessionDto,
-    RdpAddressBookEntry, RdpRuntime, SessionRole, DEFAULT_BROADCAST,
+    upsert_addressbook_entry, windows_service_installed, RdpAddressBookEntry, RdpRuntime,
+    RemoteDesktopSessionDto, SessionRole, DEFAULT_BROADCAST,
 };
-use wormhole_desktop_rdp::wol::send_magic_packet;
 
 use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::rdp_extras_ui::link_label;
@@ -139,12 +143,10 @@ impl RdpHostControlView {
         let generation = self.generation.clone();
         let last = Arc::new(Mutex::new(0u64));
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::ui_poll_once(ctx, tick_rx, generation, last);
@@ -157,22 +159,19 @@ impl RdpHostControlView {
         last: Arc<Mutex<u64>>,
     ) {
         let waiter = tick_rx.clone();
-        ctx.spawn(
-            async move { waiter.recv().await },
-            move |_, output, ctx| {
-                if output.is_ok() {
-                    let current = generation.lock().map(|g| *g).unwrap_or(0);
-                    let prev = last.lock().map(|g| *g).unwrap_or(0);
-                    if current != prev {
-                        if let Ok(mut guard) = last.lock() {
-                            *guard = current;
-                        }
-                        ctx.notify();
+        ctx.spawn(async move { waiter.recv().await }, move |_, output, ctx| {
+            if output.is_ok() {
+                let current = generation.lock().map(|g| *g).unwrap_or(0);
+                let prev = last.lock().map(|g| *g).unwrap_or(0);
+                if current != prev {
+                    if let Ok(mut guard) = last.lock() {
+                        *guard = current;
                     }
-                    Self::ui_poll_once(ctx, tick_rx, generation, last);
+                    ctx.notify();
                 }
-            },
-        );
+                Self::ui_poll_once(ctx, tick_rx, generation, last);
+            }
+        });
     }
 
     fn bump(&self) {
@@ -183,12 +182,10 @@ impl RdpHostControlView {
 
     fn poll_once(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(2));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::schedule_poll(ctx, tick_rx);
@@ -390,7 +387,13 @@ impl RdpHostControlView {
         let (fps, use_vram, monitor) = self
             .ui
             .lock()
-            .map(|u| (u.settings.host_fps, u.settings.host_use_vram, u.settings.host_monitor))
+            .map(|u| {
+                (
+                    u.settings.host_fps,
+                    u.settings.host_use_vram,
+                    u.settings.host_monitor,
+                )
+            })
             .unwrap_or((30, false, 0));
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().ok();
@@ -466,14 +469,7 @@ impl RdpHostControlView {
             let rt = tokio::runtime::Runtime::new().ok();
             let msg = match rt {
                 Some(rt) => match rt.block_on(async {
-                    upsert_addressbook_entry(
-                        &data_dir,
-                        name,
-                        node_id,
-                        Vec::new(),
-                        true,
-                    )
-                    .await?;
+                    upsert_addressbook_entry(&data_dir, name, node_id, Vec::new(), true).await?;
                     load_addressbook(&data_dir).await
                 }) {
                     Ok(book) => {
@@ -560,14 +556,7 @@ impl RdpHostControlView {
             let rt = tokio::runtime::Runtime::new().ok();
             let msg = match rt {
                 Some(rt) => match rt.block_on(async {
-                    upsert_addressbook_entry(
-                        &data_dir,
-                        name,
-                        node_id,
-                        Vec::new(),
-                        true,
-                    )
-                    .await?;
+                    upsert_addressbook_entry(&data_dir, name, node_id, Vec::new(), true).await?;
                     load_addressbook(&data_dir).await
                 }) {
                     Ok(book) => {
@@ -767,7 +756,10 @@ impl RdpHostControlView {
         }
         let editable = matches!(
             page,
-            HostControlPage::Connect | HostControlPage::Book | HostControlPage::Tools | HostControlPage::Host
+            HostControlPage::Connect
+                | HostControlPage::Book
+                | HostControlPage::Tools
+                | HostControlPage::Host
         );
         if !editable {
             return;
@@ -860,10 +852,7 @@ fn next_quality_preset(current: &str) -> String {
 fn next_host_codec(current: &str, supported: &[String]) -> String {
     let mut options = vec!["auto".to_string()];
     options.extend(supported.iter().cloned());
-    let idx = options
-        .iter()
-        .position(|c| c == current)
-        .unwrap_or(0);
+    let idx = options.iter().position(|c| c == current).unwrap_or(0);
     options[(idx + 1) % options.len()].clone()
 }
 
@@ -873,11 +862,7 @@ fn format_host_body(ui: &HostControlUi) -> String {
     } else {
         "••••".to_string()
     };
-    let totp_secret = ui
-        .settings
-        .totp_secret
-        .as_deref()
-        .unwrap_or("（未生成）");
+    let totp_secret = ui.settings.totp_secret.as_deref().unwrap_or("（未生成）");
     let vram = if ui.vram_available {
         if ui.settings.host_use_vram {
             "开"
@@ -1001,11 +986,7 @@ impl View for RdpHostControlView {
     }
 
     fn render(&self, _: &AppContext) -> Box<dyn Element> {
-        let _ = self
-            .generation
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0);
+        let _ = self.generation.lock().map(|g| *g).unwrap_or(0);
         let ui = self.ui.lock().ok();
         let Some(ui) = ui else {
             return Container::new(
@@ -1099,10 +1080,9 @@ impl View for RdpHostControlView {
                     ui.status,
                 )
             }
-            HostControlPage::Sessions => format!(
-                "活动会话\n────────\n{}\n\n{}",
-                ui.sessions_text, ui.status
-            ),
+            HostControlPage::Sessions => {
+                format!("活动会话\n────────\n{}\n\n{}", ui.sessions_text, ui.status)
+            }
             HostControlPage::Audit => format!(
                 "连接审计（最近 200 条）\n────────\n{}\n\n{}",
                 ui.audit_text, ui.status
@@ -1137,52 +1117,72 @@ impl View for RdpHostControlView {
                 },
             ));
             let v = self.clone_refs();
-            host_actions =
-                host_actions.with_child(link_label("保存设置（Enter）", self.font, false, move || {
+            host_actions = host_actions.with_child(link_label(
+                "保存设置（Enter）",
+                self.font,
+                false,
+                move || {
                     v.save_settings();
-                }));
+                },
+            ));
             for (label, delta) in [("FPS −", -5i32), ("FPS +", 5i32)] {
                 let v = self.clone_refs();
-                host_actions = host_actions.with_child(link_label(label, self.font, false, move || {
-                    v.bump_fps(delta);
-                }));
+                host_actions =
+                    host_actions.with_child(link_label(label, self.font, false, move || {
+                        v.bump_fps(delta);
+                    }));
             }
             for (label, delta) in [("监视器 −", -1i32), ("监视器 +", 1i32)] {
                 let v = self.clone_refs();
-                host_actions = host_actions.with_child(link_label(label, self.font, false, move || {
-                    v.bump_monitor(delta);
-                }));
-            }
-            let v = self.clone_refs();
-            host_actions = host_actions.with_child(link_label("切换画质", self.font, false, move || {
-                v.cycle_quality();
-            }));
-            let v = self.clone_refs();
-            host_actions = host_actions.with_child(link_label("切换编码", self.font, false, move || {
-                v.cycle_codec();
-            }));
-            if vram_available {
-                let v = self.clone_refs();
                 host_actions =
-                    host_actions.with_child(link_label("切换 VRAM", self.font, false, move || {
-                        v.toggle_vram();
+                    host_actions.with_child(link_label(label, self.font, false, move || {
+                        v.bump_monitor(delta);
                     }));
             }
             let v = self.clone_refs();
             host_actions =
-                host_actions.with_child(link_label("切换隐私屏", self.font, false, move || {
-                    v.toggle_privacy_screen();
+                host_actions.with_child(link_label("切换画质", self.font, false, move || {
+                    v.cycle_quality();
                 }));
+            let v = self.clone_refs();
+            host_actions =
+                host_actions.with_child(link_label("切换编码", self.font, false, move || {
+                    v.cycle_codec();
+                }));
+            if vram_available {
+                let v = self.clone_refs();
+                host_actions = host_actions.with_child(link_label(
+                    "切换 VRAM",
+                    self.font,
+                    false,
+                    move || {
+                        v.toggle_vram();
+                    },
+                ));
+            }
+            let v = self.clone_refs();
+            host_actions = host_actions.with_child(link_label(
+                "切换隐私屏",
+                self.font,
+                false,
+                move || {
+                    v.toggle_privacy_screen();
+                },
+            ));
             let v = self.clone_refs();
             host_actions =
                 host_actions.with_child(link_label("切换 TOTP", self.font, false, move || {
                     v.toggle_totp_required();
                 }));
             let v = self.clone_refs();
-            host_actions =
-                host_actions.with_child(link_label("生成 TOTP 密钥", self.font, false, move || {
+            host_actions = host_actions.with_child(link_label(
+                "生成 TOTP 密钥",
+                self.font,
+                false,
+                move || {
                     v.generate_totp();
-                }));
+                },
+            ));
             #[cfg(windows)]
             {
                 let v = self.clone_refs();
@@ -1205,9 +1205,10 @@ impl View for RdpHostControlView {
                 ));
             }
             let v = self.clone_refs();
-            host_actions = host_actions.with_child(link_label("开始共享", self.font, false, move || {
-                v.start_sharing();
-            }));
+            host_actions =
+                host_actions.with_child(link_label("开始共享", self.font, false, move || {
+                    v.start_sharing();
+                }));
         }
 
         let mut actions = Flex::row();
@@ -1226,9 +1227,14 @@ impl View for RdpHostControlView {
                 }));
             }
             let v = self.clone_refs();
-            actions = actions.with_child(link_label("连接（Enter）", self.font, false, move || {
-                v.connect();
-            }));
+            actions = actions.with_child(link_label(
+                "连接（Enter）",
+                self.font,
+                false,
+                move || {
+                    v.connect();
+                },
+            ));
         } else if page == HostControlPage::Book {
             for (label, field) in [
                 ("编辑名称", HostControlField::AbName),
@@ -1241,14 +1247,24 @@ impl View for RdpHostControlView {
                 }));
             }
             let v = self.clone_refs();
-            actions = actions.with_child(link_label("保存（Enter）", self.font, false, move || {
-                v.save_address_book_entry();
-            }));
+            actions = actions.with_child(link_label(
+                "保存（Enter）",
+                self.font,
+                false,
+                move || {
+                    v.save_address_book_entry();
+                },
+            ));
         } else if page == HostControlPage::Tools {
             let v = self.clone_refs();
-            actions = actions.with_child(link_label("编辑 MAC", self.font, ui.active_field == HostControlField::WolMac, move || {
-                v.focus_field(HostControlField::WolMac);
-            }));
+            actions = actions.with_child(link_label(
+                "编辑 MAC",
+                self.font,
+                ui.active_field == HostControlField::WolMac,
+                move || {
+                    v.focus_field(HostControlField::WolMac);
+                },
+            ));
             let v = self.clone_refs();
             actions = actions.with_child(link_label("发送 WoL", self.font, false, move || {
                 v.send_wol();
@@ -1307,7 +1323,10 @@ impl View for RdpHostControlView {
                 .filter(|s| s.discovered && s.role == SessionRole::Host)
             {
                 let peer = host.peer.clone();
-                let name = host.hostname.clone().unwrap_or_else(|| "Remote Host".into());
+                let name = host
+                    .hostname
+                    .clone()
+                    .unwrap_or_else(|| "Remote Host".into());
                 let requires_password = host.requires_password;
                 let connect_label = format!(
                     "连接 · {}",

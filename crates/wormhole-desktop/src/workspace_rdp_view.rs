@@ -12,12 +12,5 @@ pub fn new_workspace_rdp_view(
     fps: i32,
     watermark_text: Option<String>,
 ) -> RdpViewerView {
-    RdpViewerView::new_workspace(
-        ctx,
-        runtime,
-        peer,
-        password,
-        fps,
-        watermark_text,
-    )
+    RdpViewerView::new_workspace(ctx, runtime, peer, password, fps, watermark_text)
 }

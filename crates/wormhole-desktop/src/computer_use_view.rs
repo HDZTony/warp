@@ -95,8 +95,7 @@ impl ComputerUseView {
                                 }
                             }
                             Err(err) => {
-                                *status.lock().expect("status") =
-                                    format!("解码截图失败: {err}");
+                                *status.lock().expect("status") = format!("解码截图失败: {err}");
                             }
                         },
                         Err(err) => {
@@ -121,12 +120,10 @@ impl ComputerUseView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(32));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(32));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -187,8 +184,7 @@ impl ComputerUseView {
         std::thread::spawn(move || {
             match computer_use::pointer_click(nx, ny, computer_use::PointerButton::Left) {
                 Ok(()) => {
-                    *status.lock().expect("status") =
-                        format!("已点击 ({nx:.3}, {ny:.3})");
+                    *status.lock().expect("status") = format!("已点击 ({nx:.3}, {ny:.3})");
                 }
                 Err(err) => {
                     *status.lock().expect("status") = format!("点击失败: {err}");
@@ -236,8 +232,7 @@ impl View for ComputerUseView {
                 std::thread::spawn(move || {
                     match computer_use::pointer_click(nx, ny, computer_use::PointerButton::Left) {
                         Ok(()) => {
-                            *status.lock().expect("status") =
-                                format!("已点击 ({nx:.3}, {ny:.3})");
+                            *status.lock().expect("status") = format!("已点击 ({nx:.3}, {ny:.3})");
                         }
                         Err(err) => {
                             *status.lock().expect("status") = format!("点击失败: {err}");

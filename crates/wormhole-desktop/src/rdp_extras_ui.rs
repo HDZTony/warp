@@ -259,12 +259,22 @@ pub fn render_toolbar(
         }
         let vcam = state
             .lock()
-            .map(|s| (s.virtual_cam_enabled, s.virtual_cam_available, s.virtual_cam_hint.clone()))
+            .map(|s| {
+                (
+                    s.virtual_cam_enabled,
+                    s.virtual_cam_available,
+                    s.virtual_cam_hint.clone(),
+                )
+            })
             .unwrap_or((false, false, String::new()));
         if vcam.1 {
             let a = on_action.clone();
             row = row.with_child(link_label(
-                if vcam.0 { "虚拟摄像头·开" } else { "虚拟摄像头·关" },
+                if vcam.0 {
+                    "虚拟摄像头·开"
+                } else {
+                    "虚拟摄像头·关"
+                },
                 font,
                 vcam.0,
                 move || a(ExtrasUiAction::ToggleVirtualCam),
@@ -327,7 +337,9 @@ pub fn render_auth_panel(
                 })
                 .with_child({
                     let a = on_action.clone();
-                    link_label("重新连接", font, false, move || a(ExtrasUiAction::Reconnect))
+                    link_label("重新连接", font, false, move || {
+                        a(ExtrasUiAction::Reconnect)
+                    })
                 })
                 .with_child(
                     ui_text::body("Enter 重新连接", font)
@@ -439,11 +451,7 @@ pub fn render_panel(
     )
 }
 
-pub fn spawn_send_file(
-    runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
-    peer: String,
-    path: String,
-) {
+pub fn spawn_send_file(runtime: Arc<tokio::sync::Mutex<RdpRuntime>>, peer: String, path: String) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -455,9 +463,7 @@ pub fn spawn_send_file(
         let transfer_id = uuid::Uuid::new_v4().to_string();
         let _ = rt.block_on(async move {
             let runtime = runtime.lock().await;
-            runtime
-                .send_file_to_peer(&peer, &path, &transfer_id)
-                .await
+            runtime.send_file_to_peer(&peer, &path, &transfer_id).await
         });
     });
 }
@@ -501,17 +507,12 @@ pub fn spawn_run_terminal(
         };
         let _ = rt.block_on(async move {
             let runtime = runtime.lock().await;
-            runtime
-                .run_terminal_command(&peer, &command, &[])
-                .await
+            runtime.run_terminal_command(&peer, &command, &[]).await
         });
     });
 }
 
-pub fn spawn_audio_volume(
-    runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
-    volume: u8,
-) {
+pub fn spawn_audio_volume(runtime: Arc<tokio::sync::Mutex<RdpRuntime>>, volume: u8) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -524,10 +525,7 @@ pub fn spawn_audio_volume(
     });
 }
 
-pub fn spawn_audio_muted(
-    runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
-    muted: bool,
-) {
+pub fn spawn_audio_muted(runtime: Arc<tokio::sync::Mutex<RdpRuntime>>, muted: bool) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,

@@ -186,8 +186,7 @@ impl WarpEmbedView {
             let child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(err) => {
-                    shared.lock().expect("embed state").status =
-                        format!("无法启动 Warp: {err}");
+                    shared.lock().expect("embed state").status = format!("无法启动 Warp: {err}");
                     return;
                 }
             };
@@ -203,7 +202,9 @@ impl WarpEmbedView {
             if let Some(host) = host_hwnd {
                 for _ in 0..120 {
                     if let Some(hwnd) =
-                        wormhole_desktop_platform_windows::find_visible_top_level_window_for_pid(pid)
+                        wormhole_desktop_platform_windows::find_visible_top_level_window_for_pid(
+                            pid,
+                        )
                     {
                         if wormhole_desktop_platform_windows::embed_child_into_host(hwnd, host as _)
                             .is_ok()
@@ -283,12 +284,7 @@ impl View for WarpEmbedView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let status = self
-            .state
-            .lock()
-            .expect("embed state")
-            .status
-            .clone();
+        let status = self.state.lock().expect("embed state").status.clone();
         let body = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_main_axis_size(MainAxisSize::Max)

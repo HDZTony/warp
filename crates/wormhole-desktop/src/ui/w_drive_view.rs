@@ -81,7 +81,8 @@ impl View for WDriveView {
             col.add_child(ui_text::body("（暂无文件）", self.font).finish());
         }
         Container::new(col.finish())
-                    .with_background(theme::panel())
-                    .with_uniform_padding(12.0).finish()
+            .with_background(theme::panel())
+            .with_uniform_padding(12.0)
+            .finish()
     }
 }

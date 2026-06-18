@@ -17,9 +17,8 @@ fn load_session(data_dir: &Path) -> Option<BridgeSessionFile> {
 }
 
 fn post_command(data_dir: &Path, command: &str, body: serde_json::Value) -> Result<(), String> {
-    let session = load_session(data_dir).ok_or_else(|| {
-        "mcp-bridge.json missing (start Wormhole Desktop)".to_string()
-    })?;
+    let session = load_session(data_dir)
+        .ok_or_else(|| "mcp-bridge.json missing (start Wormhole Desktop)".to_string())?;
     let url = format!(
         "{}/commands/{}",
         session.endpoint.trim_end_matches('/'),
@@ -51,7 +50,10 @@ pub fn virtual_cam_config(data_dir: &Path) -> Option<(bool, String)> {
         return None;
     }
     let body: serde_json::Value = response.into_json().ok()?;
-    let available = body.get("available").and_then(|v| v.as_bool()).unwrap_or(false);
+    let available = body
+        .get("available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let hint = body
         .get("hint")
         .and_then(|v| v.as_str())
@@ -60,7 +62,12 @@ pub fn virtual_cam_config(data_dir: &Path) -> Option<(bool, String)> {
     Some((available, hint))
 }
 
-pub fn set_virtual_cam(data_dir: &Path, enabled: bool, width: u32, height: u32) -> Result<(), String> {
+pub fn set_virtual_cam(
+    data_dir: &Path,
+    enabled: bool,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
     post_command(
         data_dir,
         "remote_desktop_set_virtual_cam",

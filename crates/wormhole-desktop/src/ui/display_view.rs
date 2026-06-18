@@ -66,7 +66,8 @@ impl View for DisplayView {
             .with_child(ui_text::title("虚拟显示器", self.font).finish())
             .with_child(ui_text::mono(self.summary.clone(), self.font).finish());
         Container::new(col.finish())
-                    .with_background(theme::panel())
-                    .with_uniform_padding(12.0).finish()
+            .with_background(theme::panel())
+            .with_uniform_padding(12.0)
+            .finish()
     }
 }

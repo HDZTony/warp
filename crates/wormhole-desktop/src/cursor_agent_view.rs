@@ -93,7 +93,8 @@ impl CursorAgentView {
             })
             .unwrap_or(FamilyId(0));
 
-        let mut log_text = String::from("Cursor Agent — 输入任务后按 Enter 发送（多轮对话自动 resume）。\n\n");
+        let mut log_text =
+            String::from("Cursor Agent — 输入任务后按 Enter 发送（多轮对话自动 resume）。\n\n");
         if let Some(agent_id) = Self::load_agent_id(&data_dir, &session_key) {
             log_text.push_str(&format!("已恢复会话 agentId={agent_id}\n\n"));
         }
@@ -304,9 +305,7 @@ impl CursorAgentView {
         let parsed: CursorScriptOutput = serde_json::from_str(&stdout)
             .map_err(|e| format!("invalid cursor JSON: {e}; stdout={stdout}"))?;
         if !parsed.ok {
-            return Err(parsed
-                .error
-                .unwrap_or_else(|| "cursor agent failed".into()));
+            return Err(parsed.error.unwrap_or_else(|| "cursor agent failed".into()));
         }
         Ok(parsed)
     }
@@ -331,12 +330,10 @@ impl CursorAgentView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(32));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(32));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -380,11 +377,7 @@ impl View for CursorAgentView {
             .map(|s| s.clone())
             .unwrap_or_else(|_| "…".into());
         let log = self.log.lock().map(|s| s.clone()).unwrap_or_default();
-        let input = self
-            .input
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let input = self.input.lock().map(|s| s.clone()).unwrap_or_default();
         let prompt_line = format!("> {input}_");
 
         let body = ConstrainedBox::new(
@@ -513,8 +506,7 @@ impl CursorAgentViewHandle {
 
             let s = self.submit.clone();
             std::thread::spawn(move || {
-                let resume_id =
-                    CursorAgentView::load_agent_id(&s.data_dir, &s.session_key);
+                let resume_id = CursorAgentView::load_agent_id(&s.data_dir, &s.session_key);
                 let result = CursorAgentView::run_cursor_turn(
                     &s.node_binary,
                     &s.cursor_script,
@@ -531,8 +523,11 @@ impl CursorAgentViewHandle {
                             .as_deref()
                             .filter(|id| CursorAgentView::is_safe_agent_id(id))
                         {
-                            let _ =
-                                CursorAgentView::save_agent_id(&s.data_dir, &s.session_key, agent_id);
+                            let _ = CursorAgentView::save_agent_id(
+                                &s.data_dir,
+                                &s.session_key,
+                                agent_id,
+                            );
                         }
                         if let Some(content) = output.content.filter(|c| !c.trim().is_empty()) {
                             CursorAgentView::append_log(&s.log, &format!("\n{content}\n"));

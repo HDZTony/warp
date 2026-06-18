@@ -201,12 +201,10 @@ impl CodexTerminalView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(16));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(16));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -297,10 +295,7 @@ impl View for CodexTerminalView {
         .with_uniform_padding(8.)
         .finish();
 
-        Flex::column()
-            .with_child(header)
-            .with_child(body)
-            .finish()
+        Flex::column().with_child(header).with_child(body).finish()
     }
 }
 

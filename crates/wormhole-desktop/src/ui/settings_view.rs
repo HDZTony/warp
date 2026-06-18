@@ -1,7 +1,7 @@
+use warpui::elements::ChildView;
 use warpui::elements::{Container, Flex, ParentElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, UpdateView, View, ViewContext};
-use warpui::elements::ChildView;
 
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;

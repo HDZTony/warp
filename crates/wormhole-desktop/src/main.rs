@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use clap::Parser;
 use coordinator::{CoordinatorState, CoordinatorView};
+use pathfinder_geometry::vector::vec2f;
 use tracing_subscriber::EnvFilter;
 use ui::app_shell::AppShellView;
 use ui::codex_provider_import_model::new_shared_import_model;
 use ui::core_handle::CoreHandle;
-use pathfinder_geometry::vector::vec2f;
 use warpui::platform::{AppBuilder, AppCallbacks, WindowBounds};
 use wormhole_desktop_core::bootstrap_desktop;
 
@@ -37,6 +37,8 @@ struct Args {
     /// Wormhole data directory (`%LOCALAPPDATA%\\Wormhole` on Windows).
     #[arg(long, value_name = "DIR")]
     data_dir: Option<PathBuf>,
+    #[arg(long)]
+    bridge_only: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -64,6 +66,11 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     let mut data_dir = args.data_dir.unwrap_or_else(default_data_dir);
+
+    if wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
+        wormhole_desktop_core::rdp_headless::run();
+        return Ok(());
+    }
 
     #[cfg(windows)]
     let mut pending_deeplink: Option<String> = None;
@@ -96,6 +103,15 @@ fn main() -> Result<()> {
 
     let tokio = tokio::runtime::Runtime::new()?;
     let desktop_runtime = tokio.block_on(bootstrap_desktop(Some(data_dir.clone()), None))?;
+    if args.bridge_only {
+        tracing::info!(
+            data_dir = %data_dir.display(),
+            "wormhole-desktop command bridge running without WarpUI shell"
+        );
+        loop {
+            std::thread::park();
+        }
+    }
     let core = CoreHandle::new(desktop_runtime, tokio);
 
     let coordinator = Arc::new(Mutex::new(CoordinatorState::new(data_dir.clone())));

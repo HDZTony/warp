@@ -5,7 +5,9 @@ use warpui::elements::{
     EventHandler, Flex, MainAxisSize, ParentElement, Radius, Shrinkable,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle};
+use warpui::{
+    AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
+};
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::chat::ChatShellView;
@@ -63,8 +65,7 @@ impl AppShellView {
         pending_deeplink: Option<String>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let coordinator_view =
-            ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
+        let coordinator_view = ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
         let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
         let devices = ctx.add_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
@@ -76,7 +77,9 @@ impl AppShellView {
         if let Some(url) = pending_deeplink {
             tab = AppTab::Settings;
             let settings_handle = settings.clone();
-            ctx.update_view(&settings_handle, |view, ctx| view.open_deeplink_url(url, ctx));
+            ctx.update_view(&settings_handle, |view, ctx| {
+                view.open_deeplink_url(url, ctx)
+            });
         }
         let mut view = Self {
             tab,
@@ -220,7 +223,11 @@ impl AppShellView {
                 ColorU::new(0, 0, 0, 0)
             };
             let label = ui_text::body(Self::tab_label(tab), self.font)
-                .with_color(if selected { theme::accent() } else { theme::text() })
+                .with_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::text()
+                })
                 .finish();
             let tab_btn = Container::new(
                 EventHandler::new(label)
