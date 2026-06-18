@@ -4094,7 +4094,7 @@ impl Workspace {
                     ctx,
                 );
                 if wormhole_embed::is_embedded() {
-                    self.bootstrap_wormhole_embed_codex(ctx);
+                    self.bootstrap_wormhole_embed_agent(ctx);
                 } else {
                     self.check_and_trigger_onboarding(ctx);
                 }
@@ -18479,15 +18479,15 @@ impl Workspace {
         });
     }
 
-    /// Spawn Codex CLI in the first terminal tab when embedded inside Wormhole.
-    fn bootstrap_wormhole_embed_codex(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Spawn the preferred agent CLI in the first terminal tab when embedded inside Wormhole.
+    fn bootstrap_wormhole_embed_agent(&mut self, ctx: &mut ViewContext<Self>) {
         if !wormhole_embed::take_embed_bootstrap_slot() {
             return;
         }
         AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
             auth_manager.set_user_onboarded(ctx);
         });
-        let command = wormhole_embed::default_codex_launch_command();
+        let command = wormhole_embed::default_launch_command();
         let initial_load_complete = UpdateManager::as_ref(ctx).initial_load_complete();
         ctx.spawn(initial_load_complete, move |me, _, ctx| {
             if me.active_session_view(ctx).is_none() {
@@ -18508,6 +18508,71 @@ impl Workspace {
                 });
             }
         });
+        self.start_wormhole_remote_queue_poll(ctx);
+    }
+
+    fn start_wormhole_remote_queue_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        if !wormhole_embed::is_embedded() {
+            return;
+        }
+        let delay = std::time::Duration::from_millis(500);
+        ctx.spawn(async move { async_std::task::sleep(delay).await }, |me, _, ctx| {
+            me.poll_wormhole_remote_queue(ctx);
+            me.start_wormhole_remote_queue_poll(ctx);
+        });
+    }
+
+    fn poll_wormhole_remote_queue(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(data_dir) = wormhole_embed::data_dir() else {
+            return;
+        };
+        let Some(dispatch) = wormhole_embed::remote_queue::poll_remote_queue(&data_dir) else {
+            return;
+        };
+        let task_id = dispatch.item.id.clone();
+        let command = dispatch.command.clone();
+        wormhole_embed::remote_queue::acknowledge_success(&data_dir, &task_id, &command);
+        self.add_new_session_tab_with_default_mode(
+            NewSessionSource::Tab,
+            Some(ctx.window_id()),
+            None,
+            None,
+            false,
+            ctx,
+        );
+        if let Some(terminal_view) = self.active_session_view(ctx) {
+            terminal_view.update(ctx, |view, ctx| {
+                view.input().update(ctx, |input, ctx| {
+                    input.try_execute_command(&command, ctx);
+                });
+            });
+        }
+        ctx.notify();
+    }
+
+    fn wormhole_embed_select_agent(
+        &mut self,
+        agent: wormhole_embed::PreferredAgent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        super::wormhole_embed_toolbar::persist_preferred_agent(agent);
+        let command = super::wormhole_embed_toolbar::launch_command_for(agent);
+        self.add_new_session_tab_with_default_mode(
+            NewSessionSource::Tab,
+            Some(ctx.window_id()),
+            None,
+            None,
+            false,
+            ctx,
+        );
+        if let Some(terminal_view) = self.active_session_view(ctx) {
+            terminal_view.update(ctx, |view, ctx| {
+                view.input().update(ctx, |input, ctx| {
+                    input.try_execute_command(&command, ctx);
+                });
+            });
+        }
+        ctx.notify();
     }
 
     /// Opens the Codex modal.
@@ -23179,6 +23244,9 @@ impl TypedActionView for Workspace {
             OpenNetworkLogPane => {
                 self.open_network_log_pane(ctx);
             }
+            WormholeEmbedSelectAgent(agent) => {
+                self.wormhole_embed_select_agent(*agent, ctx);
+            }
             FixSettingsWithOz { error_description } => {
                 use crate::ai::skills::SkillManager;
                 let modify_settings_skill = SkillManager::as_ref(ctx)
@@ -25236,6 +25304,13 @@ impl View for Workspace {
                 .finish()
         } else {
             let mut outer_column = Flex::column();
+            if wormhole_embed::is_embedded() {
+                outer_column.add_child(super::wormhole_embed_toolbar::render_agent_switcher(
+                    appearance.ui_font_family(),
+                    super::wormhole_embed_toolbar::current_preferred_agent(),
+                    appearance,
+                ));
+            }
             if tab_bar_mode == ShowTabBar::Stacked {
                 outer_column.add_child(self.render_tab_bar(self.tab_fixed_width, appearance, app));
             }

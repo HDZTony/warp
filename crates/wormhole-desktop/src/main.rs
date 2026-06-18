@@ -3,6 +3,7 @@ mod agent_terminal_view;
 #[cfg(any(windows, target_os = "macos"))]
 mod computer_use_view;
 mod coordinator;
+#[allow(dead_code)]
 mod cursor_agent_view;
 mod rdp_extras_ui;
 mod rdp_host_control_view;
@@ -69,18 +70,22 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     {
         use wormhole_desktop_platform_windows::{
-            handle_startup_args, register_single_instance, DeepLinkState, TrayController,
+            desktop_process_entry, handle_startup_args, DeepLinkState, DesktopProcessRole,
+            TrayController,
         };
         let deep_link = DeepLinkState::default();
         let argv: Vec<String> = std::env::args().collect();
         if let Some(from_arg) = handle_startup_args(&argv, &deep_link) {
             data_dir = from_arg;
         }
-        if let Ok(guard) = deep_link.pending_url.lock() {
-            pending_deeplink = guard.clone();
+        match desktop_process_entry(&argv, &deep_link, &data_dir) {
+            DesktopProcessRole::SecondaryForwardedDeeplink
+            | DesktopProcessRole::SecondaryDuplicate => return Ok(()),
+            DesktopProcessRole::Primary => {}
         }
-        if !register_single_instance("dev.wormhole.desktop") {
-            anyhow::bail!("another Wormhole desktop instance is already running");
+        pending_deeplink = deep_link.take_pending_url();
+        if let Some(ref url) = pending_deeplink {
+            wormhole_desktop_core::deeplink_commands::on_deeplink_received(&data_dir, url);
         }
         let _tray = TrayController::spawn("Wormhole")?;
     }

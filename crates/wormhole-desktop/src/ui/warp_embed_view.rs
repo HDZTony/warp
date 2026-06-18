@@ -5,14 +5,15 @@ use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement, Shrinkable,
+    Container, CrossAxisAlignment, EventHandler, Flex, MainAxisSize, ParentElement, Shrinkable,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use warpui::{AppContext, DispatchEventResult, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
 
 const HOST_X: i32 = 24;
 const HOST_Y: i32 = 96;
@@ -23,6 +24,7 @@ const HOST_H: i32 = 640;
 pub enum WarpEmbedAction {
     Spawn,
     SetVisible(bool),
+    SelectAgent(PreferredAgent),
 }
 
 struct EmbedState {
@@ -38,11 +40,13 @@ pub struct WarpEmbedView {
     font: FamilyId,
     state: Arc<Mutex<EmbedState>>,
     visible: bool,
+    preferred_agent: PreferredAgent,
 }
 
 impl WarpEmbedView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let preferred_agent = warp_embed_prefs::load_prefs(&core.data_dir()).preferred_agent;
         let view = Self {
             core,
             font,
@@ -54,8 +58,26 @@ impl WarpEmbedView {
                 spawn_attempted: false,
             })),
             visible: false,
+            preferred_agent,
         };
         view
+    }
+
+    pub fn focus_with_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
+        self.preferred_agent = agent;
+        let data_dir = self.core.data_dir();
+        let core = self.core.clone();
+        thread::spawn(move || {
+            let _ = core.block_on(async {
+                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
+            });
+        });
+        if !self.visible {
+            self.set_tab_visible(true, ctx);
+        } else {
+            self.update_status(ctx);
+        }
+        ctx.notify();
     }
 
     pub fn set_tab_visible(&mut self, visible: bool, ctx: &mut ViewContext<Self>) {
@@ -75,6 +97,38 @@ impl WarpEmbedView {
         ctx.notify();
     }
 
+    fn select_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
+        if self.preferred_agent == agent {
+            return;
+        }
+        self.preferred_agent = agent;
+        let data_dir = self.core.data_dir();
+        let core = self.core.clone();
+        thread::spawn(move || {
+            let _ = core.block_on(async {
+                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
+            });
+        });
+        self.update_status(ctx);
+        ctx.notify();
+    }
+
+    fn update_status(&self, ctx: &mut ViewContext<Self>) {
+        let agent_label = match self.preferred_agent {
+            PreferredAgent::Codex => "Codex",
+            PreferredAgent::Cursor => "Cursor",
+        };
+        let mut state = self.state.lock().expect("embed state");
+        if state.child.is_some() {
+            state.status = format!(
+                "Warp 已嵌入 · 当前 Agent：{agent_label}（在 Warp 顶栏切换将新开 CLI tab）"
+            );
+        } else {
+            state.status = format!("正在启动 Warp…（首选 Agent：{agent_label}）");
+        }
+        ctx.notify();
+    }
+
     fn spawn_child(&mut self, ctx: &mut ViewContext<Self>) {
         {
             let mut state = self.state.lock().expect("embed state");
@@ -88,10 +142,12 @@ impl WarpEmbedView {
 
         let core = self.core.clone();
         let shared = Arc::clone(&self.state);
+        let preferred_agent = self.preferred_agent;
         thread::spawn(move || {
             let launch = core.block_on(async {
-                wormhole_desktop_core::warp_child_env::prepare_warp_child_launch(core.app_state())
-                    .await
+                let state = core.app_state();
+                warp_embed_prefs::set_preferred_agent(&state.data_dir, preferred_agent).await?;
+                wormhole_desktop_core::warp_child_env::prepare_warp_child_launch(state).await
             });
             let launch = match launch {
                 Ok(launch) => launch,
@@ -157,7 +213,12 @@ impl WarpEmbedView {
                             );
                             let mut state = shared.lock().expect("embed state");
                             state.child_hwnd = Some(hwnd as isize);
-                            state.status = "Warp 已嵌入".to_string();
+                            let agent_label = match preferred_agent {
+                                PreferredAgent::Codex => "Codex",
+                                PreferredAgent::Cursor => "Cursor",
+                            };
+                            state.status =
+                                format!("Warp 已嵌入 · 当前 Agent：{agent_label}");
                             return;
                         }
                     }
@@ -168,6 +229,47 @@ impl WarpEmbedView {
             let mut state = shared.lock().expect("embed state");
             state.status = "Warp 已在独立窗口运行（嵌入失败或未就绪）".to_string();
         });
+    }
+
+    fn agent_switcher(&self) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        for (agent, label) in [
+            (PreferredAgent::Codex, "Codex"),
+            (PreferredAgent::Cursor, "Cursor"),
+        ] {
+            let selected = self.preferred_agent == agent;
+            let bg = if selected {
+                theme::accent_bg(48)
+            } else {
+                ColorU::new(0, 0, 0, 0)
+            };
+            let color = if selected {
+                theme::accent()
+            } else {
+                theme::text()
+            };
+            let label_el = ui_text::body(label, self.font)
+                .with_color(color)
+                .finish();
+            let btn = Container::new(
+                EventHandler::new(label_el)
+                    .on_left_mouse_down(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(WarpEmbedAction::SelectAgent(agent));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+            )
+            .with_uniform_padding(8.0)
+            .with_background(bg)
+            .finish();
+            row.add_child(btn);
+        }
+        Container::new(row.finish())
+            .with_uniform_padding(4.0)
+            .with_background(theme::panel())
+            .finish()
     }
 }
 
@@ -195,6 +297,7 @@ impl View for WarpEmbedView {
                     .with_color(theme::text())
                     .finish(),
             )
+            .with_child(self.agent_switcher())
             .with_child(
                 ui_text::body(status, self.font)
                     .with_color(theme::muted())
@@ -205,7 +308,7 @@ impl View for WarpEmbedView {
                     1.0,
                     Container::new(
                         warpui::elements::Text::new(
-                            "完整 Warp 终端与 Codex CLI 显示在上方原生区域。",
+                            "在上方原生区域使用完整 Warp 终端；Codex 与 Cursor 通过 CLI（codex / agent）交互。",
                             self.font,
                             ui_text::BODY_SIZE,
                         )
@@ -230,6 +333,7 @@ impl TypedActionView for WarpEmbedView {
         match action {
             WarpEmbedAction::Spawn => self.spawn_child(ctx),
             WarpEmbedAction::SetVisible(visible) => self.set_tab_visible(*visible, ctx),
+            WarpEmbedAction::SelectAgent(agent) => self.select_agent(*agent, ctx),
         }
     }
 }

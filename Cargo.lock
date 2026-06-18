@@ -20574,7 +20574,6 @@ dependencies = [
  "wormhole-desktop-core",
  "wormhole-desktop-platform-windows",
  "wormhole-desktop-rdp",
- "wormhole-native-ipc",
 ]
 
 [[package]]
@@ -20676,48 +20675,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wormhole-native-ipc"
-version = "0.1.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "wormhole-native-ui"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "asset_cache",
- "async-channel",
- "axum 0.7.9",
- "clap",
- "command",
- "computer-use",
- "display-core",
- "display-server",
- "futures",
- "image",
- "log",
- "pathfinder_color",
- "pathfinder_geometry",
- "portable-pty",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "ureq 2.12.1",
- "uuid",
- "vt100",
- "warpui",
- "warpui_core",
- "wormhole-desktop-rdp",
- "wormhole-native-ipc",
-]
-
-[[package]]
 name = "wormhole-nautilus"
 version = "0.1.1"
 dependencies = [
@@ -20730,6 +20687,8 @@ name = "wormhole_embed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
  "windows 0.62.2",
 ]
 

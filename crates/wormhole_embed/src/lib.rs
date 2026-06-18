@@ -3,6 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod prefs;
+pub mod remote_queue;
+pub use prefs::{PreferredAgent, WarpEmbedPrefs};
+
 static EMBED_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 
 pub const EMBEDDED_ENV: &str = "WORMHOLE_EMBEDDED";
@@ -10,6 +14,10 @@ pub const DATA_DIR_ENV: &str = "WORMHOLE_DATA_DIR";
 pub const PARENT_HWND_ENV: &str = "WORMHOLE_PARENT_HWND";
 pub const CODEX_PROFILE_ENV: &str = "WORMHOLE_CODEX_PROFILE";
 pub const SPAWN_CODEX_ENV: &str = "WORMHOLE_SPAWN_CODEX";
+pub const SPAWN_CURSOR_ENV: &str = "WORMHOLE_SPAWN_CURSOR";
+pub const PREFERRED_AGENT_ENV: &str = "WORMHOLE_PREFERRED_AGENT";
+pub const CURSOR_API_KEY_ENV: &str = "CURSOR_API_KEY";
+pub const CURSOR_MODEL_ENV: &str = "WORMHOLE_CURSOR_MODEL";
 
 /// Whether Warp was launched by Wormhole as an embedded child process.
 pub fn is_embedded() -> bool {
@@ -18,11 +26,34 @@ pub fn is_embedded() -> bool {
         .unwrap_or(false)
 }
 
-pub fn should_spawn_codex_tab() -> bool {
+pub fn should_spawn_agent_tab() -> bool {
     is_embedded()
         && std::env::var(SPAWN_CODEX_ENV)
             .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
             .unwrap_or(true)
+}
+
+pub fn should_spawn_codex_tab() -> bool {
+    should_spawn_agent_tab()
+}
+
+pub fn preferred_agent() -> PreferredAgent {
+    std::env::var(PREFERRED_AGENT_ENV)
+        .ok()
+        .map(|value| PreferredAgent::parse(&value))
+        .unwrap_or_else(|| {
+            data_dir()
+                .map(|dir| prefs::load_prefs(&dir).preferred_agent)
+                .unwrap_or_default()
+        })
+}
+
+pub fn data_dir() -> Option<PathBuf> {
+    std::env::var(DATA_DIR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 pub fn codex_profile() -> String {
@@ -32,7 +63,7 @@ pub fn codex_profile() -> String {
         .unwrap_or_else(|| "wormhole".to_string())
 }
 
-/// Shell command used to open Codex CLI in the first embedded terminal tab.
+/// Shell command used to open Codex CLI in an embedded terminal tab.
 pub fn default_codex_launch_command() -> String {
     let profile = codex_profile();
     if let Ok(bin) = std::env::var("WORMHOLE_CODEX_BIN") {
@@ -47,9 +78,27 @@ pub fn default_codex_launch_command() -> String {
     format!("codex --profile {profile}")
 }
 
-/// Returns true only once per process when embedded Codex bootstrap should run.
+/// Shell command used to open Cursor CLI (`agent`) in an embedded terminal tab.
+pub fn default_cursor_launch_command() -> String {
+    if let Ok(model) = std::env::var(CURSOR_MODEL_ENV) {
+        let model = model.trim();
+        if !model.is_empty() {
+            return format!("agent --model {model}");
+        }
+    }
+    "agent".to_string()
+}
+
+pub fn default_launch_command() -> String {
+    match preferred_agent() {
+        PreferredAgent::Codex => default_codex_launch_command(),
+        PreferredAgent::Cursor => default_cursor_launch_command(),
+    }
+}
+
+/// Returns true only once per process when embedded agent bootstrap should run.
 pub fn take_embed_bootstrap_slot() -> bool {
-    should_spawn_codex_tab() && !EMBED_BOOTSTRAPPED.swap(true, Ordering::SeqCst)
+    should_spawn_agent_tab() && !EMBED_BOOTSTRAPPED.swap(true, Ordering::SeqCst)
 }
 
 pub fn parent_hwnd() -> Option<isize> {
@@ -89,11 +138,29 @@ pub fn apply_codex_launch_env(
         if let Some(parent) = bin.parent() {
             prepend_path(parent);
         }
-        if let Some(name) = bin.file_name().and_then(|n| n.to_str()) {
-            std::env::set_var("WORMHOLE_CODEX_BIN", bin);
-            let _ = name;
-        }
+        std::env::set_var("WORMHOLE_CODEX_BIN", bin);
     }
+}
+
+/// Inject Codex + Cursor environment for embedded Warp.
+pub fn apply_embed_launch_env(
+    data_dir: &Path,
+    codex_home: &Path,
+    codex_api_key: &str,
+    codex_bin: Option<&Path>,
+    cursor_api_key: &str,
+    cursor_model: &str,
+    preferred: PreferredAgent,
+) {
+    apply_codex_launch_env(data_dir, codex_home, codex_api_key, codex_bin);
+    if !cursor_api_key.trim().is_empty() {
+        std::env::set_var(CURSOR_API_KEY_ENV, cursor_api_key.trim());
+    }
+    if !cursor_model.trim().is_empty() {
+        std::env::set_var(CURSOR_MODEL_ENV, cursor_model.trim());
+    }
+    std::env::set_var(PREFERRED_AGENT_ENV, preferred.as_str());
+    std::env::set_var(SPAWN_CURSOR_ENV, "1");
 }
 
 fn prepend_path(dir: &Path) {
@@ -121,6 +188,9 @@ pub fn spawn_env_map(
     api_key: &str,
     codex_bin: Option<&Path>,
     parent_hwnd: Option<isize>,
+    cursor_api_key: &str,
+    cursor_model: &str,
+    preferred: PreferredAgent,
 ) -> Vec<(String, String)> {
     let mut vars = Vec::new();
     vars.push((EMBEDDED_ENV.to_string(), "1".to_string()));
@@ -128,6 +198,8 @@ pub fn spawn_env_map(
     vars.push(("CODEX_HOME".to_string(), codex_home.display().to_string()));
     vars.push((CODEX_PROFILE_ENV.to_string(), codex_profile()));
     vars.push((SPAWN_CODEX_ENV.to_string(), "1".to_string()));
+    vars.push((SPAWN_CURSOR_ENV.to_string(), "1".to_string()));
+    vars.push((PREFERRED_AGENT_ENV.to_string(), preferred.as_str().to_string()));
     if !api_key.trim().is_empty() {
         vars.push(("WORMHOLE_AGENT_API_KEY".to_string(), api_key.trim().to_string()));
         vars.push((
@@ -140,6 +212,12 @@ pub fn spawn_env_map(
         if let Some(parent) = bin.parent() {
             vars.push(("WORMHOLE_CODEX_BIN_DIR".to_string(), parent.display().to_string()));
         }
+    }
+    if !cursor_api_key.trim().is_empty() {
+        vars.push((CURSOR_API_KEY_ENV.to_string(), cursor_api_key.trim().to_string()));
+    }
+    if !cursor_model.trim().is_empty() {
+        vars.push((CURSOR_MODEL_ENV.to_string(), cursor_model.trim().to_string()));
     }
     if let Some(hwnd) = parent_hwnd.filter(|v| *v != 0) {
         vars.push((PARENT_HWND_ENV.to_string(), format!("{hwnd}")));
@@ -185,5 +263,30 @@ mod tests {
         std::env::set_var("WORMHOLE_CODEX_PROFILE", "wormhole");
         let cmd = default_codex_launch_command();
         assert!(cmd.contains("--profile wormhole"));
+    }
+
+    #[test]
+    fn default_cursor_command_uses_model_env() {
+        std::env::set_var(CURSOR_MODEL_ENV, "composer-2.5");
+        let cmd = default_cursor_launch_command();
+        assert_eq!(cmd, "agent --model composer-2.5");
+    }
+
+    #[test]
+    fn spawn_env_map_includes_cursor_and_preferred_agent() {
+        let vars = spawn_env_map(
+            Path::new("C:\\Wormhole"),
+            Path::new("C:\\Wormhole\\codex"),
+            "codex-key",
+            None,
+            None,
+            "cursor-key",
+            "composer-2",
+            PreferredAgent::Cursor,
+        );
+        assert!(vars.iter().any(|(k, v)| k == CURSOR_API_KEY_ENV && v == "cursor-key"));
+        assert!(vars
+            .iter()
+            .any(|(k, v)| k == PREFERRED_AGENT_ENV && v == "cursor"));
     }
 }

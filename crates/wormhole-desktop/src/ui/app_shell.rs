@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use pathfinder_color::ColorU;
 use warpui::elements::{
     Border, ChildView, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
@@ -19,6 +20,7 @@ use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
 use crate::ui::warp_embed_view::{WarpEmbedAction, WarpEmbedView};
 use crate::ui_text;
+use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
@@ -76,7 +78,7 @@ impl AppShellView {
             let settings_handle = settings.clone();
             ctx.update_view(&settings_handle, |view, ctx| view.open_deeplink_url(url, ctx));
         }
-        Self {
+        let mut view = Self {
             tab,
             core,
             coordinator,
@@ -89,6 +91,96 @@ impl AppShellView {
             toolbox,
             settings,
             font,
+        };
+        view.start_warp_focus_poll(ctx);
+        view.start_deeplink_listener(ctx);
+        view
+    }
+
+    fn start_deeplink_listener(&self, ctx: &mut ViewContext<Self>) {
+        let mut rx = self.core.runtime().ctx.events.subscribe();
+        let settings = self.settings.clone();
+        Self::poll_deeplink_once(ctx, rx, settings);
+    }
+
+    fn poll_deeplink_once(
+        ctx: &mut ViewContext<Self>,
+        mut rx: tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>,
+        settings: ViewHandle<SettingsView>,
+    ) {
+        ctx.spawn(
+            async move { rx.recv().await },
+            move |_view, output, ctx| {
+                if let Ok(event) = output {
+                    if event.name == "deeplink-import" {
+                        if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
+                            let url = url.to_string();
+                            ctx.update_view(&settings, |view, ctx| {
+                                view.open_deeplink_url(url, ctx);
+                            });
+                        }
+                    }
+                }
+                Self::poll_deeplink_once(ctx, rx, settings);
+            },
+        );
+    }
+
+    fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {
+        let coordinator = Arc::clone(&self.coordinator);
+        let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if tick_tx.send_blocking(()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self::poll_warp_focus_once(ctx, tick_rx, coordinator);
+    }
+
+    fn poll_warp_focus_once(
+        ctx: &mut ViewContext<Self>,
+        tick_rx: async_channel::Receiver<()>,
+        coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
+    ) {
+        let waiter = tick_rx.clone();
+        ctx.spawn(
+            async move { waiter.recv().await },
+            move |view, output, ctx| {
+                if output.is_ok() {
+                    if let Ok(mut guard) = coordinator.lock() {
+                        if let Some(agent) = guard.take_pending_warp_focus() {
+                            view.focus_warp_tab(agent, ctx);
+                        } else if let Some(signal) =
+                            wormhole_desktop_core::warp_remote::take_focus_signal(guard.data_dir())
+                        {
+                            let agent = match signal.agent {
+                                wormhole_desktop_core::warp_remote::WarpAgentKind::Codex => {
+                                    PreferredAgent::Codex
+                                }
+                                wormhole_desktop_core::warp_remote::WarpAgentKind::Cursor => {
+                                    PreferredAgent::Cursor
+                                }
+                            };
+                            view.focus_warp_tab(agent, ctx);
+                        }
+                    }
+                    Self::poll_warp_focus_once(ctx, tick_rx, coordinator);
+                }
+            },
+        );
+    }
+
+    fn focus_warp_tab(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
+        let warp_handle = self.warp.clone();
+        ctx.update_view(&warp_handle, |view, ctx| {
+            view.focus_with_agent(agent, ctx);
+        });
+        if self.tab != AppTab::Warp {
+            self.tab = AppTab::Warp;
+            ctx.notify();
         }
     }
 

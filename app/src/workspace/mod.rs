@@ -23,6 +23,7 @@ pub mod tab_settings;
 mod toast_stack;
 pub mod util;
 pub mod view;
+mod wormhole_embed_toolbar;
 
 pub use action::{
     AutoCloudHandoffTrigger, CommandSearchOptions, InitContent, RestoreConversationLayout,

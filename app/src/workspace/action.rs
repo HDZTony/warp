@@ -788,6 +788,8 @@ pub enum WorkspaceAction {
     /// Opens (or focuses) the in-app network log pane as a right-split of the
     /// active pane group. Gated on `ContextFlag::NetworkLogConsole`.
     OpenNetworkLogPane,
+    /// Switch embedded Codex/Cursor agent inside Wormhole's Warp panel.
+    WormholeEmbedSelectAgent(wormhole_embed::PreferredAgent),
 }
 
 impl From<&WorkspaceAction> for LoginGatedFeature {
@@ -1089,6 +1091,7 @@ impl WorkspaceAction {
             | ShowCloudModeV2EnvironmentCreationModal
             | OpenCreateAuthSecretModal { .. }
             | OpenNetworkLogPane => false,
+            WormholeEmbedSelectAgent(_) => false,
             #[cfg(debug_assertions)]
             ShowHoaOnboardingFlow => false,
             #[cfg(target_family = "wasm")]

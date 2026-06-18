@@ -16,11 +16,12 @@ use wormhole_desktop_rdp::RdpRuntime;
 
 use wormhole_native_ipc::AgentTerminalBackend;
 
+use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
+
 use crate::agent_events_view::AgentEventsView;
 use crate::agent_terminal_view::CodexTerminalView;
 #[cfg(any(windows, target_os = "macos"))]
 use crate::computer_use_view::ComputerUseView;
-use crate::cursor_agent_view::CursorAgentView;
 use crate::rdp_view::RdpViewerView;
 use crate::rdp_host_control_view::RdpHostControlView;
 use crate::workspace_rdp_view::new_workspace_rdp_view;
@@ -118,6 +119,11 @@ pub enum UiCommand {
     FocusWorkspaceHud {
         window_key: String,
     },
+    RunWarpRemotePrompt {
+        task_id: String,
+        agent: PreferredAgent,
+        prompt: String,
+    },
     Shutdown,
 }
 
@@ -133,6 +139,7 @@ pub struct CoordinatorState {
     host_control_window: Option<WindowId>,
     workspace_hud_windows: HashMap<String, WindowId>,
     rdp_runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
+    pending_warp_focus: Option<PreferredAgent>,
 }
 
 impl CoordinatorState {
@@ -149,7 +156,23 @@ impl CoordinatorState {
             host_control_window: None,
             workspace_hud_windows: HashMap::new(),
             rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(data_dir))),
+            pending_warp_focus: None,
         }
+    }
+
+    pub fn take_pending_warp_focus(&mut self) -> Option<PreferredAgent> {
+        self.pending_warp_focus.take()
+    }
+
+    fn request_warp_focus(&mut self, agent: PreferredAgent) {
+        self.pending_warp_focus = Some(agent);
+    }
+
+    pub fn focus_warp_agent(&mut self, agent: PreferredAgent) {
+        let mut prefs = warp_embed_prefs::load_prefs(&self.data_dir);
+        prefs.preferred_agent = agent;
+        let _ = warp_embed_prefs::save_prefs(&self.data_dir, &prefs);
+        self.request_warp_focus(agent);
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -240,36 +263,15 @@ impl CoordinatorView {
                     reconnect: _,
                 } => self.focus_rdp_window(ctx, &window_key),
                 UiCommand::OpenAgent {
-                    window_key,
-                    title,
-                    session_key,
                     backend,
-                    cwd,
-                    profile,
-                    codex_home,
-                    api_key,
-                    codex_binary,
-                    node_binary,
-                    cursor_script,
-                    model,
-                    cursor_workdir,
-                } => self.open_agent_window(
-                    ctx,
-                    &window_key,
-                    &title,
-                    &session_key,
-                    backend,
-                    codex_binary,
-                    codex_home,
-                    api_key,
-                    profile,
-                    cwd,
-                    node_binary,
-                    cursor_script,
-                    model,
-                    cursor_workdir,
-                ),
-                UiCommand::FocusAgent { window_key } => self.focus_agent_window(ctx, &window_key),
+                    ..
+                } => self.focus_warp_for_agent(backend, ctx),
+                UiCommand::FocusAgent { window_key: _ } => {
+                    if let Ok(mut guard) = self.state.lock() {
+                        let agent = warp_embed_prefs::load_prefs(&guard.data_dir).preferred_agent;
+                        guard.focus_warp_agent(agent);
+                    }
+                }
                 UiCommand::OpenComputerUse {
                     window_key,
                     title,
@@ -358,6 +360,26 @@ impl CoordinatorView {
                 UiCommand::FocusWorkspaceHud { window_key } => {
                     self.focus_workspace_hud_window(ctx, &window_key);
                 }
+                UiCommand::RunWarpRemotePrompt {
+                    agent,
+                    task_id,
+                    prompt,
+                } => {
+                    if let Ok(mut guard) = self.state.lock() {
+                        let data_dir = guard.data_dir().to_path_buf();
+                        guard.focus_warp_agent(agent);
+                        let agent_kind = match agent {
+                            PreferredAgent::Codex => wormhole_desktop_core::warp_remote::WarpAgentKind::Codex,
+                            PreferredAgent::Cursor => wormhole_desktop_core::warp_remote::WarpAgentKind::Cursor,
+                        };
+                        let _ = wormhole_desktop_core::warp_remote::enqueue_prompt(
+                            &data_dir,
+                            &task_id,
+                            agent_kind,
+                            &prompt,
+                        );
+                    }
+                }
                 UiCommand::Shutdown => {
                     ctx.terminate_app(TerminationMode::Cancellable, None);
                 }
@@ -402,6 +424,17 @@ impl CoordinatorView {
         ctx.windows().show_window_and_focus_app(window_id);
     }
 
+    fn focus_warp_for_agent(&self, backend: AgentTerminalBackend, _ctx: &mut ViewContext<Self>) {
+        let agent = match backend {
+            AgentTerminalBackend::Cursor => PreferredAgent::Cursor,
+            AgentTerminalBackend::Codex => PreferredAgent::Codex,
+        };
+        if let Ok(mut guard) = self.state.lock() {
+            guard.focus_warp_agent(agent);
+        }
+    }
+
+    #[allow(dead_code)]
     fn open_agent_window(
         &self,
         ctx: &mut ViewContext<Self>,
@@ -441,25 +474,7 @@ impl CoordinatorView {
 
         let window_id = match backend {
             AgentTerminalBackend::Cursor => {
-                let node = node_binary.expect("node binary required for cursor");
-                let script = cursor_script.expect("cursor script required");
-                let workdir = cursor_workdir
-                    .or(cwd.clone())
-                    .unwrap_or_else(|| data_dir.clone());
-                let model = model.unwrap_or_else(|| "composer-2.5".to_string());
-                let (window_id, _) = ctx.add_window(options, move |view_ctx| {
-                    CursorAgentView::new(
-                        view_ctx,
-                        data_dir,
-                        session_key,
-                        node,
-                        script,
-                        workdir,
-                        api_key,
-                        model,
-                    )
-                });
-                window_id
+                unreachable!("Cursor agent windows are routed to the Warp embed tab");
             }
             AgentTerminalBackend::Codex => {
                 let codex_binary = codex_binary.expect("codex binary required");
