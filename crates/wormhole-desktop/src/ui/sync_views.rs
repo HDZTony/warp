@@ -1,7 +1,7 @@
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{Container, Flex, ParentElement, Scrollable, ScrollableElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
-use pathfinder_geometry::vector::vec2f;
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
@@ -82,7 +82,8 @@ impl View for SyncView {
             col.add_child(ui_text::mono(line.clone(), self.font).finish());
         }
         Container::new(col.finish())
-                    .with_background(theme::panel())
-                    .with_uniform_padding(12.0).finish()
+            .with_background(theme::panel())
+            .with_uniform_padding(12.0)
+            .finish()
     }
 }

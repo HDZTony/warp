@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use wormhole_desktop_rdp::{RdpRuntime, settings};
+use wormhole_desktop_rdp::{settings, RdpRuntime};
 use wormhole_native_ipc::{InvokeRdpRequest, InvokeRdpResponse};
 
 #[derive(Debug, Deserialize)]
@@ -200,7 +200,12 @@ pub async fn dispatch(runtime: &RdpRuntime, request: InvokeRdpRequest) -> Invoke
                 Err(error) => return err(format!("invalid args: {error}")),
             };
             match runtime
-                .open_tunnel(&args.peer, &args.local_bind, &args.remote_host, args.remote_port)
+                .open_tunnel(
+                    &args.peer,
+                    &args.local_bind,
+                    &args.remote_host,
+                    args.remote_port,
+                )
                 .await
             {
                 Ok(()) => ok(Value::Null),

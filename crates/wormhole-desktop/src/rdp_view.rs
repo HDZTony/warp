@@ -19,8 +19,8 @@ use warpui_core::keymap::Keystroke;
 use wormhole_desktop_rdp::{decode_frame, ExtrasStateHandle, RdpRuntime};
 
 use crate::rdp_extras_ui::{
-    self, apply_keystroke, spawn_audio_muted, spawn_audio_volume, spawn_open_tunnel,
-    spawn_run_terminal, spawn_send_file, render_auth_panel, ActiveField, ExtrasPanel,
+    self, apply_keystroke, render_auth_panel, spawn_audio_muted, spawn_audio_volume,
+    spawn_open_tunnel, spawn_run_terminal, spawn_send_file, ActiveField, ExtrasPanel,
     ExtrasUiAction, ExtrasUiState, ViewerScale,
 };
 use crate::ui_text;
@@ -60,11 +60,7 @@ struct RdpInputBridge {
 
 impl RdpInputBridge {
     fn send(&self, event_type: u8, x: f32, y: f32, extra: f32) {
-        let session_id = self
-            .session_id
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
         let Some(session_id) = session_id else { return };
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
@@ -132,7 +128,9 @@ impl RdpViewerView {
         totp_code: Option<String>,
         fps: i32,
     ) -> Self {
-        Self::new_internal(ctx, runtime, peer, password, totp_code, fps, None, false, true, false)
+        Self::new_internal(
+            ctx, runtime, peer, password, totp_code, fps, None, false, true, false,
+        )
     }
 
     pub fn new_live(
@@ -210,9 +208,7 @@ impl RdpViewerView {
             let runtime = runtime.clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().expect("data_dir runtime");
-                rt.block_on(async {
-                    runtime.lock().await.data_dir().to_path_buf()
-                })
+                rt.block_on(async { runtime.lock().await.data_dir().to_path_buf() })
             })
             .join()
             .expect("data_dir join")
@@ -275,12 +271,10 @@ impl RdpViewerView {
 
     fn start_audio_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(1200));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::audio_poll_once(ctx, tick_rx);
@@ -301,11 +295,7 @@ impl RdpViewerView {
     }
 
     fn poll_audio_stats(&self) {
-        let session_id = self
-            .session_id
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
         let Some(session_id) = session_id else { return };
         let runtime = self.runtime.clone();
         let extras_ui = self.extras_ui.clone();
@@ -320,7 +310,9 @@ impl RdpViewerView {
         .ok()
         .flatten();
         let Some(stats) = stats else { return };
-        let Ok(mut guard) = extras_ui.lock() else { return };
+        let Ok(mut guard) = extras_ui.lock() else {
+            return;
+        };
         guard.audio_volume = stats.volume;
         guard.audio_muted = stats.muted;
         guard.audio_has_stream = stats.has_stream;
@@ -358,11 +350,7 @@ impl RdpViewerView {
     }
 
     fn disconnect_session(&self, ctx: &mut ViewContext<Self>) {
-        let session_id = self
-            .session_id
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
         if let Some(session_id) = session_id {
             let runtime = self.runtime.clone();
             std::thread::spawn(move || {
@@ -384,11 +372,7 @@ impl RdpViewerView {
     }
 
     fn send_ctrl_alt_del(&self) {
-        let session_id = self
-            .session_id
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
         let Some(session_id) = session_id else { return };
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
@@ -440,15 +424,18 @@ impl RdpViewerView {
         #[cfg(target_os = "macos")]
         {
             let extras_ui = self.extras_ui.clone();
-            ctx.open_file_picker(FilePickerConfiguration::new(), move |result, _ctx| {
-                if let Ok(paths) = result {
-                    if let Some(path) = paths.first() {
-                        if let Ok(mut guard) = extras_ui.lock() {
-                            guard.file_path = path.clone();
+            ctx.open_file_picker(
+                move |result, _ctx| {
+                    if let Ok(paths) = result {
+                        if let Some(path) = paths.first() {
+                            if let Ok(mut guard) = extras_ui.lock() {
+                                guard.file_path = path.clone();
+                            }
                         }
                     }
-                }
-            });
+                },
+                FilePickerConfiguration::new(),
+            );
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -462,12 +449,10 @@ impl RdpViewerView {
 
     fn start_frame_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(16));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::frame_poll_once(ctx, tick_rx);
@@ -560,12 +545,8 @@ impl RdpViewerView {
                                 "av1" => CodecType::Av1,
                                 _ => CodecType::H264,
                             };
-                            if let Some((width, height, rgb)) = decode_frame(
-                                session_id.clone(),
-                                codec,
-                                viewer_frame.data,
-                            )
-                            .await
+                            if let Some((width, height, rgb)) =
+                                decode_frame(session_id.clone(), codec, viewer_frame.data).await
                             {
                                 generation += 1;
                                 if let Ok(mut guard) = frame.lock() {
@@ -577,17 +558,16 @@ impl RdpViewerView {
                                 let push_vcam = extras_ui.as_ref().and_then(|ui| {
                                     ui.lock()
                                         .ok()
-                                        .filter(|g| g.virtual_cam_enabled && g.virtual_cam_available)
+                                        .filter(|g| {
+                                            g.virtual_cam_enabled && g.virtual_cam_available
+                                        })
                                         .map(|_| ())
                                 });
                                 if push_vcam.is_some() {
                                     let data_dir = data_dir.clone();
                                     std::thread::spawn(move || {
                                         let _ = crate::shell_bridge::push_virtual_cam_rgb(
-                                            &data_dir,
-                                            width,
-                                            height,
-                                            &rgb,
+                                            &data_dir, width, height, &rgb,
                                         );
                                     });
                                 }
@@ -646,11 +626,7 @@ impl View for RdpViewerView {
     }
 
     fn render(&self, _: &AppContext) -> Box<dyn Element> {
-        let _ui_gen = self
-            .ui_generation
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0);
+        let _ui_gen = self.ui_generation.lock().map(|g| *g).unwrap_or(0);
         let status = self
             .status
             .lock()
@@ -770,9 +746,12 @@ impl View for RdpViewerView {
                     .finish(),
             )
             .with_child(toolbar);
-        if let Some(auth) =
-            render_auth_panel(self.font, self.mono_font, &self.extras_ui, on_action.clone())
-        {
+        if let Some(auth) = render_auth_panel(
+            self.font,
+            self.mono_font,
+            &self.extras_ui,
+            on_action.clone(),
+        ) {
             header_column = header_column.with_child(auth);
         }
         if self.show_extras_tools {

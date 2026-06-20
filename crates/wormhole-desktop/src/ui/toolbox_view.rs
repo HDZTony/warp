@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{
     Container, DispatchEventResult, EventHandler, Flex, ParentElement, Scrollable,
     ScrollableElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
-use pathfinder_geometry::vector::vec2f;
 
 use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::ui::core_handle::CoreHandle;
@@ -37,12 +37,7 @@ impl ToolboxView {
             core,
             coordinator,
             font,
-            tools: vec![
-                "RDP Host 控制台",
-                "剪贴板历史",
-                "Graphite",
-                "HEVC 工具",
-            ],
+            tools: vec!["RDP Host 控制台", "剪贴板历史", "Graphite", "HEVC 工具"],
         }
     }
 
@@ -88,7 +83,9 @@ impl View for ToolboxView {
                     .finish(),
             );
         }
-        Container::new(grid.finish()).with_uniform_padding(8.0).finish()
+        Container::new(grid.finish())
+            .with_uniform_padding(8.0)
+            .finish()
     }
 }
 

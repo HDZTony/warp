@@ -118,9 +118,7 @@ impl View for ChatComposeView {
             )
             .with_child(ui_text::body(self.status.clone(), self.font).finish())
             .with_child(
-                Container::new(
-                    ui_text::body("点击输入区发送当前草稿（stub）", self.font).finish(),
-                )
+                Container::new(ui_text::body("点击输入区发送当前草稿（stub）", self.font).finish())
                     .with_background(theme::panel())
                     .with_uniform_padding(8.0)
                     .finish(),

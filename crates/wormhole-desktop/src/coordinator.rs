@@ -22,8 +22,9 @@ use crate::agent_events_view::AgentEventsView;
 use crate::agent_terminal_view::CodexTerminalView;
 #[cfg(any(windows, target_os = "macos"))]
 use crate::computer_use_view::ComputerUseView;
-use crate::rdp_view::RdpViewerView;
+use crate::cursor_agent_view::CursorAgentView;
 use crate::rdp_host_control_view::RdpHostControlView;
+use crate::rdp_view::RdpViewerView;
 use crate::workspace_rdp_view::new_workspace_rdp_view;
 use crate::workspace_session_hud_view::WorkspaceSessionHudView;
 
@@ -209,12 +210,10 @@ impl CoordinatorView {
 
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(16));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(16));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_once(ctx, tick_rx);
@@ -249,15 +248,9 @@ impl CoordinatorView {
                     password,
                     totp_code,
                     fps,
-                } => self.open_rdp_window(
-                    ctx,
-                    &window_key,
-                    &peer,
-                    &title,
-                    password,
-                    totp_code,
-                    fps,
-                ),
+                } => {
+                    self.open_rdp_window(ctx, &window_key, &peer, &title, password, totp_code, fps)
+                }
                 UiCommand::FocusRdp {
                     window_key,
                     reconnect: _,
@@ -325,13 +318,9 @@ impl CoordinatorView {
                     title,
                     target_node,
                     task_id,
-                } => self.open_agent_events_window(
-                    ctx,
-                    &window_key,
-                    &title,
-                    &target_node,
-                    &task_id,
-                ),
+                } => {
+                    self.open_agent_events_window(ctx, &window_key, &title, &target_node, &task_id)
+                }
                 UiCommand::FocusAgentEvents { window_key } => {
                     self.focus_agent_events_window(ctx, &window_key)
                 }
@@ -501,12 +490,7 @@ impl CoordinatorView {
     }
 
     #[cfg(any(windows, target_os = "macos"))]
-    fn open_computer_use_window(
-        &self,
-        ctx: &mut ViewContext<Self>,
-        window_key: &str,
-        title: &str,
-    ) {
+    fn open_computer_use_window(&self, ctx: &mut ViewContext<Self>, window_key: &str, title: &str) {
         if let Some(window_id) = self.computer_use_window_id(window_key) {
             ctx.windows().show_window_and_focus_app(window_id);
             return;
@@ -520,8 +504,7 @@ impl CoordinatorView {
             ..Default::default()
         };
 
-        let (window_id, _) =
-            ctx.add_window(options, |view_ctx| ComputerUseView::new(view_ctx));
+        let (window_id, _) = ctx.add_window(options, |view_ctx| ComputerUseView::new(view_ctx));
 
         {
             let mut guard = state.lock().expect("coordinator lock");
@@ -577,14 +560,7 @@ impl CoordinatorView {
         };
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
-            new_workspace_rdp_view(
-                view_ctx,
-                runtime,
-                peer,
-                password,
-                fps,
-                watermark_text,
-            )
+            new_workspace_rdp_view(view_ctx, runtime, peer, password, fps, watermark_text)
         });
 
         {
@@ -690,12 +666,7 @@ impl CoordinatorView {
         }
     }
 
-    fn open_host_control_window(
-        &self,
-        ctx: &mut ViewContext<Self>,
-        window_key: &str,
-        title: &str,
-    ) {
+    fn open_host_control_window(&self, ctx: &mut ViewContext<Self>, window_key: &str, title: &str) {
         if let Some(window_id) = self.host_control_window_id() {
             ctx.windows().show_window_and_focus_app(window_id);
             return;
@@ -780,9 +751,7 @@ impl CoordinatorView {
 
         {
             let mut guard = state.lock().expect("coordinator lock");
-            guard
-                .workspace_hud_windows
-                .insert(window_key, window_id);
+            guard.workspace_hud_windows.insert(window_key, window_id);
         }
         ctx.windows().show_window_and_focus_app(window_id);
     }

@@ -37,12 +37,17 @@ pub fn set_message(model: &SharedCodexProviderImportModel, message: impl Into<St
     }
 }
 
-pub fn snapshot_preview(model: &SharedCodexProviderImportModel) -> Option<DeepLinkImportPreviewDto> {
+pub fn snapshot_preview(
+    model: &SharedCodexProviderImportModel,
+) -> Option<DeepLinkImportPreviewDto> {
     model.lock().ok().and_then(|guard| guard.preview.clone())
 }
 
 pub fn snapshot_message(model: &SharedCodexProviderImportModel) -> String {
-    model.lock().map(|guard| guard.message.clone()).unwrap_or_default()
+    model
+        .lock()
+        .map(|guard| guard.message.clone())
+        .unwrap_or_default()
 }
 
 pub fn snapshot_importing(model: &SharedCodexProviderImportModel) -> bool {

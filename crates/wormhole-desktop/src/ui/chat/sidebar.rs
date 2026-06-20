@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{
     Container, DispatchEventResult, EventHandler, Flex, ParentElement, Scrollable,
     ScrollableElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
-use pathfinder_geometry::vector::vec2f;
 
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
@@ -118,8 +118,9 @@ impl View for ChatSidebarView {
             );
         }
         Container::new(col.finish())
-                    .with_uniform_padding(8.0)
-                    .with_background(theme::canvas()).finish()
+            .with_uniform_padding(8.0)
+            .with_background(theme::canvas())
+            .finish()
     }
 }
 

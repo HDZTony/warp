@@ -1,16 +1,18 @@
 use std::sync::{Arc, Mutex};
 
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{ChildView, Container, Flex, ParentElement, Scrollable, ScrollableElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
-use pathfinder_geometry::vector::vec2f;
 
 use crate::ui::chat::bubble::ChatBubbleView;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::chat_commands::{chat_list_messages, ChatMessageDto, ListChatMessagesParams};
+use wormhole_desktop_core::chat_commands::{
+    chat_list_messages, ChatMessageDto, ListChatMessagesParams,
+};
 
 pub struct ChatThreadView {
     core: CoreHandle,
@@ -71,18 +73,18 @@ impl ChatThreadView {
                     chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await
                 },
                 |view, output, ctx| {
-                match output {
-                    Ok(messages) => {
-                        view.messages = messages;
-                        view.rebuild_bubbles(ctx);
+                    match output {
+                        Ok(messages) => {
+                            view.messages = messages;
+                            view.rebuild_bubbles(ctx);
+                        }
+                        Err(_) => {
+                            view.messages.clear();
+                            view.bubbles.clear();
+                        }
                     }
-                    Err(_) => {
-                        view.messages.clear();
-                        view.bubbles.clear();
-                    }
-                }
-                ctx.notify();
-            },
+                    ctx.notify();
+                },
             );
         } else {
             self.messages.clear();
@@ -121,7 +123,8 @@ impl View for ChatThreadView {
             col.add_child(ChildView::new(bubble).finish());
         }
         Container::new(col.finish())
-                    .with_background(theme::panel())
-                    .with_uniform_padding(8.0).finish()
+            .with_background(theme::panel())
+            .with_uniform_padding(8.0)
+            .finish()
     }
 }

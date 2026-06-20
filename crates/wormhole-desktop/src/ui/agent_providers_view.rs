@@ -1,6 +1,6 @@
 use warpui::elements::{
-    Border, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, ParentElement,
-    CornerRadius, Radius,
+    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
+    ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -9,8 +9,8 @@ use wormhole_desktop_core::agent_provider_commands;
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
 
 use crate::ui::codex_provider_import_model::{
-    close_preview, open_preview, set_importing, set_message, SharedCodexProviderImportModel,
-    snapshot_importing, snapshot_message, snapshot_preview,
+    close_preview, open_preview, set_importing, set_message, snapshot_importing, snapshot_message,
+    snapshot_preview, SharedCodexProviderImportModel,
 };
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
@@ -190,11 +190,7 @@ impl AgentProvidersView {
         }
     }
 
-    fn action_button(
-        &self,
-        label: &str,
-        action: AgentProvidersAction,
-    ) -> Box<dyn Element> {
+    fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
         Container::new(
             EventHandler::new(
@@ -272,12 +268,10 @@ impl AgentProvidersView {
         }
         let importing = snapshot_importing(&self.import_model);
         let mut actions = Flex::row();
-        actions.add_child(
-            self.action_button(
-                if importing { "导入中…" } else { "导入" },
-                AgentProvidersAction::ConfirmImport,
-            ),
-        );
+        actions.add_child(self.action_button(
+            if importing { "导入中…" } else { "导入" },
+            AgentProvidersAction::ConfirmImport,
+        ));
         actions.add_child(self.action_button("取消", AgentProvidersAction::CancelImport));
         col.add_child(actions.finish());
         Container::new(col.finish())
@@ -316,13 +310,8 @@ impl View for AgentProvidersView {
         );
 
         let mut toolbar = Flex::row();
-        toolbar.add_child(
-            self.action_button("刷新", AgentProvidersAction::Refresh),
-        );
-        toolbar.add_child(self.action_button(
-            "从剪贴板导入",
-            AgentProvidersAction::ParseClipboard,
-        ));
+        toolbar.add_child(self.action_button("刷新", AgentProvidersAction::Refresh));
+        toolbar.add_child(self.action_button("从剪贴板导入", AgentProvidersAction::ParseClipboard));
         col.add_child(toolbar.finish());
 
         if let Some(preview) = snapshot_preview(&self.import_model) {
@@ -359,23 +348,16 @@ impl View for AgentProvidersView {
                 let mut row = Flex::row();
                 if !active {
                     let id = provider.id.clone();
-                    row.add_child(self.action_button(
-                        "启用",
-                        AgentProvidersAction::Activate(id),
-                    ));
+                    row.add_child(self.action_button("启用", AgentProvidersAction::Activate(id)));
                 }
                 if provider.usage_enabled {
                     let usage_id = provider.id.clone();
-                    row.add_child(self.action_button(
-                        "查询用量",
-                        AgentProvidersAction::QueryUsage(usage_id),
-                    ));
+                    row.add_child(
+                        self.action_button("查询用量", AgentProvidersAction::QueryUsage(usage_id)),
+                    );
                 }
                 let delete_id = provider.id.clone();
-                row.add_child(self.action_button(
-                    "删除",
-                    AgentProvidersAction::Delete(delete_id),
-                ));
+                row.add_child(self.action_button("删除", AgentProvidersAction::Delete(delete_id)));
                 col.add_child(row.finish());
             }
         }
@@ -389,7 +371,7 @@ impl View for AgentProvidersView {
     }
 }
 
-fn format_usage_result(result: &wormhole_desktop_core::agent_provider_commands::AgentUsageResultDto) -> String {
+fn format_usage_result(result: &agent_provider_commands::AgentUsageResultDto) -> String {
     if !result.success {
         return result
             .error

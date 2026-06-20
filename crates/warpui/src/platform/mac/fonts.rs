@@ -1,29 +1,29 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFType, ItemRef, TCFType};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef, UniChar};
 use core_graphics::display::CGSize;
 use core_graphics::font::CGGlyph;
-use core_text::font::{cascade_list_for_languages as ct_cascade_list_for_languages, CTFont};
+use core_text::font::{CTFont, cascade_list_for_languages as ct_cascade_list_for_languages};
 use core_text::font_descriptor::{
+    CTFontDescriptor, CTFontDescriptorCopyAttribute, SymbolicTraitAccessors, TraitAccessors,
     kCTFontFamilyNameAttribute, kCTFontLanguagesAttribute, kCTFontNameAttribute,
-    kCTFontOrientationHorizontal, CTFontDescriptor, CTFontDescriptorCopyAttribute,
-    SymbolicTraitAccessors, TraitAccessors,
+    kCTFontOrientationHorizontal,
 };
 use core_text::{font, font_collection, font_descriptor};
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use font_kit::font::Font;
 use font_kit::loaders::core_text::NativeFont;
-use futures::future::BoxFuture;
 use futures::FutureExt as _;
+use futures::future::BoxFuture;
 use itertools::Itertools as _;
 use ordered_float::OrderedFloat;
 use pathfinder_geometry::rect::RectI;
@@ -37,7 +37,7 @@ use warpui_core::rendering;
 use warpui_core::text_layout::{ClipConfig, StyleAndFont, TextAlignment, TextFrame};
 
 use super::text_layout::{layout_line, layout_text};
-use crate::fonts::font_kit::{properties_to_font_kit, Rasterizer};
+use crate::fonts::font_kit::{Rasterizer, properties_to_font_kit};
 
 struct FontFamily {
     name: String,
@@ -395,21 +395,28 @@ impl FontDB {
         })
     }
 
+    fn system_fallback_font_id(&self) -> Option<FontId> {
+        ["Helvetica Neue", "Helvetica", "Arial"]
+            .into_iter()
+            .find_map(|family| {
+                FontDB::descriptors_for_family(family)
+                    .as_ref()
+                    .and_then(|descriptors| descriptors.into_iter().next())
+                    .and_then(|descriptor| self.descriptor_to_font_id(descriptor))
+            })
+    }
+
     pub fn select_font(&self, family_id: FamilyId, properties: Properties) -> FontId {
         match self.font_selections.entry((family_id, properties)) {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
-                let family = &self
-                    .families
-                    .get(&family_id)
-                    .expect("FamilyId must correspond to a valid family");
-                let candidates = family
-                    .font_ids
-                    .iter()
-                    .map(|font_id| self.font(*font_id).properties())
-                    .collect::<Vec<_>>();
+                let font_id = if let Some(family) = self.families.get(&family_id) {
+                    let candidates = family
+                        .font_ids
+                        .iter()
+                        .map(|font_id| self.font(*font_id).properties())
+                        .collect::<Vec<_>>();
 
-                let font_id = {
                     if let Ok(idx) = font_kit::matching::find_best_match(
                         &candidates,
                         &properties_to_font_kit(properties),
@@ -421,6 +428,19 @@ impl FontDB {
                             .map(|idx| family.font_ids[idx])
                             .unwrap_or(family.font_ids[0])
                     }
+                } else {
+                    let fallback = self
+                        .system_fallback_font_id()
+                        .unwrap_or_else(|| panic!("FontDB could not load any macOS fallback font"));
+
+                    if self.font_selections.is_empty() {
+                        log::warn!(
+                            "invalid FamilyId {:?}; falling back to a macOS system font",
+                            family_id
+                        );
+                    }
+
+                    fallback
                 };
 
                 // Make sure we've loaded fallback fonts for the selected font.

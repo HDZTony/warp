@@ -1,7 +1,7 @@
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{Container, Flex, ParentElement, Scrollable, ScrollableElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
-use pathfinder_geometry::vector::vec2f;
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
@@ -64,7 +64,8 @@ impl View for DevicesView {
             .with_child(ui_text::title("设备 / 集群", self.font).finish())
             .with_child(ui_text::mono(self.summary.clone(), self.font).finish());
         Container::new(col.finish())
-                    .with_background(theme::panel())
-                    .with_uniform_padding(12.0).finish()
+            .with_background(theme::panel())
+            .with_uniform_padding(12.0)
+            .finish()
     }
 }
