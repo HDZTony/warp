@@ -14,7 +14,7 @@ use warpui::{
 use warpui_core::assets::asset_cache::AssetCache;
 use wormhole_desktop_rdp::RdpRuntime;
 
-use wormhole_native_ipc::AgentTerminalBackend;
+use crate::wormhole_native_ipc::AgentTerminalBackend;
 
 use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
 
@@ -255,10 +255,7 @@ impl CoordinatorView {
                     window_key,
                     reconnect: _,
                 } => self.focus_rdp_window(ctx, &window_key),
-                UiCommand::OpenAgent {
-                    backend,
-                    ..
-                } => self.focus_warp_for_agent(backend, ctx),
+                UiCommand::OpenAgent { backend, .. } => self.focus_warp_for_agent(backend, ctx),
                 UiCommand::FocusAgent { window_key: _ } => {
                     if let Ok(mut guard) = self.state.lock() {
                         let agent = warp_embed_prefs::load_prefs(&guard.data_dir).preferred_agent;
@@ -358,14 +355,15 @@ impl CoordinatorView {
                         let data_dir = guard.data_dir().to_path_buf();
                         guard.focus_warp_agent(agent);
                         let agent_kind = match agent {
-                            PreferredAgent::Codex => wormhole_desktop_core::warp_remote::WarpAgentKind::Codex,
-                            PreferredAgent::Cursor => wormhole_desktop_core::warp_remote::WarpAgentKind::Cursor,
+                            PreferredAgent::Codex => {
+                                wormhole_desktop_core::warp_remote::WarpAgentKind::Codex
+                            }
+                            PreferredAgent::Cursor => {
+                                wormhole_desktop_core::warp_remote::WarpAgentKind::Cursor
+                            }
                         };
                         let _ = wormhole_desktop_core::warp_remote::enqueue_prompt(
-                            &data_dir,
-                            &task_id,
-                            agent_kind,
-                            &prompt,
+                            &data_dir, &task_id, agent_kind, &prompt,
                         );
                     }
                 }

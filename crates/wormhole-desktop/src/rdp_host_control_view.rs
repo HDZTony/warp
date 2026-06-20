@@ -506,7 +506,7 @@ impl RdpHostControlView {
             .lock()
             .map(|u| (u.connect_password.clone(), u.connect_totp.clone()))
             .unwrap_or_default();
-        let window_key = wormhole_native_ipc::rdp_window_key(&host);
+        let window_key = crate::wormhole_native_ipc::rdp_window_key(&host);
         let title = format!("RDP · {host}");
         let password = if password.trim().is_empty() {
             None

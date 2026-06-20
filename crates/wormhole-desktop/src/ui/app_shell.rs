@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use pathfinder_color::ColorU;
+use std::sync::Arc;
 use warpui::elements::{
     Border, ChildView, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
     EventHandler, Flex, MainAxisSize, ParentElement, Radius, Shrinkable,
@@ -108,11 +108,12 @@ impl AppShellView {
 
     fn poll_deeplink_once(
         ctx: &mut ViewContext<Self>,
-        mut rx: tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>,
+        rx: tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>,
         settings: ViewHandle<SettingsView>,
     ) {
+        let mut waiter = rx.resubscribe();
         ctx.spawn(
-            async move { rx.recv().await },
+            async move { waiter.recv().await },
             move |_view, output, ctx| {
                 if let Ok(event) = output {
                     if event.name == "deeplink-import" {
@@ -132,12 +133,10 @@ impl AppShellView {
     fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {
         let coordinator = Arc::clone(&self.coordinator);
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_warp_focus_once(ctx, tick_rx, coordinator);

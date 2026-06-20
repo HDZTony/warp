@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tokio::net::TcpListener;
 use uuid::Uuid;
-use wormhole_native_ipc::{
+use crate::wormhole_native_ipc::{
     agent_window_key, session_file_path, workspace_window_key, ApiErrorBody, BridgeSessionFile,
     FocusAgentWindowRequest, FocusRdpWindowRequest, FocusWorkspaceRdpWindowRequest,
     FocusHostControlWindowRequest, FocusWorkspaceHudWindowRequest,
@@ -149,7 +149,7 @@ async fn open_rdp(
             }),
         ));
     }
-    let window_key = wormhole_native_ipc::rdp_window_key(&peer);
+    let window_key = crate::wormhole_native_ipc::rdp_window_key(&peer);
     {
         let mut guard = state.coordinator.lock().expect("coordinator lock");
         guard.enqueue(UiCommand::OpenRdp {
@@ -180,7 +180,7 @@ async fn focus_rdp(
             }),
         ));
     }
-    let window_key = wormhole_native_ipc::rdp_window_key(&peer);
+    let window_key = crate::wormhole_native_ipc::rdp_window_key(&peer);
     {
         let mut guard = state.coordinator.lock().expect("coordinator lock");
         guard.enqueue(UiCommand::FocusRdp {

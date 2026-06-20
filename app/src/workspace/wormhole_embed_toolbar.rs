@@ -3,7 +3,8 @@
 use pathfinder_color::ColorU;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::{
-    Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
+    ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
+    MainAxisSize, Padding,
     ParentElement, Text,
 };
 use warpui::fonts::FamilyId;
@@ -33,14 +34,14 @@ pub fn render_agent_switcher(
         let bg: ColorU = if is_selected {
             internal_colors::fg_overlay_2(theme).into()
         } else {
-            ColorU::new(0, 0, 0, 0)
+            ColorU::new(0, 0, 0, 0).into()
         };
         let fg: ColorU = if is_selected {
             theme.accent().into()
         } else {
             theme.foreground().into()
         };
-        let label_el = Text::new(label, font, 13.).with_color(fg).finish();
+        let label_el = Text::new(label, font, 13.).with_color(fg.into()).finish();
         let button = Container::new(
             EventHandler::new(label_el)
                 .on_left_mouse_down(move |ctx, _, _| {
@@ -62,14 +63,21 @@ pub fn render_agent_switcher(
     let body = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(row.finish())
-        .with_child(Container::new(hint).with_padding_left(12.0).finish())
+        .with_child(
+            Container::new(hint)
+                .with_padding(Padding::uniform(0.).with_left(12.0))
+                .finish(),
+        )
         .finish();
 
-    Container::new(body)
-        .with_padding_left(12.0)
-        .with_padding_right(12.0)
-        .with_background(theme.background())
-        .finish()
+    ConstrainedBox::new(
+        Container::new(body)
+            .with_padding(Padding::uniform(0.).with_left(12.0).with_right(12.0))
+            .with_background(theme.background())
+            .finish(),
+    )
+    .with_height(TOOLBAR_HEIGHT)
+    .finish()
 }
 
 pub fn current_preferred_agent() -> PreferredAgent {

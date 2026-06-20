@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Container, CrossAxisAlignment, EventHandler, Flex, MainAxisSize, ParentElement, Shrinkable,
+    Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
+    ParentElement, Shrinkable,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, DispatchEventResult, Element, Entity, TypedActionView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
@@ -68,9 +69,8 @@ impl WarpEmbedView {
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         thread::spawn(move || {
-            let _ = core.block_on(async {
-                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
-            });
+            let _ = core
+                .block_on(async { warp_embed_prefs::set_preferred_agent(&data_dir, agent).await });
         });
         if !self.visible {
             self.set_tab_visible(true, ctx);
@@ -105,9 +105,8 @@ impl WarpEmbedView {
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         thread::spawn(move || {
-            let _ = core.block_on(async {
-                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
-            });
+            let _ = core
+                .block_on(async { warp_embed_prefs::set_preferred_agent(&data_dir, agent).await });
         });
         self.update_status(ctx);
         ctx.notify();
@@ -218,8 +217,7 @@ impl WarpEmbedView {
                                 PreferredAgent::Codex => "Codex",
                                 PreferredAgent::Cursor => "Cursor",
                             };
-                            state.status =
-                                format!("Warp 已嵌入 · 当前 Agent：{agent_label}");
+                            state.status = format!("Warp 已嵌入 · 当前 Agent：{agent_label}");
                             return;
                         }
                     }
@@ -251,9 +249,7 @@ impl WarpEmbedView {
             } else {
                 theme::text()
             };
-            let label_el = ui_text::body(label, self.font)
-                .with_color(color)
-                .finish();
+            let label_el = ui_text::body(label, self.font).with_color(color).finish();
             let btn = Container::new(
                 EventHandler::new(label_el)
                     .on_left_mouse_down(move |ctx, _, _| {

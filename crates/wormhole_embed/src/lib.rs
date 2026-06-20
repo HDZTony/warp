@@ -114,7 +114,10 @@ pub fn parse_hwnd_env(name: &str) -> Option<isize> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
         isize::from_str_radix(hex, 16).ok().filter(|v| *v != 0)
     } else {
         trimmed.parse().ok().filter(|v| *v != 0)
@@ -202,9 +205,15 @@ pub fn spawn_env_map(
     vars.push((CODEX_PROFILE_ENV.to_string(), codex_profile()));
     vars.push((SPAWN_CODEX_ENV.to_string(), "1".to_string()));
     vars.push((SPAWN_CURSOR_ENV.to_string(), "1".to_string()));
-    vars.push((PREFERRED_AGENT_ENV.to_string(), preferred.as_str().to_string()));
+    vars.push((
+        PREFERRED_AGENT_ENV.to_string(),
+        preferred.as_str().to_string(),
+    ));
     if !api_key.trim().is_empty() {
-        vars.push(("WORMHOLE_AGENT_API_KEY".to_string(), api_key.trim().to_string()));
+        vars.push((
+            "WORMHOLE_AGENT_API_KEY".to_string(),
+            api_key.trim().to_string(),
+        ));
         vars.push((
             "WORMHOLE_DEEPSEEK_API_KEY".to_string(),
             api_key.trim().to_string(),
@@ -213,14 +222,23 @@ pub fn spawn_env_map(
     if let Some(bin) = codex_bin {
         vars.push(("WORMHOLE_CODEX_BIN".to_string(), bin.display().to_string()));
         if let Some(parent) = bin.parent() {
-            vars.push(("WORMHOLE_CODEX_BIN_DIR".to_string(), parent.display().to_string()));
+            vars.push((
+                "WORMHOLE_CODEX_BIN_DIR".to_string(),
+                parent.display().to_string(),
+            ));
         }
     }
     if !cursor_api_key.trim().is_empty() {
-        vars.push((CURSOR_API_KEY_ENV.to_string(), cursor_api_key.trim().to_string()));
+        vars.push((
+            CURSOR_API_KEY_ENV.to_string(),
+            cursor_api_key.trim().to_string(),
+        ));
     }
     if !cursor_model.trim().is_empty() {
-        vars.push((CURSOR_MODEL_ENV.to_string(), cursor_model.trim().to_string()));
+        vars.push((
+            CURSOR_MODEL_ENV.to_string(),
+            cursor_model.trim().to_string(),
+        ));
     }
     if let Some(hwnd) = parent_hwnd.filter(|v| *v != 0) {
         vars.push((PARENT_HWND_ENV.to_string(), format!("{hwnd}")));
@@ -287,7 +305,9 @@ mod tests {
             "composer-2",
             PreferredAgent::Cursor,
         );
-        assert!(vars.iter().any(|(k, v)| k == CURSOR_API_KEY_ENV && v == "cursor-key"));
+        assert!(vars
+            .iter()
+            .any(|(k, v)| k == CURSOR_API_KEY_ENV && v == "cursor-key"));
         assert!(vars
             .iter()
             .any(|(k, v)| k == PREFERRED_AGENT_ENV && v == "cursor"));

@@ -14,6 +14,7 @@ mod ui;
 mod ui_text;
 mod workspace_rdp_view;
 mod workspace_session_hud_view;
+mod wormhole_native_ipc;
 
 mod assets;
 

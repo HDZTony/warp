@@ -12,7 +12,7 @@ use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_native_ipc::host_control_window_key;
+use crate::wormhole_native_ipc::host_control_window_key;
 
 #[derive(Debug, Clone)]
 pub enum ToolboxAction {

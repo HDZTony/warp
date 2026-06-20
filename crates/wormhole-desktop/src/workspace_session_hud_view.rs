@@ -101,7 +101,7 @@ impl WorkspaceSessionHudView {
     }
 
     fn focus_workspace(&self) {
-        let window_key = wormhole_native_ipc::workspace_window_key(&self.session_id);
+        let window_key = crate::wormhole_native_ipc::workspace_window_key(&self.session_id);
         if let Ok(mut guard) = self.coordinator.lock() {
             guard.enqueue(UiCommand::FocusWorkspaceRdp { window_key });
         }
@@ -150,7 +150,7 @@ impl View for WorkspaceSessionHudView {
             let this = self.session_id.clone();
             let coord = self.coordinator.clone();
             move || {
-                let window_key = wormhole_native_ipc::workspace_window_key(&this);
+                let window_key = crate::wormhole_native_ipc::workspace_window_key(&this);
                 if let Ok(mut guard) = coord.lock() {
                     guard.enqueue(UiCommand::FocusWorkspaceRdp { window_key });
                 }
