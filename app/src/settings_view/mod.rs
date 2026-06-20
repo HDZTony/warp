@@ -76,9 +76,25 @@ mod admin_actions;
 mod agent_assisted_environment_modal;
 mod ai_page;
 mod appearance_page;
+#[cfg(not(feature = "wormhole-slim"))]
 mod billing_and_usage;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/billing_and_usage/mod.rs"]
+mod billing_and_usage;
+#[cfg(not(feature = "wormhole-slim"))]
 mod billing_and_usage_dispatch;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/billing_and_usage_dispatch.rs"]
+mod billing_and_usage_dispatch;
+#[cfg(not(feature = "wormhole-slim"))]
 mod billing_and_usage_page;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/billing_and_usage_page.rs"]
+mod billing_and_usage_page;
+#[cfg(not(feature = "wormhole-slim"))]
+mod billing_and_usage_page_v2;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/billing_and_usage_page_v2.rs"]
 mod billing_and_usage_page_v2;
 mod code_page;
 mod custom_inference_modal;
@@ -99,6 +115,10 @@ mod platform;
 mod platform_page;
 mod privacy;
 mod privacy_page;
+#[cfg(not(feature = "wormhole-slim"))]
+mod referrals_page;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/referrals_page.rs"]
 mod referrals_page;
 mod remove_custom_endpoint_confirmation_dialog;
 mod scripting_page;
@@ -106,10 +126,18 @@ mod settings_file_footer;
 pub(crate) mod settings_page;
 mod show_blocks_view;
 mod tab_menu;
+#[cfg(not(feature = "wormhole-slim"))]
+mod teams_page;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/teams_page.rs"]
 mod teams_page;
 mod telemetry;
 mod transfer_ownership_confirmation_modal;
 pub mod update_environment_form;
+#[cfg(not(feature = "wormhole-slim"))]
+mod warp_drive_page;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/settings_pages/warp_drive_page.rs"]
 mod warp_drive_page;
 mod warpify_page;
 
@@ -1306,14 +1334,20 @@ impl SettingsView {
                 "Agents",
                 SettingsSection::ai_subpages().to_vec(),
             )),
+            #[cfg(not(feature = "wormhole-slim"))]
             SettingsNavItem::Page(SettingsSection::BillingAndUsage),
             SettingsNavItem::Umbrella(SettingsUmbrella::new(
                 "Code",
-                vec![
-                    SettingsSection::CodeIndexing,
-                    SettingsSection::EditorAndCodeReview,
-                ],
+                if cfg!(feature = "wormhole-slim") {
+                    vec![SettingsSection::EditorAndCodeReview]
+                } else {
+                    vec![
+                        SettingsSection::CodeIndexing,
+                        SettingsSection::EditorAndCodeReview,
+                    ]
+                },
             )),
+            #[cfg(not(feature = "wormhole-slim"))]
             SettingsNavItem::Umbrella(SettingsUmbrella::new(
                 "Cloud platform",
                 vec![
@@ -1321,13 +1355,16 @@ impl SettingsView {
                     SettingsSection::OzCloudAPIKeys,
                 ],
             )),
+            #[cfg(not(feature = "wormhole-slim"))]
             SettingsNavItem::Page(SettingsSection::Teams),
             SettingsNavItem::Page(SettingsSection::Appearance),
             SettingsNavItem::Page(SettingsSection::Features),
             SettingsNavItem::Page(SettingsSection::Keybindings),
             SettingsNavItem::Page(SettingsSection::Warpify),
+            #[cfg(not(feature = "wormhole-slim"))]
             SettingsNavItem::Page(SettingsSection::Referrals),
             SettingsNavItem::Page(SettingsSection::SharedBlocks),
+            #[cfg(not(feature = "wormhole-slim"))]
             SettingsNavItem::Page(SettingsSection::WarpDrive),
             SettingsNavItem::Page(SettingsSection::Privacy),
             SettingsNavItem::Page(SettingsSection::About),

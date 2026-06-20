@@ -17,8 +17,13 @@ impl TeamTesterStatus {
     /// Polling is started when a user logs in; this method is also called with
     /// `force_refresh: true` when data is known to be invalidated (e.g. joining a team via an
     /// intent link).
-    pub fn initiate_data_pollers(&mut self, force_refresh: bool, ctx: &mut ModelContext<Self>) {
-        ctx.emit(TeamTesterStatusEvent::InitiateDataPollers { force_refresh })
+    pub fn initiate_data_pollers(&mut self, _force_refresh: bool, _ctx: &mut ModelContext<Self>) {
+        #[cfg(not(feature = "wormhole-slim"))]
+        if !wormhole_embed::warp_cloud_disabled() {
+            _ctx.emit(TeamTesterStatusEvent::InitiateDataPollers {
+                force_refresh: _force_refresh,
+            })
+        }
     }
 }
 

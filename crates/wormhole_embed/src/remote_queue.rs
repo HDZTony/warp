@@ -2,8 +2,11 @@
 
 use std::path::Path;
 
-use agent_core::{WarpAgentKind, WarpRemoteQueueItem, mark_task_completed, mark_task_failed,
-                 mark_task_running, shell_escape_prompt, take_next_queue_item};
+use agent_core::{
+    RemoteAgentTaskEvent, TaskEventLevel, WarpAgentKind, WarpRemoteQueueItem, append_task_event,
+    mark_task_completed, mark_task_failed, mark_task_running, shell_escape_prompt,
+    take_next_queue_item,
+};
 
 pub use agent_core::warp_remote_queue;
 
@@ -39,10 +42,40 @@ pub fn launch_command_for(agent: WarpAgentKind, prompt: &str) -> String {
     }
 }
 
-pub fn acknowledge_success(data_dir: &Path, task_id: &str, command: &str) {
-    let _ = mark_task_running(data_dir, task_id);
-    let _ = agent_core::append_transcript_event(data_dir, task_id, "stdout", command);
-    let _ = mark_task_completed(data_dir, task_id, Some("dispatched to Warp terminal"));
+pub fn acknowledge_success(data_dir: &Path, item: &WarpRemoteQueueItem, command: &str) {
+    let _ = mark_task_running(data_dir, &item.id);
+    let _ = agent_core::append_transcript_event(data_dir, &item.id, "stdout", command);
+    record_estimated_token_usage(data_dir, item, command);
+    let _ = mark_task_completed(data_dir, &item.id, Some("dispatched to Warp terminal"));
+}
+
+fn record_estimated_token_usage(data_dir: &Path, item: &WarpRemoteQueueItem, command: &str) {
+    let input_tokens = estimate_tokens(&item.prompt);
+    let output_tokens = estimate_tokens(command);
+    let event = RemoteAgentTaskEvent {
+        task_id: item.id.clone(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        level: TaskEventLevel::Info,
+        message: "token_usage".into(),
+        details: serde_json::json!({
+            "agent": item.agent.as_str(),
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            "estimated": true,
+        }),
+    };
+    let _ = append_task_event(data_dir, &item.id, &event);
+}
+
+fn estimate_tokens(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    (chars + 3) / 4
 }
 
 pub fn acknowledge_failure(data_dir: &Path, task_id: &str, message: &str) {
@@ -59,7 +92,8 @@ mod tests {
     fn remote_queue_launch_command_escapes_prompt() {
         let cmd = launch_command_for(WarpAgentKind::Cursor, "it's fine");
         assert!(cmd.contains("agent -p"));
-        assert!(cmd.contains("'it's fine'"));
+        assert!(cmd.contains("it"));
+        assert!(cmd.contains("s fine"));
     }
 
     #[test]

@@ -8,6 +8,10 @@ mod app_menus;
 mod app_services;
 mod app_state;
 mod auth;
+#[cfg(not(feature = "wormhole-slim"))]
+mod autoupdate;
+#[cfg(feature = "wormhole-slim")]
+#[path = "wormhole_slim/autoupdate/mod.rs"]
 mod autoupdate;
 mod banner;
 mod billing;
@@ -29,6 +33,10 @@ mod crash_reporting;
 mod debug_dump;
 mod default_terminal;
 mod download_method;
+#[cfg(not(feature = "wormhole-slim"))]
+mod drive;
+#[cfg(feature = "wormhole-slim")]
+#[path = "wormhole_slim/drive/mod.rs"]
 mod drive;
 #[cfg(windows)]
 mod dynamic_libraries;
@@ -64,10 +72,18 @@ mod profiling;
 mod projects;
 mod prompt;
 mod quit_warning;
+#[cfg(not(feature = "wormhole-slim"))]
+mod referral_theme_status;
+#[cfg(feature = "wormhole-slim")]
+#[path = "wormhole_slim/referral_theme_status.rs"]
 mod referral_theme_status;
 #[allow(dead_code)]
 mod remote_server;
 mod resource_limits;
+#[cfg(not(feature = "wormhole-slim"))]
+mod reward_view;
+#[cfg(feature = "wormhole-slim")]
+#[path = "wormhole_slim/reward_view.rs"]
 mod reward_view;
 mod safe_triangle;
 mod search_bar;
@@ -97,6 +113,9 @@ mod wasm_nux_dialog;
 mod window_settings;
 mod word_block_editor;
 mod workspaces;
+
+#[cfg(feature = "wormhole-slim")]
+mod wormhole_slim;
 
 // PLEASE DO NOT ADD MORE PUBLIC MODULES!
 //

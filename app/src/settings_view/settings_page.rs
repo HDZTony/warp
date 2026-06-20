@@ -1242,7 +1242,7 @@ where
 
 /// Structured contents of a settings tab page. This type breaks all the content into
 /// [`SettingsWidget`]s.
-pub(super) enum PageType<V: warpui::View> {
+pub(crate) enum PageType<V: warpui::View> {
     /// A page where the contents cannot be separated for showing search results. If any part
     /// matches the search query, the whole page must show. The whole page is one big
     /// [`SettingsWidget`].
@@ -1851,7 +1851,7 @@ pub(super) struct FilteredCategory<'a, V: warpui::View> {
 
 /// Widgets are pieces of renderable settings modal content which can be associated with search
 /// content to match against.
-pub(super) trait SettingsWidget {
+pub(crate) trait SettingsWidget {
     /// Which View (settings page) this widget belongs to.
     type View: warpui::View;
 

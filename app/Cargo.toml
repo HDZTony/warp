@@ -25,6 +25,7 @@ test = false
 [[bin]]
 name = "warp-oss-wormhole"
 path = "src/bin/wormhole_embed.rs"
+required-features = ["wormhole-slim"]
 test = false
 
 [[bin]]
@@ -1014,6 +1015,10 @@ cloud_mode_setup_v2 = ["cloud_mode"]
 cloud_mode_input_v2 = ["cloud_mode"]
 handoff_cloud_cloud = ["cloud_mode_setup_v2"]
 git_credential_refresh = []
+wormhole-slim = []
+# Wormhole embed: excises Warp SaaS sources (Drive UI, Teams, Referrals, autoupdate,
+# billing settings, cloud polling). Required for `warp-oss-wormhole` only; stubs live
+# under `app/src/wormhole_slim/`.
 
 [package.metadata.bundle.bin.warp-oss]
 category = "public.app-category.developer-tools"

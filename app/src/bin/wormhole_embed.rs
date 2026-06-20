@@ -6,7 +6,8 @@ use anyhow::Result;
 use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
 use warp_core::AppId;
 use wormhole_embed::{
-    apply_embed_launch_env, codex_profile, is_embedded, preferred_agent, DATA_DIR_ENV, PreferredAgent,
+    apply_embed_launch_env, apply_slim_feature_flags, codex_profile, is_embedded, preferred_agent,
+    DATA_DIR_ENV, PreferredAgent,
 };
 
 fn main() -> Result<()> {
@@ -56,11 +57,15 @@ fn main() -> Result<()> {
     ChannelState::set(state);
 
     if is_embedded() {
+        if let Some(data_dir) = wormhole_embed::data_dir() {
+            wormhole_embed::observability::install(&data_dir);
+        }
         log::info!(
-            "warp-oss-wormhole embedded mode (agent={}, codex profile={})",
+            "warp-oss-wormhole embedded mode (agent={}, codex profile={}, slim cloud=off)",
             preferred_agent().as_str(),
             codex_profile()
         );
+        apply_slim_feature_flags();
     }
 
     warp::run()

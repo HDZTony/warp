@@ -30,15 +30,15 @@ pub fn render_agent_switcher(
         (PreferredAgent::Cursor, "Cursor"),
     ] {
         let is_selected = selected == agent;
-        let bg = if is_selected {
-            internal_colors::fg_overlay_2(theme)
+        let bg: ColorU = if is_selected {
+            internal_colors::fg_overlay_2(theme).into()
         } else {
             ColorU::new(0, 0, 0, 0)
         };
-        let fg = if is_selected {
-            theme.accent()
+        let fg: ColorU = if is_selected {
+            theme.accent().into()
         } else {
-            theme.foreground()
+            theme.foreground().into()
         };
         let label_el = Text::new(label, font, 13.).with_color(fg).finish();
         let button = Container::new(
@@ -56,19 +56,18 @@ pub fn render_agent_switcher(
     }
 
     let hint = Text::new("切换将在新终端 tab 启动对应 CLI", font, 12.)
-        .with_color(internal_colors::fg_overlay_3(theme))
+        .with_color(internal_colors::fg_overlay_3(theme).into())
         .finish();
 
     let body = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(row.finish())
-        .with_child(Container::new(hint).with_left_padding(12.0).finish())
+        .with_child(Container::new(hint).with_padding_left(12.0).finish())
         .finish();
 
     Container::new(body)
-        .with_height(TOOLBAR_HEIGHT)
-        .with_left_padding(12.0)
-        .with_right_padding(12.0)
+        .with_padding_left(12.0)
+        .with_padding_right(12.0)
         .with_background(theme.background())
         .finish()
 }

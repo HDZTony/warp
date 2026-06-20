@@ -227,7 +227,13 @@ impl UpdateManager {
             in_flight_request_abort_handle: None,
             should_poll_for_updated_objects: false,
             spawned_futures: Default::default(),
-            has_initial_load: Condition::new(),
+            has_initial_load: {
+                let condition = Condition::new();
+                if wormhole_embed::warp_cloud_disabled() {
+                    condition.set();
+                }
+                condition
+            },
         }
     }
 
@@ -623,6 +629,9 @@ impl UpdateManager {
     }
 
     pub fn start_polling_for_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
+        if wormhole_embed::warp_cloud_disabled() {
+            return;
+        }
         let is_online = NetworkStatus::as_ref(ctx).is_online();
 
         if !self.should_poll_for_updated_objects && is_online {
@@ -633,6 +642,9 @@ impl UpdateManager {
 
     /// Out-of-band (from the regular poll) refresh of updated objects.
     pub fn refresh_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
+        if wormhole_embed::warp_cloud_disabled() {
+            return;
+        }
         let object_client = self.object_client.clone();
         let cloud_model = CloudModel::as_ref(ctx);
         let versions_for_all_objects = cloud_model.get_versions_for_all_objects(ctx);
@@ -4822,7 +4834,3 @@ impl Entity for UpdateManager {
 }
 
 impl SingletonEntity for UpdateManager {}
-
-#[cfg(test)]
-#[path = "update_manager_tests.rs"]
-mod tests;

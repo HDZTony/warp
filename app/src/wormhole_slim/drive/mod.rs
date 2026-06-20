@@ -100,20 +100,11 @@ impl fmt::Display for DriveObjectType {
     }
 }
 
-pub fn should_auto_open_welcome_folder(app: &mut AppContext) -> bool {
-    app.private_user_preferences()
-        .read_value(settings::HAS_AUTO_OPENED_WELCOME_FOLDER)
-        .unwrap_or_default()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .map(|has_opened: bool| !has_opened)
-        .unwrap_or(true)
+pub fn should_auto_open_welcome_folder(_app: &mut AppContext) -> bool {
+    false
 }
 
-pub fn write_has_auto_opened_welcome_folder_to_user_defaults(app: &mut AppContext) {
-    let _ = app
-        .private_user_preferences()
-        .write_value(settings::HAS_AUTO_OPENED_WELCOME_FOLDER, true.to_string());
-}
+pub fn write_has_auto_opened_welcome_folder_to_user_defaults(_app: &mut AppContext) {}
 
 /// Enum used for sorting elements in the Warp Drive Index (and potentially other places).
 /// In the future it can be used to add other options (like, by name or by author), and exposed to

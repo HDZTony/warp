@@ -2785,15 +2785,16 @@ impl Workspace {
             }
         });
 
-        ctx.subscribe_to_model(&referral_theme_status, |me, _, event, ctx| {
-            me.handle_referral_theme_status_event(event, ctx);
-        });
+        if !wormhole_embed::is_embedded() {
+            ctx.subscribe_to_model(&referral_theme_status, |me, _, event, ctx| {
+                me.handle_referral_theme_status_event(event, ctx);
+            });
 
-        let referrals_client = ServerApiProvider::as_ref(ctx).get_referrals_client();
-        // On startup, check if the user has earned a referral theme by referring other users
-        referral_theme_status.update(ctx, |model, ctx| {
-            model.query_referral_status(referrals_client, ctx);
-        });
+            let referrals_client = ServerApiProvider::as_ref(ctx).get_referrals_client();
+            referral_theme_status.update(ctx, |model, ctx| {
+                model.query_referral_status(referrals_client, ctx);
+            });
+        }
 
         let bindings_notifier = KeybindingChangedNotifier::handle(ctx);
         ctx.subscribe_to_model(&bindings_notifier, |me, _, event, ctx| {
@@ -3059,12 +3060,14 @@ impl Workspace {
             }
         });
 
-        ctx.subscribe_to_model(&WarpDriveSettings::handle(ctx), |me, _, event, ctx| {
-            if let WarpDriveSettingsChangedEvent::EnableWarpDrive { .. } = event {
-                me.update_left_panel_available_views(ctx);
-                ctx.notify();
-            }
-        });
+        if !wormhole_embed::is_embedded() {
+            ctx.subscribe_to_model(&WarpDriveSettings::handle(ctx), |me, _, event, ctx| {
+                if let WarpDriveSettingsChangedEvent::EnableWarpDrive { .. } = event {
+                    me.update_left_panel_available_views(ctx);
+                    ctx.notify();
+                }
+            });
+        }
 
         let toast_stack =
             ctx.add_typed_action_view(|_| DismissibleToastStack::new(Duration::from_secs(4)));
@@ -4111,7 +4114,7 @@ impl Workspace {
         };
         let initial_tab = self.active_tab_pane_group().clone();
 
-        if open_warp_drive {
+        if open_warp_drive && !wormhole_embed::is_embedded() {
             // We open Warp Drive automatically in two cases:
             // * The user is new to Warp, and went through the overall onboarding flow
             // * The user is on the web, so we can't open a terminal session.
@@ -8683,6 +8686,9 @@ impl Workspace {
         explicit_user_action: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if wormhole_embed::is_embedded() {
+            return;
+        }
         // Closing all left panels will also close warp drive so we need to retrieve
         // whether warp drive was open first, and toggle based on the initial value.
         let was_warp_drive_open = self.current_workspace_state.is_warp_drive_open;
@@ -18516,10 +18522,15 @@ impl Workspace {
             return;
         }
         let delay = std::time::Duration::from_millis(500);
-        ctx.spawn(async move { async_std::task::sleep(delay).await }, |me, _, ctx| {
-            me.poll_wormhole_remote_queue(ctx);
-            me.start_wormhole_remote_queue_poll(ctx);
-        });
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(delay).await;
+            },
+            |me, _, ctx| {
+                me.poll_wormhole_remote_queue(ctx);
+                me.start_wormhole_remote_queue_poll(ctx);
+            },
+        );
     }
 
     fn poll_wormhole_remote_queue(&mut self, ctx: &mut ViewContext<Self>) {
@@ -18531,7 +18542,7 @@ impl Workspace {
         };
         let task_id = dispatch.item.id.clone();
         let command = dispatch.command.clone();
-        wormhole_embed::remote_queue::acknowledge_success(&data_dir, &task_id, &command);
+        wormhole_embed::remote_queue::acknowledge_success(&data_dir, &dispatch.item, &command);
         self.add_new_session_tab_with_default_mode(
             NewSessionSource::Tab,
             Some(ctx.window_id()),
@@ -23354,6 +23365,9 @@ impl TypedActionView for Workspace {
                 ctx.open_url(&upgrade_url);
             }
             ShowReferralSettingsPage => {
+                if wormhole_embed::is_embedded() {
+                    return;
+                }
                 self.show_settings_with_section(Some(SettingsSection::Referrals), ctx);
             }
             JoinSlack => self.join_slack(ctx),

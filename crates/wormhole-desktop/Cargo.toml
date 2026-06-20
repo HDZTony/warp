@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [features]
 default = ["media-ffmpeg", "remote-desktop"]
-telegram-bridge = ["wormhole-desktop-core/telegram-bridge"]
 media-ffmpeg = ["wormhole-desktop-core/media-ffmpeg"]
 remote-desktop = ["wormhole-desktop-core/remote-desktop"]
 

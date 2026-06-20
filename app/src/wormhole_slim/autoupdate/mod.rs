@@ -135,7 +135,10 @@ impl AutoupdateState {
     ///
     /// Must be called explicitly once onboarding (if any) has completed. For returning users
     /// who bypass onboarding, this should be called during app startup.
-    pub fn start_polling(&mut self, ctx: &mut ModelContext<Self>) {
+    pub fn start_polling(&mut self, _ctx: &mut ModelContext<Self>) {}
+
+    #[allow(dead_code)]
+    fn start_polling_warp_original(&mut self, ctx: &mut ModelContext<Self>) {
         if self.polling_started {
             return;
         }
@@ -167,7 +170,12 @@ impl AutoupdateState {
 
     /// Check if there are any requests in the queue. Return the next one, but only if there isn't
     /// already a request in-flight.
-    fn get_next_request(&mut self, ctx: &mut ModelContext<Self>) -> Option<RequestType> {
+    fn get_next_request(&mut self, _ctx: &mut ModelContext<Self>) -> Option<RequestType> {
+        None
+    }
+
+    #[allow(dead_code)]
+    fn get_next_request_warp_original(&mut self, ctx: &mut ModelContext<Self>) -> Option<RequestType> {
         // WASM cannot apply updates, so no request type should ever contact the server.
         if cfg!(target_family = "wasm") {
             return None;
@@ -224,7 +232,10 @@ impl AutoupdateState {
     }
 
     /// User-initiated check for updates.
-    pub fn manually_check_for_update(&mut self, ctx: &mut ModelContext<Self>) {
+    pub fn manually_check_for_update(&mut self, _ctx: &mut ModelContext<Self>) {}
+
+    #[allow(dead_code)]
+    fn manually_check_for_update_warp_original(&mut self, ctx: &mut ModelContext<Self>) {
         self.enqueue_request(RequestType::ManualCheck, ctx);
     }
 
@@ -239,7 +250,10 @@ impl AutoupdateState {
 
     /// Trigger the update check to /client_version/daily, but only go through with sending the
     /// request if we haven't done that today.
-    pub fn maybe_daily_check_for_update(&mut self, ctx: &mut ModelContext<Self>) {
+    pub fn maybe_daily_check_for_update(&mut self, _ctx: &mut ModelContext<Self>) {}
+
+    #[allow(dead_code)]
+    fn maybe_daily_check_for_update_warp_original(&mut self, ctx: &mut ModelContext<Self>) {
         self.enqueue_request(RequestType::DailyCheck, ctx)
     }
 

@@ -341,6 +341,11 @@ impl AuthManager {
 
                 self.set_needs_reauth(false, ctx);
 
+                if wormhole_embed::warp_cloud_disabled() {
+                    ctx.emit(AuthManagerEvent::AuthComplete);
+                    return;
+                }
+
                 // Must be called on the main thread.
                 #[cfg(feature = "crash_reporting")]
                 crate::crash_reporting::set_user_id(
@@ -574,6 +579,9 @@ impl AuthManager {
         referral_code: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if wormhole_embed::warp_cloud_disabled() {
+            return;
+        }
         let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUserFeatureGated;
 
         let auth_client = self.auth_client.clone();

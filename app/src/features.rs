@@ -9,6 +9,7 @@ pub fn init_feature_flags() {
     for flag in enabled_features() {
         flag.set_enabled(true);
     }
+    wormhole_embed::apply_slim_feature_flags();
     mark_initialized();
 }
 
@@ -22,9 +23,10 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         flags.extend(RELEASE_FLAGS);
     }
 
-    flags.extend([
-        #[cfg(feature = "autoupdate")]
-        FeatureFlag::Autoupdate,
+    flags.extend(
+        &[
+            #[cfg(feature = "autoupdate")]
+            FeatureFlag::Autoupdate,
         #[cfg(feature = "changelog")]
         FeatureFlag::Changelog,
         #[cfg(feature = "cocoa_sentry")]
@@ -501,7 +503,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::CustomInferenceEndpoints,
         #[cfg(feature = "supergrok")]
         FeatureFlag::SuperGrok,
-    ]);
+        ] as &[FeatureFlag],
+    );
 
     flags
 }

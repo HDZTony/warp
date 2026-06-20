@@ -9,6 +9,7 @@ description = "Wormhole embedding helpers for the Warp app fork"
 
 [dependencies]
 agent-core = { path = "../../../../crates/agent-core" }
+warp_core.workspace = true
 anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

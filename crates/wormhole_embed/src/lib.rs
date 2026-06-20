@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod prefs;
 pub mod remote_queue;
+pub mod observability;
+pub mod slim;
 pub use prefs::{PreferredAgent, WarpEmbedPrefs};
+pub use slim::{apply_slim_feature_flags, warp_cloud_disabled};
 
 static EMBED_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 
