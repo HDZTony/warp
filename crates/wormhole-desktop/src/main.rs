@@ -57,6 +57,19 @@ fn default_data_dir() -> PathBuf {
     }
 }
 
+fn bundled_resource_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    if macos_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
+        return None;
+    }
+    Some(contents_dir.join("Resources"))
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -102,7 +115,10 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     let tokio = tokio::runtime::Runtime::new()?;
-    let desktop_runtime = tokio.block_on(bootstrap_desktop(Some(data_dir.clone()), None))?;
+    let desktop_runtime = tokio.block_on(bootstrap_desktop(
+        Some(data_dir.clone()),
+        bundled_resource_dir(),
+    ))?;
     if args.bridge_only {
         tracing::info!(
             data_dir = %data_dir.display(),
