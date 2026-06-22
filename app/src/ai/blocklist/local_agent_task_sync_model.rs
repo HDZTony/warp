@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use session_sharing_protocol::common::SessionId;
-use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
 use warpui::{Entity, EntityId, ModelContext, SingletonEntity};
 
 use super::history_model::{
@@ -11,7 +10,7 @@ use super::history_model::{
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 use crate::ai::agent::{AIAgentOutputStatus, FinishedAIAgentOutput, RenderableAIError};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::server::server_api::ai::{AIClient, TaskStatusUpdate};
+use crate::server::server_api::ai::{AgentTaskState, AIClient, PlatformErrorCode, TaskStatusUpdate};
 use crate::server::server_api::ServerApiProvider;
 use crate::terminal::cli_agent_sessions::{
     CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,

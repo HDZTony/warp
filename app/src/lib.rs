@@ -1,5 +1,8 @@
 #![allow(clippy::doc_lazy_continuation)]
 
+#[cfg(feature = "wormhole-slim")]
+extern crate warp_graphql_slim as warp_graphql;
+
 mod ai;
 mod alloc;
 mod antivirus;
@@ -112,9 +115,12 @@ mod warp_managed_paths_watcher;
 mod wasm_nux_dialog;
 mod window_settings;
 mod word_block_editor;
+#[cfg(not(feature = "wormhole-slim"))]
+mod workspaces;
+#[cfg(feature = "wormhole-slim")]
+#[path = "wormhole_slim/workspaces/mod.rs"]
 mod workspaces;
 
-#[cfg(feature = "wormhole-slim")]
 mod wormhole_slim;
 
 // PLEASE DO NOT ADD MORE PUBLIC MODULES!
@@ -151,6 +157,8 @@ pub mod themes;
 use ::ai::index::full_source_code_embedding::manager::{
     CodebaseIndexManager, CodebaseIndexManagerConfig,
 };
+#[cfg(feature = "wormhole-slim")]
+use ::ai::index::full_source_code_embedding::store_client::MockStoreClient;
 #[cfg(feature = "local_fs")]
 use ::ai::index::full_source_code_embedding::SnapshotStorage;
 use ::ai::index::full_source_code_embedding::SyncTask;
@@ -243,6 +251,8 @@ pub use warp_core::{safe_debug, safe_error, safe_info, safe_warn};
 use warp_files::FileModel;
 use warp_logging::LogDestination;
 use warp_managed_secrets::ManagedSecretManager;
+#[cfg(feature = "wormhole-slim")]
+use warp_managed_secrets::noop_client::NoopManagedSecretsClient;
 use warpui::integration::TestDriver;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 use warpui::platform::app::ApproveTerminateResult;
@@ -671,7 +681,7 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
-            #[cfg(not(target_family = "wasm"))]
+            #[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
             warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerProxy(args)) => {
                 // Proxy is a thin byte bridge (stdin/stdout ↔ Unix socket).
                 // It only needs logging to stderr since stdout is the protocol
@@ -686,11 +696,19 @@ pub fn run() -> Result<()> {
                 tracing_initialization.log_initialization_warning();
                 return crate::remote_server::run_proxy(args.identity_key.clone());
             }
-            #[cfg(not(target_family = "wasm"))]
+            #[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
             warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerDaemon(args)) => {
                 // Daemon handles its own full initialization (including
                 // initialize_app and crash reporting) inside run_daemon_app.
                 return crate::remote_server::run_daemon(args.identity_key.clone());
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "wormhole-slim"))]
+            warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerProxy(_)) => {
+                anyhow::bail!("remote-server-proxy is disabled in wormhole-slim builds");
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "wormhole-slim"))]
+            warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerDaemon(_)) => {
+                anyhow::bail!("remote-server-daemon is disabled in wormhole-slim builds");
             }
             #[cfg(not(target_family = "wasm"))]
             warp_cli::Command::Worker(warp_cli::WorkerCommand::RipgrepSearch {
@@ -1436,6 +1454,15 @@ pub(crate) fn initialize_app(
     ctx.add_singleton_model(|_| pricing::PricingInfoModel::new());
     ctx.add_singleton_model(|ctx| {
         // Not using the *Provider types isn't ideal, but it's worth it for the ability to move managed secrets to a separate crate.
+        #[cfg(feature = "wormhole-slim")]
+        {
+            let _ = ctx;
+            ManagedSecretManager::new(
+                Arc::new(NoopManagedSecretsClient),
+                auth_state.clone(),
+            )
+        }
+        #[cfg(not(feature = "wormhole-slim"))]
         ManagedSecretManager::new(
             server_api_provider.as_ref(ctx).get_managed_secrets_client(),
             auth_state.clone(),
@@ -2056,12 +2083,23 @@ pub(crate) fn initialize_app(
         };
 
         let codebase_limits = AIRequestUsageModel::as_ref(ctx).codebase_context_limits();
+        let store_client: Arc<dyn ::ai::index::full_source_code_embedding::store_client::StoreClient> =
+            {
+                #[cfg(feature = "wormhole-slim")]
+                {
+                    Arc::new(MockStoreClient)
+                }
+                #[cfg(not(feature = "wormhole-slim"))]
+                {
+                    server_api_provider.as_ref(ctx).get()
+                }
+            };
         let mut codebase_index_config = CodebaseIndexManagerConfig::new(
             indices_to_restore,
             codebase_limits.max_indices_allowed,
             codebase_limits.max_files_per_repo,
             codebase_limits.embedding_generation_batch_size,
-            server_api_provider.as_ref(ctx).get(),
+            store_client,
             launch_mode.supports_indexing(),
         );
         if matches!(launch_mode, LaunchMode::RemoteServerDaemon { .. }) {
@@ -2114,10 +2152,7 @@ pub(crate) fn initialize_app(
     // When running natively, add the http server singleton to the application.
     #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(move |ctx| {
-        let routers = vec![
-            app_installation_detection::make_router(),
-            profiling::make_router(),
-        ];
+        let routers = vec![profiling::make_router()];
         http_server::HttpServer::new(routers, ctx)
     });
     #[cfg(not(target_family = "wasm"))]
@@ -2666,13 +2701,18 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
         // Daemon: bind the Unix socket and register the ServerModel.
         // initialize_app already set up everything else including crash
         // reporting.
-        #[cfg(unix)]
+        #[cfg(all(unix, not(feature = "wormhole-slim")))]
         LaunchMode::RemoteServerDaemon { identity_key } => {
             remote_server::unix::launch_daemon(&identity_key, ctx);
         }
-        #[cfg(not(unix))]
+        #[cfg(all(not(unix), not(feature = "wormhole-slim")))]
         LaunchMode::RemoteServerDaemon { .. } => {
             log::error!("RemoteServerDaemon is not supported on this platform");
+            std::process::exit(1);
+        }
+        #[cfg(feature = "wormhole-slim")]
+        LaunchMode::RemoteServerDaemon { .. } => {
+            log::error!("RemoteServerDaemon is disabled in wormhole-slim builds");
             std::process::exit(1);
         }
     }

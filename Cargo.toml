@@ -3,7 +3,13 @@ members = [
   "crates/*",
   "app",
 ]
-exclude = ["crates/wormhole-native-ui"]
+exclude = [
+  "crates/wormhole-native-ui",
+  "crates/integration",
+  "crates/serve-wasm",
+  "crates/app-installation-detection",
+  "crates/managed_secrets_wasm",
+]
 resolver = "2"
 
 # Include all members except serve-wasm (since it's a helper helper for serving
@@ -14,7 +20,6 @@ default-members = [
   "crates/channel_versions",
   "crates/command",
   "crates/editor",
-  "crates/graphql",
   "crates/markdown_parser",
   "crates/sum_tree",
   "crates/warpui",
@@ -31,7 +36,6 @@ publish = false
 [workspace.dependencies]
 # Local workspace crates. This lets us reference them in other crates without specifying a path.
 ai = { path = "crates/ai" }
-app-installation-detection = { path = "crates/app-installation-detection" }
 asset_cache = { path = "crates/asset_cache" }
 asset_macro = { path = "crates/asset_macro" }
 channel_versions = { path = "crates/channel_versions", default-features = false }
@@ -43,13 +47,11 @@ cloud_object_persistence = { path = "crates/cloud_object_persistence" }
 cloud_object_models = { path = "crates/cloud_object_models" }
 computer_use = { path = "crates/computer_use" }
 field_mask = { path = "crates/field_mask" }
-firebase = { path = "crates/firebase" }
 fuzzy_match = { path = "crates/fuzzy_match" }
 handlebars = { path = "crates/handlebars" }
 http_client = { path = "crates/http_client" }
 http_server = { path = "crates/http_server" }
 input_classifier = { path = "crates/input_classifier" }
-integration = { path = "crates/integration" }
 ipc = { path = "crates/ipc" }
 jsonrpc = { path = "crates/jsonrpc" }
 languages = { path = "crates/languages" }
@@ -83,8 +85,7 @@ warp_core = { path = "crates/warp_core" }
 warp_editor = { path = "crates/editor" }
 warp_features = { path = "crates/warp_features" }
 warp_files = { path = "crates/warp_files" }
-warp_graphql = { path = "crates/graphql" }
-warp_graphql_schema = { path = "crates/warp_graphql_schema" }
+warp_graphql_slim = { path = "crates/warp_graphql_slim" }
 warp_isolation_platform = { path = "crates/isolation_platform" }
 warp_js = { path = "crates/warp_js" }
 warp_logging = { path = "crates/warp_logging" }
@@ -92,7 +93,6 @@ warp_managed_secrets = { path = "crates/managed_secrets" }
 warp_ripgrep = { path = "crates/warp_ripgrep" }
 warp_search_core = { path = "crates/warp_search_core" }
 warp_server_auth = { path = "crates/warp_server_auth" }
-warp_server_client = { path = "crates/warp_server_client" }
 warp_terminal = { path = "crates/warp_terminal" }
 warp_util = { path = "crates/warp_util" }
 wormhole_embed = { path = "crates/wormhole_embed" }
@@ -291,6 +291,7 @@ tracing = "0.1.40"
 tracing-futures = "0.2.5"
 tracing-opentelemetry = { version = "0.33.0", default-features = false }
 tracing-subscriber = { version = "0.3.22", default-features = false, features = [
+  "env-filter",
   "registry",
   "std",
 ] }

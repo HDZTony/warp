@@ -13,6 +13,7 @@ use warp_cli::api_key::{
     ListApiKeysArgs,
 };
 use warp_cli::{GlobalOptions, SortOrderArg};
+
 use warp_graphql::mutations::expire_api_key::ExpireApiKeyResult;
 use warp_graphql::mutations::generate_api_key::GenerateApiKeyResult;
 use warp_graphql::queries::api_keys::ApiKeyProperties;
@@ -108,7 +109,7 @@ impl ApiKeyCommandRunner {
                     },
                     GenerateApiKeyResult::UserFacingError(e) => {
                         return Err(anyhow!(
-                            warp_graphql::client::get_user_facing_error_message(e)
+                            warp_graphql::client::get_user_facing_error_message(&e)
                         ));
                     }
                     GenerateApiKeyResult::Unknown => {
@@ -208,7 +209,7 @@ impl ApiKeyCommandRunner {
                             ExpireApiKeyResult::ExpireApiKeyOutput(output) => output.success,
                             ExpireApiKeyResult::UserFacingError(e) => {
                                 return Err(anyhow!(
-                                    warp_graphql::client::get_user_facing_error_message(e)
+                                    warp_graphql::client::get_user_facing_error_message(&e)
                                 ));
                             }
                             ExpireApiKeyResult::Unknown => {

@@ -249,6 +249,7 @@ fn status_emoji(status: SimpleIntegrationConnectionStatus) -> &'static str {
         SimpleIntegrationConnectionStatus::IntegrationNotConfigured => "⚠️",
         SimpleIntegrationConnectionStatus::NotEnabled => "⚠️",
         SimpleIntegrationConnectionStatus::Active => "✅",
+        SimpleIntegrationConnectionStatus::Unknown => "❓",
     }
 }
 
@@ -265,6 +266,7 @@ fn status_explanation(status: SimpleIntegrationConnectionStatus) -> &'static str
             "Integration is configured but currently disabled."
         }
         SimpleIntegrationConnectionStatus::Active => "Integration is connected and enabled.",
+        SimpleIntegrationConnectionStatus::Unknown => "Integration status is unknown.",
     }
 }
 

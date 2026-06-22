@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod prefs;
-pub mod remote_queue;
 pub mod observability;
 pub mod slim;
 pub use prefs::{PreferredAgent, WarpEmbedPrefs};

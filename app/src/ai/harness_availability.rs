@@ -195,6 +195,15 @@ impl HarnessAvailabilityModel {
     }
 
     fn fetch_auth_secrets(&mut self, harness: Harness, ctx: &mut ModelContext<Self>) {
+        #[cfg(feature = "wormhole-slim")]
+        {
+            self.auth_secrets
+                .insert(harness, AuthSecretFetchState::Loaded(vec![]));
+            return;
+        }
+
+        #[cfg(not(feature = "wormhole-slim"))]
+        {
         let Some(agent_harness) = harness_to_graphql_harness(harness) else {
             return;
         };
@@ -249,6 +258,7 @@ impl HarnessAvailabilityModel {
                 }
             },
         );
+        }
     }
 
     fn can_retry_auth_secret_fetch(&self, harness: Harness) -> bool {
@@ -272,12 +282,15 @@ impl HarnessAvailabilityModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let manager = ManagedSecretManager::handle(ctx);
-        let create_future = manager.as_ref(ctx).create_secret(owner, name, value, None);
+        let create_future = manager.as_ref(ctx).create_secret(owner.clone(), name, value, None);
         ctx.spawn(create_future, move |me, result, ctx| match result {
             Ok(secret) => {
                 let entry = AuthSecretEntry {
                     name: secret.name.clone(),
+                    #[cfg(not(feature = "wormhole-slim"))]
                     owner: secret_owner_from_space(&secret.owner),
+                    #[cfg(feature = "wormhole-slim")]
+                    owner,
                 };
                 match me.auth_secrets.get_mut(&harness) {
                     Some(AuthSecretFetchState::Loaded(entries)) => {
@@ -387,6 +400,7 @@ fn get_cached(ctx: &ModelContext<HarnessAvailabilityModel>) -> Option<Vec<Harnes
     serde_json::from_str::<Vec<HarnessAvailability>>(&raw).ok()
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 fn secret_owner_from_space(space: &warp_graphql::object::Space) -> SecretOwner {
     match space.type_ {
         warp_graphql::object::SpaceType::Team => SecretOwner::Team {
@@ -403,6 +417,8 @@ fn remove_deleted_auth_secret_entry(
 ) {
     entries.retain(|entry| entry.name.as_str() != name || &entry.owner != owner);
 }
+
+#[cfg(not(feature = "wormhole-slim"))]
 fn harness_to_graphql_harness(harness: Harness) -> Option<warp_graphql::ai::AgentHarness> {
     match harness {
         Harness::Oz => Some(warp_graphql::ai::AgentHarness::Oz),

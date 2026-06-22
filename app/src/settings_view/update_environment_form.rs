@@ -1537,7 +1537,7 @@ impl UpdateEnvironmentForm {
                                 key.clone(),
                                 image,
                                 needs_custom_image,
-                                reason,
+                                reason.unwrap_or_default(),
                                 ctx,
                             );
                         }

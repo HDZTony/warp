@@ -1,10 +1,12 @@
 pub mod anonymous_id;
 pub mod auth_state;
 pub mod credentials;
+pub mod types;
 pub mod user;
 pub mod user_uid;
 
 pub use auth_state::AuthStateProvider;
+pub use types::{OwnerType, ServerTimestamp};
 pub use user_uid::UserUid;
 
 /// Prefix for API keys used in authentication.

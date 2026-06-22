@@ -2,7 +2,7 @@ use chrono::Utc;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_geometry::vector::vec2f;
 use warp_core::features::FeatureFlag;
-use warp_server_client::auth::AgentIdentity;
+use crate::server::server_api::auth::AgentIdentity;
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
     Empty, Expanded, Fill, Flex, FormattedTextElement, HighlightedHyperlink, MainAxisAlignment,
@@ -126,10 +126,15 @@ pub enum CreateApiKeyModalAction {
     CreateNewAgent,
 }
 
+#[derive(Debug, Clone)]
+pub struct ApiKeyProperties {
+    pub name: String,
+}
+
 pub enum CreateApiKeyModalEvent {
     Close,
     Created {
-        api_key: warp_graphql::queries::api_keys::ApiKeyProperties,
+        api_key: ApiKeyProperties,
     },
     Error {
         message: String,
@@ -322,6 +327,22 @@ impl CreateApiKeyModal {
     }
 
     fn create(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(feature = "wormhole-slim")]
+        {
+            self.request_state = RequestState::Idle;
+            ctx.emit(CreateApiKeyModalEvent::Error {
+                message: "API key creation is disabled in this build.".to_string(),
+            });
+            ctx.notify();
+            return;
+        }
+
+        #[cfg(not(feature = "wormhole-slim"))]
+        self.create_cloud(ctx);
+    }
+
+    #[cfg(not(feature = "wormhole-slim"))]
+    fn create_cloud(&mut self, ctx: &mut ViewContext<Self>) {
         if self.request_state == RequestState::Pending {
             return;
         }
@@ -388,14 +409,18 @@ impl CreateApiKeyModal {
             |me, res, ctx| {
                 match res {
                     Ok(warp_graphql::mutations::generate_api_key::GenerateApiKeyResult::GenerateApiKeyOutput(output)) => {
-                        ctx.emit(CreateApiKeyModalEvent::Created { api_key: output.api_key });
+                        ctx.emit(CreateApiKeyModalEvent::Created {
+                            api_key: ApiKeyProperties {
+                                name: output.api_key.name,
+                            },
+                        });
                         me.request_state = RequestState::Succeeded;
                         me.raw_key_copied = false;
                         me.raw_key = Some(output.raw_api_key);
                         ctx.notify();
                     }
                     Ok(warp_graphql::mutations::generate_api_key::GenerateApiKeyResult::UserFacingError(e)) => {
-                        let msg = warp_graphql::client::get_user_facing_error_message(e);
+                        let msg = warp_graphql::client::get_user_facing_error_message(&e);
                         me.request_state = RequestState::Idle;
                         ctx.emit(CreateApiKeyModalEvent::Error { message: msg });
                         ctx.notify();

@@ -1,3 +1,4 @@
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod gql_convert;
 pub mod team;
 pub mod team_tester;

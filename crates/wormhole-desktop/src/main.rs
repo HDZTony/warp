@@ -1,10 +1,7 @@
 mod agent_events_view;
-mod agent_terminal_view;
 #[cfg(any(windows, target_os = "macos"))]
 mod computer_use_view;
 mod coordinator;
-#[allow(dead_code)]
-mod cursor_agent_view;
 mod rdp_extras_ui;
 mod rdp_host_control_view;
 mod rdp_invoke;

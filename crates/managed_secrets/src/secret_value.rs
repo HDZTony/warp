@@ -1,7 +1,14 @@
 use std::fmt;
 
 use serde::Serialize;
-use warp_graphql::managed_secrets::ManagedSecretType;
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "wormhole-slim")] {
+        use crate::cloud_types::ManagedSecretType;
+    } else {
+        use warp_graphql::managed_secrets::ManagedSecretType;
+    }
+}
 
 #[derive(Serialize)]
 #[serde(untagged)]

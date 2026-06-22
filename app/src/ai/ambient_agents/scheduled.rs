@@ -7,7 +7,10 @@ pub use cloud_object_models::{
 use futures::channel::oneshot;
 use futures::FutureExt;
 use serde_json::{Map, Value};
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::queries::get_scheduled_agent_history::ScheduledAgentHistory;
+#[cfg(feature = "wormhole-slim")]
+use crate::server::server_api::ai::ScheduledAgentHistory;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::cloud_object::model::generic_string_model::StringModel;

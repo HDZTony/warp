@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use comfy_table::Cell;
-use cynic::QueryBuilder;
 use inquire::error::InquireError;
 use inquire::{Confirm, Select};
 use serde::Serialize;
@@ -11,7 +10,8 @@ use warp_cli::scope::ObjectScope;
 use warp_cli::GlobalOptions;
 use warp_graphql::queries::get_oauth_connect_tx_status::OauthConnectTxStatus;
 use warp_graphql::queries::list_warp_dev_images::{
-    ListWarpDevImages, ListWarpDevImagesResult, ListWarpDevImagesVariables,
+    ListWarpDevImages, ListWarpDevImagesResponse, ListWarpDevImagesResult,
+    ListWarpDevImagesVariables,
 };
 use warp_graphql::queries::user_repo_auth_status::UserRepoAuthStatusEnum;
 use warpui::r#async::FutureExt;
@@ -147,7 +147,11 @@ impl EnvironmentCommandRunner {
         let server_api = ServerApiProvider::as_ref(ctx).get();
 
         let operation = ListWarpDevImages::build(ListWarpDevImagesVariables {});
-        let fetch_images = async move { server_api.send_graphql_request(operation, None).await };
+        let fetch_images = async move {
+            server_api
+                .send_graphql_request::<ListWarpDevImagesResponse, _>(operation, None)
+                .await
+        };
 
         ctx.spawn(fetch_images, move |_, result, ctx| match result {
             Ok(response) => match response.list_warp_dev_images {
@@ -344,7 +348,11 @@ impl EnvironmentCommandRunner {
 
         let server_api = ServerApiProvider::as_ref(ctx).get();
         let operation = ListWarpDevImages::build(ListWarpDevImagesVariables {});
-        let fetch_images = async move { server_api.send_graphql_request(operation, None).await };
+        let fetch_images = async move {
+            server_api
+                .send_graphql_request::<ListWarpDevImagesResponse, _>(operation, None)
+                .await
+        };
 
         ctx.spawn(fetch_images, move |_, result, ctx| match result {
             Ok(response) => match response.list_warp_dev_images {
@@ -573,6 +581,7 @@ impl EnvironmentCommandRunner {
                                 has_blocking_private_issues = true;
                                 break;
                             }
+                            UserRepoAuthStatusEnum::Unknown => {}
                         }
                     }
 
@@ -657,7 +666,8 @@ impl EnvironmentCommandRunner {
                                             );
                                         }
                                         Ok(OauthConnectTxStatus::Pending)
-                                        | Ok(OauthConnectTxStatus::InProgress) => {
+                                        | Ok(OauthConnectTxStatus::InProgress)
+                                        | Ok(OauthConnectTxStatus::Unknown) => {
                                             // Should not be returned by poll_oauth_until_terminal.
                                             ctx.terminate_app(
                                                 warpui::platform::TerminationMode::ForceTerminate,

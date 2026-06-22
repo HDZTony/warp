@@ -10,5 +10,9 @@ pub mod auth;
 pub mod cloud_object;
 pub mod drive;
 pub mod ids;
+pub mod saas_types;
 
 pub use auth::UserUid;
+pub use saas_types::{
+    AccessLevel, MCPGalleryTemplate, OwnerType, ServerTimestamp, UpdatedObjectInput,
+};

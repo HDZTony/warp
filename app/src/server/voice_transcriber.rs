@@ -29,7 +29,7 @@ impl Transcriber for ServerVoiceTranscriber {
         let response = self.server_api.transcribe(&request).await;
         match response {
             Ok(response) => Ok(response.text),
-            Err(e) => Err(e),
+            Err(e) => Err(TranscribeError::Other(e.into())),
         }
     }
 }

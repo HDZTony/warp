@@ -381,7 +381,6 @@ dependencies = [
  "uuid",
  "virtual-fs",
  "warp_core",
- "warp_graphql",
  "warp_multi_agent_api",
  "warp_terminal",
  "warp_util",
@@ -570,23 +569,6 @@ name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
-
-[[package]]
-name = "app-installation-detection"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum 0.8.4",
- "axum-extra",
- "command",
- "nix 0.26.4",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "win32job",
-]
 
 [[package]]
 name = "approx"
@@ -2148,28 +2130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-extra"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45bf463831f5131b7d3c756525b305d40f1185b688565648a92e1392ca35713d"
-dependencies = [
- "axum 0.8.4",
- "axum-core 0.5.2",
- "bytes",
- "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "serde",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "backon"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3143,7 +3103,6 @@ dependencies = [
  "serde_json",
  "uuid",
  "warp_core",
- "warp_graphql",
 ]
 
 [[package]]
@@ -3173,7 +3132,6 @@ dependencies = [
  "warp-workflows",
  "warp_cli",
  "warp_core",
- "warp_graphql",
  "warp_util",
 ]
 
@@ -3192,7 +3150,7 @@ dependencies = [
  "serde",
  "session-sharing-protocol",
  "warp_core",
- "warp_graphql",
+ "warp_server_auth",
 ]
 
 [[package]]
@@ -3201,7 +3159,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "cynic",
  "derivative",
  "itertools 0.14.0",
  "lasso",
@@ -3213,7 +3170,6 @@ dependencies = [
  "thiserror 2.0.17",
  "uuid",
  "warp_core",
- "warp_graphql",
  "warp_server_auth",
  "warpui_core",
 ]
@@ -4306,7 +4262,6 @@ dependencies = [
  "ouroboros",
  "proc-macro2",
  "quote",
- "rkyv",
  "strsim 0.10.0",
  "syn 2.0.117",
  "thiserror 1.0.63",
@@ -5768,14 +5723,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "firebase"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
-]
-
-[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6985,7 +6932,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa2e818b9e62654f2039d524c92a19495fcc2b0139ffc0354956865b3c7e939"
 dependencies = [
  "async-channel",
- "cynic",
  "futures-lite 2.6.1",
  "futures-sink",
  "futures-timer",
@@ -7545,12 +7491,6 @@ dependencies = [
  "http-body 1.0.1",
  "pin-project-lite",
 ]
-
-[[package]]
-name = "http-range-header"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ce4ef31cda248bbdb6e6820603b82dfcd9e833db65a43e997a0ccec777d11fe"
 
 [[package]]
 name = "http_client"
@@ -8136,52 +8076,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "integration"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app-installation-detection",
- "backtrace",
- "cfg-if 1.0.0",
- "chrono",
- "clap",
- "command",
- "diesel",
- "directories",
- "float-cmp",
- "instant",
- "itertools 0.14.0",
- "lazy_static",
- "log",
- "mockito",
- "nix 0.26.4",
- "parking_lot",
- "pathfinder_geometry",
- "rand 0.8.6",
- "regex",
- "rust-embed 8.7.2",
- "serde",
- "serde_json",
- "settings",
- "simplelog",
- "strum 0.27.1",
- "strum_macros 0.27.1",
- "sum_tree",
- "sysinfo 0.37.0",
- "version-compare 0.1.1",
- "warp",
- "warp-command-signatures",
- "warp-workflows",
- "warp_cli",
- "warp_core",
- "warp_multi_agent_api",
- "warpui",
- "warpui_core",
- "warpui_extras",
- "whoami",
 ]
 
 [[package]]
@@ -9636,14 +9530,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "managed_secrets_wasm"
-version = "0.1.0"
-dependencies = [
- "warp_managed_secrets",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -13344,7 +13230,7 @@ dependencies = [
 [[package]]
 name = "rdev"
 version = "0.5.0-2"
-source = "git+https://github.com/rustdesk-org/rdev?branch=master#a90dbe1172f8832f54c97c62e823c5a34af5fdfe"
+source = "git+https://github.com/rustdesk-org/rdev?branch=master#871bf1c856d6a30af2f56ab8848396a025140855"
 dependencies = [
  "cocoa 0.24.1",
  "core-foundation 0.9.4",
@@ -14930,20 +14816,6 @@ dependencies = [
  "quote",
  "rustversion",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "serve-wasm"
-version = "0.1.0"
-dependencies = [
- "axum 0.8.4",
- "axum-extra",
- "clap",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -16845,12 +16717,7 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
- "http-range-header",
- "httpdate",
  "iri-string",
- "mime",
- "mime_guess",
- "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -17739,7 +17606,6 @@ dependencies = [
  "aho-corasick",
  "ai",
  "anyhow",
- "app-installation-detection",
  "arrayvec",
  "asset_cache",
  "asset_macro",
@@ -17815,7 +17681,6 @@ dependencies = [
  "env_logger",
  "event-listener",
  "field_mask",
- "firebase",
  "flate2",
  "float-cmp",
  "freedesktop-desktop-entry",
@@ -17982,7 +17847,6 @@ dependencies = [
  "vec1",
  "version-compare 0.1.1",
  "vim",
- "virtual-fs",
  "voice_input",
  "vte 0.13.0",
  "walkdir",
@@ -17994,7 +17858,7 @@ dependencies = [
  "warp_core",
  "warp_editor",
  "warp_files",
- "warp_graphql",
+ "warp_graphql_slim",
  "warp_isolation_platform",
  "warp_js",
  "warp_logging",
@@ -18003,7 +17867,6 @@ dependencies = [
  "warp_ripgrep",
  "warp_search_core",
  "warp_server_auth",
- "warp_server_client",
  "warp_terminal",
  "warp_util",
  "warp_web_event_bus",
@@ -18284,38 +18147,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "warp_graphql"
+name = "warp_graphql_slim"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-channel",
  "chrono",
- "cynic",
- "cynic-codegen",
- "futures",
- "futures-util",
- "graphql-ws-client",
- "http 1.4.0",
- "http_client",
- "instant",
- "log",
- "persistence",
- "reqwest 0.13.3",
+ "cloud_objects",
  "serde",
  "thiserror 2.0.17",
- "warp_core",
- "warp_graphql_schema",
- "websocket",
- "ws_stream_wasm",
-]
-
-[[package]]
-name = "warp_graphql_schema"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "cynic",
- "cynic-codegen",
+ "warp_managed_secrets",
 ]
 
 [[package]]
@@ -18375,6 +18214,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "cfg-if 1.0.0",
  "chrono",
  "getrandom 0.3.4",
  "hpke",
@@ -18389,7 +18229,6 @@ dependencies = [
  "tink-proto",
  "vec1",
  "warp_core",
- "warp_graphql",
  "warp_isolation_platform",
  "warpui_core",
  "zeroize",
@@ -18462,7 +18301,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "cynic",
  "lasso",
  "log",
  "parking_lot",
@@ -18471,49 +18309,9 @@ dependencies = [
  "thiserror 2.0.17",
  "uuid",
  "warp_core",
- "warp_graphql",
  "warp_managed_secrets",
  "warpui_core",
  "warpui_extras",
-]
-
-[[package]]
-name = "warp_server_client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "async-trait",
- "bincode",
- "chrono",
- "cloud_object_client",
- "cloud_object_models",
- "cloud_objects",
- "cynic",
- "derivative",
- "diesel",
- "firebase",
- "futures",
- "http 1.4.0",
- "http_client",
- "instant",
- "itertools 0.14.0",
- "lasso",
- "log",
- "mockall",
- "oauth2",
- "pathfinder_geometry",
- "schemars",
- "serde",
- "session-sharing-protocol",
- "settings_value",
- "thiserror 2.0.17",
- "url",
- "uuid",
- "warp_core",
- "warp_graphql",
- "warp_server_auth",
- "warpui_core",
 ]
 
 [[package]]
@@ -18819,12 +18617,6 @@ checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
  "wit-bindgen",
 ]
-
-[[package]]
-name = "wasite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
@@ -19364,17 +19156,6 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.44",
-]
-
-[[package]]
-name = "whoami"
-version = "1.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "372d5b87f58ec45c384ba03563b03544dc5fadc3983e434b286913f5b4a9bb6d"
-dependencies = [
- "redox_syscall 0.5.18",
- "wasite",
- "web-sys",
 ]
 
 [[package]]
@@ -20356,6 +20137,7 @@ name = "wormhole-desktop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "asset_cache",
  "async-channel",
  "clap",
@@ -20383,6 +20165,7 @@ dependencies = [
  "wormhole-desktop-core",
  "wormhole-desktop-platform-windows",
  "wormhole-desktop-rdp",
+ "wormhole-native-ipc",
 ]
 
 [[package]]
@@ -20482,6 +20265,14 @@ dependencies = [
  "storage-core",
  "thiserror 2.0.17",
  "tracing",
+]
+
+[[package]]
+name = "wormhole-native-ipc"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,14 +1,55 @@
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod ai;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/ai_stub.rs"]
+pub mod ai;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod auth;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/auth.rs"]
+pub mod auth;
+#[cfg(not(feature = "wormhole-slim"))]
 mod base_client;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod block;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/block_stub.rs"]
+pub mod block;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod harness_support;
-pub mod integrations;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/harness_support_stub.rs"]
+pub mod harness_support;
 pub mod managed_secrets;
+#[cfg(not(feature = "wormhole-slim"))]
+pub mod integrations;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/integrations_stub.rs"]
+pub mod integrations;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod object;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/object.rs"]
+pub mod object;
+#[cfg(not(feature = "wormhole-slim"))]
 pub(crate) mod presigned_upload;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/presigned_upload_stub.rs"]
+pub(crate) mod presigned_upload;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod referral;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/referral_stub.rs"]
+pub mod referral;
+#[cfg(not(feature = "wormhole-slim"))]
 pub mod team;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/team.rs"]
+pub mod team;
+#[cfg(not(feature = "wormhole-slim"))]
+pub mod workspace;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/workspace.rs"]
 pub mod workspace;
 
 use std::path::Path;
@@ -21,6 +62,7 @@ use anyhow::{anyhow, Context, Result};
 use auth::AuthClient;
 use base64::prelude::BASE64_URL_SAFE;
 use base64::Engine;
+#[cfg(not(feature = "wormhole-slim"))]
 use base_client::{AMBIENT_WORKLOAD_TOKEN_HEADER, CLOUD_AGENT_ID_HEADER};
 use block::BlockClient;
 use channel_versions::ChannelVersions;
@@ -40,7 +82,9 @@ use warp_core::context_flag::ContextFlag;
 use warp_core::errors::{register_error, AnyhowErrorExt, ErrorExt};
 use warp_core::telemetry::TelemetryEvent;
 use warp_managed_secrets::client::ManagedSecretsClient;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_server_client::auth::{AuthClientImpl, AuthEvent, AuthSession, EXPERIMENT_ID_HEADER};
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_server_client::base_client::BaseClient as _;
 use warpui::r#async::BoxFuture;
 use warpui::{Entity, ModelContext, SingletonEntity};
@@ -374,6 +418,7 @@ cfg_if::cfg_if! {
     }
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 /// An API wrapper struct with methods to requests to warp-server.
 ///
 /// Prefer NOT adding new methods directly on this struct; instead, add to one of the existing
@@ -400,6 +445,7 @@ pub struct ServerApi {
     eval_user_id: Option<i32>,
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 impl ServerApi {
     fn new(
         auth_state: Arc<AuthState>,
@@ -1523,6 +1569,7 @@ impl ServerApi {
     }
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 /// A singleton entity that provides access to the global [`ServerApi`] instance,
 /// or any of its implemented trait objects.
 pub struct ServerApiProvider {
@@ -1530,6 +1577,7 @@ pub struct ServerApiProvider {
     auth_client: Arc<dyn AuthClient>,
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 impl ServerApiProvider {
     /// Constructs a new ServerApiProvider.
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
@@ -1658,7 +1706,14 @@ impl ServerApiProvider {
     }
 
     pub fn get_managed_secrets_client(&self) -> Arc<dyn ManagedSecretsClient> {
-        self.server_api.clone()
+        #[cfg(feature = "wormhole-slim")]
+        {
+            Arc::new(warp_managed_secrets::noop_client::NoopManagedSecretsClient)
+        }
+        #[cfg(not(feature = "wormhole-slim"))]
+        {
+            self.server_api.clone()
+        }
     }
 
     /// Returns the shared HTTP client. This client is wired into network logging
@@ -1673,8 +1728,24 @@ impl ServerApiProvider {
     }
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 impl Entity for ServerApiProvider {
     type Event = AuthEvent;
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 impl SingletonEntity for ServerApiProvider {}
+
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/server_api_ai_delegate.rs"]
+mod server_api_ai_delegate;
+
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/server_api_harness_delegate.rs"]
+mod server_api_harness_delegate;
+
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/server_api/slim_provider.rs"]
+mod slim_provider;
+#[cfg(feature = "wormhole-slim")]
+pub use slim_provider::{ServerApi, ServerApiProvider};

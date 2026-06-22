@@ -3108,6 +3108,7 @@ impl TryFrom<warp_graphql::queries::list_ai_conversations::AIConversationMetadat
     }
 }
 
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl StoreClient for ServerApi {

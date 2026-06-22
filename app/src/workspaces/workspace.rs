@@ -4,10 +4,18 @@ use std::path::PathBuf;
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::billing::{AddonCreditAutoReloadStatus, ServiceAgreement, ServiceAgreementType};
+#[cfg(not(feature = "wormhole-slim"))]
 pub use warp_graphql::billing::{
     AiCreditsUsageAndCostSubjectType, AiCreditsUsageAndCostType, AiCreditsUsageBucket,
     AiCreditsUsageSource,
+};
+#[cfg(feature = "wormhole-slim")]
+pub use super::billing_compat::{
+    AddonCreditAutoReloadStatus, AddonCreditsOption, AiCreditsUsageAndCostSubjectType,
+    AiCreditsUsageAndCostType, AiCreditsUsageBucket, AiCreditsUsageSource, ServiceAgreement,
+    ServiceAgreementType,
 };
 
 use super::team::{MembershipRole, Team};
@@ -180,7 +188,7 @@ impl Workspace {
     /// Returns None if auto-reload is not configured or if the denomination can't be found in pricing options.
     pub fn get_auto_reload_price_cents(
         &self,
-        addon_credits_options: &[warp_graphql::billing::AddonCreditsOption],
+        addon_credits_options: &[AddonCreditsOption],
     ) -> Option<i32> {
         let selected_credits = self
             .settings
@@ -689,7 +697,7 @@ impl BillingMetadata {
 
     pub fn has_active_subscription(&self) -> bool {
         if let Some(newest_service_agreement) = self.service_agreements.first() {
-            let not_expired = Utc::now() < newest_service_agreement.current_period_end.utc();
+            let not_expired = Utc::now() < newest_service_agreement.current_period_end;
             let not_delinquent = !self.is_delinquent_due_to_payment_issue();
             not_expired && not_delinquent
         } else {

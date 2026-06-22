@@ -1,5 +1,13 @@
+#[cfg(not(feature = "wormhole-slim"))]
+mod build_plan_migration_modal;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/workspace/build_plan_migration_modal.rs"]
 mod build_plan_migration_modal;
 pub(crate) mod cloud_agent_capacity_modal;
+#[cfg(not(feature = "wormhole-slim"))]
+pub(crate) mod codex_modal;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/codex_modal.rs"]
 pub(crate) mod codex_modal;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
@@ -73,6 +81,7 @@ use warp_core::ui::theme::Fill;
 use warp_core::ui::Icon;
 use warp_core::user_preferences::GetUserPreferences as _;
 use warp_editor::editor::NavigationKey;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_server_client::auth::AuthEvent;
 use warp_util::path::{user_friendly_path, LineAndColumnArg};
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
@@ -2553,6 +2562,7 @@ impl Workspace {
     }
 
     /// Subscribe to the [`ServerApiProvider`] model to report status changes.
+    #[cfg(not(feature = "wormhole-slim"))]
     fn observe_server_api(ctx: &mut ViewContext<Self>) {
         let server_api_events = ServerApiProvider::handle(ctx);
         ctx.subscribe_to_model(&server_api_events, |me, _, event, ctx| {
@@ -3127,8 +3137,9 @@ impl Workspace {
         let prompt_editor_modal = Self::build_prompt_editor_modal(ctx);
         let agent_toolbar_editor_modal = Self::build_agent_toolbar_editor_modal(ctx);
 
-        let import_modal = Self::build_import_modal(ctx);
+        let import_modal =         Self::build_import_modal(ctx);
 
+        #[cfg(not(feature = "wormhole-slim"))]
         Self::observe_server_api(ctx);
 
         Self::subscribe_to_workspace_toast_stack(toast_stack.clone(), ctx);
@@ -18514,51 +18525,6 @@ impl Workspace {
                 });
             }
         });
-        self.start_wormhole_remote_queue_poll(ctx);
-    }
-
-    fn start_wormhole_remote_queue_poll(&mut self, ctx: &mut ViewContext<Self>) {
-        if !wormhole_embed::is_embedded() {
-            return;
-        }
-        let delay = std::time::Duration::from_millis(500);
-        ctx.spawn(
-            async move {
-                warpui::r#async::Timer::after(delay).await;
-            },
-            |me, _, ctx| {
-                me.poll_wormhole_remote_queue(ctx);
-                me.start_wormhole_remote_queue_poll(ctx);
-            },
-        );
-    }
-
-    fn poll_wormhole_remote_queue(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(data_dir) = wormhole_embed::data_dir() else {
-            return;
-        };
-        let Some(dispatch) = wormhole_embed::remote_queue::poll_remote_queue(&data_dir) else {
-            return;
-        };
-        let task_id = dispatch.item.id.clone();
-        let command = dispatch.command.clone();
-        wormhole_embed::remote_queue::acknowledge_success(&data_dir, &dispatch.item, &command);
-        self.add_new_session_tab_with_default_mode(
-            NewSessionSource::Tab,
-            Some(ctx.window_id()),
-            None,
-            None,
-            false,
-            ctx,
-        );
-        if let Some(terminal_view) = self.active_session_view(ctx) {
-            terminal_view.update(ctx, |view, ctx| {
-                view.input().update(ctx, |input, ctx| {
-                    input.try_execute_command(&command, ctx);
-                });
-            });
-        }
-        ctx.notify();
     }
 
     fn wormhole_embed_select_agent(

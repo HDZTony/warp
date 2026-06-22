@@ -4,9 +4,15 @@ use ai::api_keys::ApiKeyManager;
 use chrono::{DateTime, Local, Utc};
 use instant::Instant;
 use serde::{Deserialize, Serialize};
-use warp_core::user_preferences::GetUserPreferences as _;
+#[cfg(not(feature = "wormhole-slim"))]
 pub use warp_graphql::billing::BonusGrantType;
+#[cfg(feature = "wormhole-slim")]
+pub use crate::workspaces::billing_compat::BonusGrantType;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::scalars::time::ServerTimestamp;
+#[cfg(feature = "wormhole-slim")]
+use warp_server_auth::ServerTimestamp;
+use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::ai::agent::conversation::AIConversationId;

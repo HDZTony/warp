@@ -1727,10 +1727,11 @@ impl SyncQueue {
                     GraphQLError::StagingAccessBlocked => return true,
                     // If the user isn't authorized, stop dequeuing. In general, this should
                     // manifest as a UserAuthenticationError instead.
-                    GraphQLError::HttpError {
-                        status: StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED,
-                        ..
-                    } => return true,
+                    GraphQLError::HttpError { status, .. }
+                        if matches!(*status, 401 | 403) =>
+                    {
+                        return true;
+                    }
                     _ => (),
                 }
             }

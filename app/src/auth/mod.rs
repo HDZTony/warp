@@ -1,3 +1,7 @@
+#[cfg(not(feature = "wormhole-slim"))]
+mod auth_manager;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/auth/auth_manager.rs"]
 pub mod auth_manager;
 mod auth_override_warning_body;
 pub mod auth_override_warning_modal;
@@ -16,7 +20,7 @@ pub mod web_handoff;
 
 use ::settings::{Setting, SettingsManager, ToggleableSetting};
 use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
-pub use auth_manager::AuthManager;
+pub use auth_manager::{AuthManager, AuthManagerEvent, LoginGatedFeature, PersistedCurrentUserInformation};
 pub use auth_state::AuthStateProvider;
 use itertools::Itertools;
 pub use login_failure_notification::LoginFailureReason;

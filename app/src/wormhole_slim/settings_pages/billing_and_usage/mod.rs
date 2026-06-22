@@ -1,3 +1,5 @@
+//! Billing submodule stubs for `wormhole-slim`.
+
 pub mod billing_cycle_usage_common;
 pub mod billing_cycle_usage_rows;
 pub mod billing_cycle_usage_section;

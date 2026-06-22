@@ -72,7 +72,7 @@ pub(crate) fn is_transient_graphql_or_http_error(e: &anyhow::Error) -> bool {
         if let Some(graphql_err) = cause.downcast_ref::<GraphQLError>() {
             return match graphql_err {
                 GraphQLError::RequestError(_) => true,
-                GraphQLError::HttpError { status, .. } => is_transient_status(status.as_u16()),
+                GraphQLError::HttpError { status, .. } => is_transient_status(*status),
                 GraphQLError::StagingAccessBlocked
                 | GraphQLError::IapChallengeBlocked
                 | GraphQLError::ResponseError(_) => false,

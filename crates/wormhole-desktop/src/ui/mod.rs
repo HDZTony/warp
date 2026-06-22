@@ -11,6 +11,6 @@ pub mod sync_views;
 pub mod theme;
 pub mod toolbox_view;
 pub mod w_drive_view;
-pub mod warp_embed_view;
+pub mod agent_panel;
 
 pub use app_shell::AppShellView;

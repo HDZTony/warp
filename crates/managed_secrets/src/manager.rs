@@ -5,14 +5,12 @@ use std::time::Duration;
 
 use vec1::vec1;
 use warp_core::features::FeatureFlag;
-use warp_graphql::managed_secrets::ManagedSecret;
-use warp_graphql::queries::task_secrets::ManagedSecretValue as GqlManagedSecretValue;
 use warpui_core::{Entity, SingletonEntity};
 
 use crate::ManagedSecretValue;
 use crate::client::{
-    IdentityTokenOptions, ManagedSecretConfigs, ManagedSecretsClient, SecretOwner,
-    TaskIdentityToken,
+    IdentityTokenOptions, ManagedSecret, ManagedSecretConfigs, ManagedSecretsClient,
+    ManagedSecretValue as TaskManagedSecretValue, SecretOwner, TaskIdentityToken,
 };
 use crate::envelope::UploadKey;
 use crate::gcp::{self, GcpWorkloadIdentityFederationError, GcpWorkloadIdentityFederationToken};
@@ -170,41 +168,9 @@ impl ManagedSecretManager {
                 .get_task_secrets(task_id, workload_token.token)
                 .await?;
 
-            // Convert GQL ManagedSecretValue to our ManagedSecretValue
             let mut secrets = HashMap::new();
             for (name, gql_value) in gql_secrets {
-                let value = match gql_value {
-                    GqlManagedSecretValue::ManagedSecretRawValue(raw) => {
-                        ManagedSecretValue::raw_value(raw.value)
-                    }
-                    GqlManagedSecretValue::ManagedSecretAnthropicApiKeyValue(v) => {
-                        ManagedSecretValue::anthropic_api_key(v.api_key)
-                    }
-                    GqlManagedSecretValue::ManagedSecretAnthropicBedrockAccessKeyValue(v) => {
-                        ManagedSecretValue::anthropic_bedrock_access_key(
-                            v.aws_access_key_id,
-                            v.aws_secret_access_key,
-                            // aws_session_token is now optional on the server.
-                            v.aws_session_token,
-                            v.aws_region,
-                        )
-                    }
-                    GqlManagedSecretValue::ManagedSecretAnthropicBedrockApiKeyValue(v) => {
-                        ManagedSecretValue::anthropic_bedrock_api_key(
-                            v.aws_bearer_token_bedrock,
-                            v.aws_region,
-                        )
-                    }
-                    GqlManagedSecretValue::ManagedSecretOpenAiApiKeyValue(v) => {
-                        ManagedSecretValue::openai_api_key(v.api_key, v.base_url)
-                    }
-                    GqlManagedSecretValue::Unknown => {
-                        return Err(anyhow::anyhow!(
-                            "Unknown secret value type for secret: {}",
-                            name
-                        ));
-                    }
-                };
+                let value = task_secret_value_to_upload_value(gql_value, &name)?;
                 secrets.insert(name, value);
             }
             Ok(secrets)
@@ -256,8 +222,6 @@ impl ManagedSecretManager {
     }
 }
 
-/// Find the public upload key corresponding to `owner`.
-/// Returns an error if there's no such key in `configs`.
 fn owner_public_key<'a>(
     configs: &'a ManagedSecretConfigs,
     owner: &SecretOwner,
@@ -273,6 +237,76 @@ fn owner_public_key<'a>(
             .get(team_uid)
             .and_then(|config| config.public_key.as_deref())
             .ok_or_else(|| anyhow::anyhow!("No public key for team {team_uid}")),
+    }
+}
+
+fn task_secret_value_to_upload_value(
+    gql_value: TaskManagedSecretValue,
+    name: &str,
+) -> anyhow::Result<ManagedSecretValue> {
+    #[cfg(feature = "wormhole-slim")]
+    {
+        match gql_value {
+            TaskManagedSecretValue::RawValue { value } => Ok(ManagedSecretValue::raw_value(value)),
+            TaskManagedSecretValue::AnthropicApiKey { api_key } => {
+                Ok(ManagedSecretValue::anthropic_api_key(api_key))
+            }
+            TaskManagedSecretValue::AnthropicBedrockAccessKey {
+                aws_access_key_id,
+                aws_secret_access_key,
+                aws_session_token,
+                aws_region,
+            } => Ok(ManagedSecretValue::anthropic_bedrock_access_key(
+                aws_access_key_id,
+                aws_secret_access_key,
+                aws_session_token,
+                aws_region,
+            )),
+            TaskManagedSecretValue::AnthropicBedrockApiKey {
+                aws_bearer_token_bedrock,
+                aws_region,
+            } => Ok(ManagedSecretValue::anthropic_bedrock_api_key(
+                aws_bearer_token_bedrock,
+                aws_region,
+            )),
+            TaskManagedSecretValue::OpenaiApiKey { api_key, base_url } => {
+                Ok(ManagedSecretValue::openai_api_key(api_key, base_url))
+            }
+            TaskManagedSecretValue::Unknown => Err(anyhow::anyhow!(
+                "Unknown secret value type for secret: {name}"
+            )),
+        }
+    }
+    #[cfg(not(feature = "wormhole-slim"))]
+    {
+        match gql_value {
+            TaskManagedSecretValue::ManagedSecretRawValue(raw) => {
+                Ok(ManagedSecretValue::raw_value(raw.value))
+            }
+            TaskManagedSecretValue::ManagedSecretAnthropicApiKeyValue(v) => {
+                Ok(ManagedSecretValue::anthropic_api_key(v.api_key))
+            }
+            TaskManagedSecretValue::ManagedSecretAnthropicBedrockAccessKeyValue(v) => {
+                Ok(ManagedSecretValue::anthropic_bedrock_access_key(
+                    v.aws_access_key_id,
+                    v.aws_secret_access_key,
+                    v.aws_session_token,
+                    v.aws_region,
+                ))
+            }
+            TaskManagedSecretValue::ManagedSecretAnthropicBedrockApiKeyValue(v) => {
+                Ok(ManagedSecretValue::anthropic_bedrock_api_key(
+                    v.aws_bearer_token_bedrock,
+                    v.aws_region,
+                ))
+            }
+            TaskManagedSecretValue::ManagedSecretOpenAiApiKeyValue(v) => {
+                Ok(ManagedSecretValue::openai_api_key(v.api_key, v.base_url))
+            }
+            TaskManagedSecretValue::Unknown => Err(anyhow::anyhow!(
+                "Unknown secret value type for secret: {name}"
+            )),
+        }
     }
 }
 

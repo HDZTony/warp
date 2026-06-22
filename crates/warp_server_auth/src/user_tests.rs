@@ -1,5 +1,5 @@
 use anyhow::Result;
-use warp_graphql::queries::get_user::FirebaseProfile;
+use super::user::{FirebaseProfile, UserMetadata};
 
 use super::*;
 

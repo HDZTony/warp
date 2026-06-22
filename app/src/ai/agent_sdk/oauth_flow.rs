@@ -35,7 +35,7 @@ pub async fn poll_oauth_until_terminal(
             | OauthConnectTxStatus::Expired => {
                 return Ok(status);
             }
-            OauthConnectTxStatus::Pending | OauthConnectTxStatus::InProgress => {
+            OauthConnectTxStatus::Pending | OauthConnectTxStatus::InProgress | OauthConnectTxStatus::Unknown => {
                 if attempt % 5 == 0 {
                     log::debug!("Still waiting for authorization... ({attempt}/{MAX_ATTEMPTS})",);
                 }

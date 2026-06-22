@@ -207,6 +207,7 @@ impl From<api::message::artifact_event::PlanArtifact> for Artifact {
     }
 }
 
+#[cfg(not(feature = "wormhole-slim"))]
 impl TryFrom<warp_graphql::ai::AIConversationArtifact> for Artifact {
     type Error = ();
 

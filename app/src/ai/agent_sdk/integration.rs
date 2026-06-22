@@ -312,7 +312,8 @@ impl IntegrationCommandRunner {
                                                 );
                                             }
                                             Ok(OauthConnectTxStatus::Pending)
-                                            | Ok(OauthConnectTxStatus::InProgress) => {
+                                            | Ok(OauthConnectTxStatus::InProgress)
+                                            | Ok(OauthConnectTxStatus::Unknown) => {
                                                 // Should not be returned by poll_oauth_until_terminal.
                                                 ctx.terminate_app(
                                                     TerminationMode::ForceTerminate,

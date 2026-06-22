@@ -1,6 +1,10 @@
 pub mod block;
 pub mod cloud_objects;
 pub mod experiments;
+#[cfg(not(feature = "wormhole-slim"))]
+pub mod graphql;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/graphql/mod.rs"]
 pub mod graphql;
 // IAP items are only referenced from native code paths; on wasm the
 // module compiles but every function is dead code.

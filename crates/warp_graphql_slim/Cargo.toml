@@ -1,0 +1,15 @@
+[package]
+name = "warp_graphql_slim"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Minimal warp_graphql stand-ins for wormhole-slim embed builds"
+
+[dependencies]
+cloud_objects = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+warp_managed_secrets = { workspace = true }

@@ -18,8 +18,8 @@ use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::{AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle};
 
 use super::platform::{
-    CreateApiKeyModal, CreateApiKeyModalEvent, CreateApiKeyModalViewState, ExpireApiKeyButton,
-    ExpireApiKeyButtonEvent,
+    CreateApiKeyModal, CreateApiKeyModalEvent, CreateApiKeyModalProperties,
+    CreateApiKeyModalViewState, ExpireApiKeyButton, ExpireApiKeyButtonEvent,
 };
 use super::settings_page::{
     MatchData, PageType, SettingsPageMeta, SettingsPageViewHandle, SettingsWidget,
@@ -405,6 +405,21 @@ impl APIKeyProperties {
                     .agent_name
                     .as_ref()
                     .is_some_and(|agent_name| agent_name.to_lowercase().contains(&needle)))
+    }
+}
+
+impl From<&CreateApiKeyModalProperties> for APIKeyProperties {
+    fn from(api_key: &CreateApiKeyModalProperties) -> Self {
+        Self {
+            uid: ApiKeyUid::from(String::new()),
+            name: api_key.name.clone(),
+            key_suffix: String::new(),
+            scope: ApiKeyScope::Personal,
+            agent_name: None,
+            created_at: Utc::now(),
+            last_used_at: None,
+            expires_at: None,
+        }
     }
 }
 

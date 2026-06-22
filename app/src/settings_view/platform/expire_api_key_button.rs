@@ -65,7 +65,7 @@ impl ExpireApiKeyButton {
                 Ok(
                     warp_graphql::mutations::expire_api_key::ExpireApiKeyResult::UserFacingError(e),
                 ) => {
-                    let _msg = warp_graphql::client::get_user_facing_error_message(e);
+                    let _msg = warp_graphql::client::get_user_facing_error_message(&e);
                     me.request_state = RequestState::Idle;
                     ctx.emit(ExpireApiKeyButtonEvent::ExpireApiKeyFailed { message: _msg });
                     ctx.notify();

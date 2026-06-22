@@ -14,8 +14,14 @@ use warp_cli::secret::{
 };
 use warp_cli::GlobalOptions;
 use warp_core::features::FeatureFlag;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::managed_secrets::{ManagedSecret, ManagedSecretType};
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::object::SpaceType;
+#[cfg(feature = "wormhole-slim")]
+use warp_graphql::object::SpaceType;
+#[cfg(feature = "wormhole-slim")]
+use warp_managed_secrets::cloud_types::{ManagedSecret, ManagedSecretType};
 use warp_managed_secrets::client::SecretOwner;
 use warp_managed_secrets::{ManagedSecretManager, ManagedSecretValue};
 use warpui::platform::TerminationMode;
@@ -147,6 +153,14 @@ impl SecretInput {
 
 /// Create a new secret. Dispatches to the provider subcommand if present.
 fn create_secret(ctx: &mut AppContext, args: CreateSecretArgs) -> Result<()> {
+    #[cfg(feature = "wormhole-slim")]
+    anyhow::bail!("managed secrets CLI is disabled in wormhole-slim builds");
+    #[cfg(not(feature = "wormhole-slim"))]
+    create_secret_impl(ctx, args)
+}
+
+#[cfg(not(feature = "wormhole-slim"))]
+fn create_secret_impl(ctx: &mut AppContext, args: CreateSecretArgs) -> Result<()> {
     // Resolve provider subcommand into common fields plus a deferred value reader.
     let (name, input, description, scope) = match args.provider {
         Some(CreateProvider::Anthropic(anthropic)) => match anthropic.method {
@@ -281,6 +295,14 @@ fn create_secret_with_input(
 
 /// Delete a secret.
 fn delete_secret(ctx: &mut AppContext, args: DeleteSecretArgs) -> Result<()> {
+    #[cfg(feature = "wormhole-slim")]
+    anyhow::bail!("managed secrets CLI is disabled in wormhole-slim builds");
+    #[cfg(not(feature = "wormhole-slim"))]
+    delete_secret_impl(ctx, args)
+}
+
+#[cfg(not(feature = "wormhole-slim"))]
+fn delete_secret_impl(ctx: &mut AppContext, args: DeleteSecretArgs) -> Result<()> {
     let name = args.name;
     let force = args.force;
     let team = args.scope.team;
@@ -370,6 +392,14 @@ fn delete_secret(ctx: &mut AppContext, args: DeleteSecretArgs) -> Result<()> {
 
 /// Update a secret.
 fn update_secret(ctx: &mut AppContext, args: UpdateSecretArgs) -> Result<()> {
+    #[cfg(feature = "wormhole-slim")]
+    anyhow::bail!("managed secrets CLI is disabled in wormhole-slim builds");
+    #[cfg(not(feature = "wormhole-slim"))]
+    update_secret_impl(ctx, args)
+}
+
+#[cfg(not(feature = "wormhole-slim"))]
+fn update_secret_impl(ctx: &mut AppContext, args: UpdateSecretArgs) -> Result<()> {
     ManagedSecretManager::handle(ctx).update(ctx, move |_manager, ctx| {
         // Perform as much validation as possible up-front, before prompting the user for a secret.
         let refresh_future = super::common::refresh_workspace_metadata(ctx);
@@ -487,6 +517,18 @@ fn update_secret(ctx: &mut AppContext, args: UpdateSecretArgs) -> Result<()> {
 
 /// List secrets.
 fn list_secrets(
+    ctx: &mut AppContext,
+    output_format: OutputFormat,
+    _args: ListSecretsArgs,
+) -> Result<()> {
+    #[cfg(feature = "wormhole-slim")]
+    anyhow::bail!("managed secrets CLI is disabled in wormhole-slim builds");
+    #[cfg(not(feature = "wormhole-slim"))]
+    list_secrets_impl(ctx, output_format, _args)
+}
+
+#[cfg(not(feature = "wormhole-slim"))]
+fn list_secrets_impl(
     ctx: &mut AppContext,
     output_format: OutputFormat,
     _args: ListSecretsArgs,
@@ -836,9 +878,9 @@ fn find_secret_type(
         .find(|s| {
             s.name == name
                 && match owner {
-                    SecretOwner::CurrentUser => matches!(s.owner.type_, SpaceType::User),
+                    SecretOwner::CurrentUser => !s.owner.is_team,
                     SecretOwner::Team { team_uid } => {
-                        matches!(s.owner.type_, SpaceType::Team) && s.owner.uid.inner() == team_uid
+                        s.owner.is_team && s.owner.uid == *team_uid
                     }
                 }
         })

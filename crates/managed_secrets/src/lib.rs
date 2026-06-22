@@ -1,7 +1,11 @@
 pub mod client;
+#[cfg(feature = "wormhole-slim")]
+pub mod cloud_types;
 mod envelope;
 mod gcp;
 mod manager;
+#[cfg(feature = "wormhole-slim")]
+pub mod noop_client;
 mod secret_value;
 
 pub use client::TaskIdentityToken;

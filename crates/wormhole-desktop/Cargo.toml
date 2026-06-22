@@ -15,6 +15,7 @@ path = "src/main.rs"
 default = ["media-ffmpeg", "remote-desktop"]
 media-ffmpeg = ["wormhole-desktop-core/media-ffmpeg"]
 remote-desktop = ["wormhole-desktop-core/remote-desktop"]
+native-ui = ["wormhole-desktop-core/native-ui"]
 
 [dependencies]
 anyhow.workspace = true
@@ -39,7 +40,12 @@ uuid = { version = "1", features = ["v4"] }
 vt100 = "0.15"
 warpui.workspace = true
 warpui_core.workspace = true
-wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false }
+wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false, features = [
+  "media-ffmpeg",
+  "remote-desktop",
+  "native-ui",
+] }
+wormhole-native-ipc = { path = "../../../../crates/wormhole-native-ipc" }
 wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", features = [
   "iroh-transport",
   "rdp",
@@ -48,6 +54,7 @@ wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", featu
   "clipboard-sync",
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+arboard = "3"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 computer-use = { path = "../../../../crates/computer-use" }

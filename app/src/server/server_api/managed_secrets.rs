@@ -1,44 +1,61 @@
 use std::collections::HashMap;
 
+pub use warp_managed_secrets::client::{ManagedSecretConfigs, ManagedSecretsClient};
+use warp_managed_secrets::client::{SecretOwner, TaskIdentityToken};
+
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use anyhow::{anyhow, Context, Result};
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use async_trait::async_trait;
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use cynic::{MutationBuilder, QueryBuilder};
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::managed_secrets::{ManagedSecret, ManagedSecretType};
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::mutations::create_managed_secret::{
     CreateManagedSecret, CreateManagedSecretInput, CreateManagedSecretResult,
     CreateManagedSecretVariables,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::mutations::delete_managed_secret::{
     DeleteManagedSecret, DeleteManagedSecretInput, DeleteManagedSecretResult,
     DeleteManagedSecretVariables,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::mutations::issue_task_identity_token::{
     IssueTaskIdentityToken, IssueTaskIdentityTokenInput, IssueTaskIdentityTokenResult,
     IssueTaskIdentityTokenVariables,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::mutations::update_managed_secret::{
     UpdateManagedSecret, UpdateManagedSecretInput, UpdateManagedSecretResult,
     UpdateManagedSecretVariables,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::object_permissions::{Owner, OwnerType};
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::queries::list_harness_auth_secrets::{
     ListHarnessAuthSecrets, ListHarnessAuthSecretsInput, ListHarnessAuthSecretsVariables,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::queries::list_managed_secrets::{
     ListManagedSecrets, ListManagedSecretsVariables, ManagedSecretsInput, ManagedSecretsResult,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::queries::managed_secret_config::{
     GetManagedSecretConfig, GetManagedSecretConfigVariables, UserResult,
 };
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use warp_graphql::queries::task_secrets::{
     ManagedSecretValue, TaskSecrets, TaskSecretsInput, TaskSecretsResult, TaskSecretsVariables,
 };
-pub use warp_managed_secrets::client::{ManagedSecretConfigs, ManagedSecretsClient};
-use warp_managed_secrets::client::{SecretOwner, TaskIdentityToken};
 
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use super::ServerApi;
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 use crate::server::graphql::{get_request_context, get_user_facing_error_message};
 
+#[cfg(all(not(target_family = "wasm"), not(feature = "wormhole-slim")))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl ManagedSecretsClient for ServerApi {

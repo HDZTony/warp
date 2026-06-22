@@ -1,8 +1,14 @@
 //! Commands to interact with available agents via the public API.
 
 use warp_cli::agent::ListAgentSkillsArgs;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::queries::get_oauth_connect_tx_status::OauthConnectTxStatus;
+#[cfg(feature = "wormhole-slim")]
+use crate::server::server_api::integrations::OauthConnectTxStatus;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::queries::user_repo_auth_status::UserRepoAuthStatusEnum;
+#[cfg(feature = "wormhole-slim")]
+use crate::wormhole_slim::gql_standins::UserRepoAuthStatusEnum;
 use warpui::platform::TerminationMode;
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
@@ -123,6 +129,7 @@ impl AgentConfigRunner {
                                 has_blocking_private_issues = true;
                                 break;
                             }
+                            UserRepoAuthStatusEnum::Unknown => {}
                         }
                     }
 

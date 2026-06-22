@@ -31,10 +31,18 @@ pub mod block_list_viewport;
 pub mod blockgrid_element;
 mod blockgrid_renderer;
 mod bootstrap;
+#[cfg(not(feature = "wormhole-slim"))]
+mod buy_credits_banner;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/terminal/buy_credits_banner.rs"]
 mod buy_credits_banner;
 pub mod color;
 mod command_corrections_denylist;
 pub mod dynamic_enum_suggestions;
+#[cfg(not(feature = "wormhole-slim"))]
+pub mod enable_auto_reload_modal;
+#[cfg(feature = "wormhole-slim")]
+#[path = "../wormhole_slim/terminal/enable_auto_reload_modal.rs"]
 pub mod enable_auto_reload_modal;
 pub mod event;
 pub mod event_listener;

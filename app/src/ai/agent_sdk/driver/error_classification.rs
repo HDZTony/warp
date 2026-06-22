@@ -1,4 +1,4 @@
-use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
+use crate::server::server_api::ai::{AgentTaskState, PlatformErrorCode};
 
 use super::terminal::ShareSessionError;
 use super::AgentDriverError;

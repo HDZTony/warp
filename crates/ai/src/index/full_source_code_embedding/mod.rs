@@ -21,6 +21,8 @@ pub use snapshot::SnapshotStorage;
 use string_offset::ByteOffset;
 pub use sync_client::SyncTask;
 use thiserror::Error;
+
+#[cfg(feature = "cloud-indexing")]
 use warp_graphql::queries::rerank_fragments::FragmentLocationInput;
 
 #[derive(Error, Debug)]
@@ -98,12 +100,14 @@ pub struct RepoMetadata {
     pub path: Option<String>,
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<RepoMetadata> for warp_graphql::full_source_code_embedding::RepoMetadata {
     fn from(val: RepoMetadata) -> Self {
         Self { path: val.path }
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<EmbeddingConfig> for warp_graphql::full_source_code_embedding::EmbeddingConfig {
     fn from(val: EmbeddingConfig) -> Self {
         match val {
@@ -126,6 +130,7 @@ impl From<EmbeddingConfig> for warp_graphql::full_source_code_embedding::Embeddi
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl TryFrom<warp_graphql::full_source_code_embedding::EmbeddingConfig> for EmbeddingConfig {
     type Error = Error;
 
@@ -201,6 +206,7 @@ impl Fragment {
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<Fragment> for warp_graphql::full_source_code_embedding::Fragment {
     fn from(val: Fragment) -> Self {
         Self {
@@ -210,6 +216,7 @@ impl From<Fragment> for warp_graphql::full_source_code_embedding::Fragment {
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<Fragment> for warp_graphql::queries::rerank_fragments::RerankFragmentInput {
     fn from(val: Fragment) -> Self {
         Self {
@@ -224,6 +231,7 @@ impl From<Fragment> for warp_graphql::queries::rerank_fragments::RerankFragmentI
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl TryFrom<warp_graphql::queries::rerank_fragments::RerankFragment> for Fragment {
     type Error = Error;
 

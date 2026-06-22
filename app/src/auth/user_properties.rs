@@ -14,10 +14,17 @@ pub(crate) struct UserProperties {
 
 impl From<GqlUserOutput> for UserProperties {
     fn from(user_output: GqlUserOutput) -> Self {
+        #[cfg(feature = "wormhole-slim")]
+        let principal_type = user_output
+            .principal_type
+            .map(crate::wormhole_slim::user_gql_conversions::gql_principal_type_to_auth)
+            .unwrap_or_default();
+        #[cfg(not(feature = "wormhole-slim"))]
         let principal_type = user_output
             .principal_type
             .map(|pt| pt.into())
             .unwrap_or_default();
+
         let user_properties = user_output.user;
 
         let is_on_work_domain = user_properties.is_on_work_domain;
@@ -45,18 +52,40 @@ impl From<GqlUserOutput> for UserProperties {
             .and_then(|experiments| convert_to_server_experiment!(experiments))
             .unwrap_or_default();
 
-        // Convert LLM model choices from the GraphQL response.
+        #[cfg(feature = "wormhole-slim")]
+        let llms = crate::wormhole_slim::user_gql_conversions::gql_feature_models_to_llms(
+            user_properties.llms,
+        );
+        #[cfg(not(feature = "wormhole-slim"))]
         let llms = user_properties.llms.try_into().unwrap_or_default();
+
+        #[cfg(feature = "wormhole-slim")]
+        let metadata =
+            crate::wormhole_slim::user_gql_conversions::firebase_profile_to_metadata(user_profile);
+        #[cfg(not(feature = "wormhole-slim"))]
+        let metadata = user_profile.into();
+
+        #[cfg(feature = "wormhole-slim")]
+        let anonymous_user_type = anonymous_user_type
+            .and_then(crate::wormhole_slim::user_gql_conversions::gql_anonymous_user_type_to_auth);
+        #[cfg(not(feature = "wormhole-slim"))]
+        let anonymous_user_type = anonymous_user_type.and_then(|t| t.try_into().ok());
+
+        #[cfg(feature = "wormhole-slim")]
+        let personal_object_limits = personal_object_limits
+            .map(crate::wormhole_slim::user_gql_conversions::gql_personal_object_limits_to_auth);
+        #[cfg(not(feature = "wormhole-slim"))]
+        let personal_object_limits = personal_object_limits.and_then(|t| t.try_into().ok());
 
         let user = User {
             is_onboarded,
             local_id,
-            metadata: user_profile.into(),
+            metadata,
             needs_sso_link,
-            anonymous_user_type: anonymous_user_type.and_then(|t| t.try_into().ok()),
+            anonymous_user_type,
             is_on_work_domain,
             linked_at,
-            personal_object_limits: personal_object_limits.and_then(|t| t.try_into().ok()),
+            personal_object_limits,
             principal_type,
             global_skills,
         };

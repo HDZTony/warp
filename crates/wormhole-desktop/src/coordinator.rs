@@ -19,10 +19,8 @@ use crate::wormhole_native_ipc::AgentTerminalBackend;
 use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
 
 use crate::agent_events_view::AgentEventsView;
-use crate::agent_terminal_view::CodexTerminalView;
 #[cfg(any(windows, target_os = "macos"))]
 use crate::computer_use_view::ComputerUseView;
-use crate::cursor_agent_view::CursorAgentView;
 use crate::rdp_host_control_view::RdpHostControlView;
 use crate::rdp_view::RdpViewerView;
 use crate::workspace_rdp_view::new_workspace_rdp_view;
@@ -346,25 +344,9 @@ impl CoordinatorView {
                 UiCommand::FocusWorkspaceHud { window_key } => {
                     self.focus_workspace_hud_window(ctx, &window_key);
                 }
-                UiCommand::RunWarpRemotePrompt {
-                    agent,
-                    task_id,
-                    prompt,
-                } => {
+                UiCommand::RunWarpRemotePrompt { agent, .. } => {
                     if let Ok(mut guard) = self.state.lock() {
-                        let data_dir = guard.data_dir().to_path_buf();
                         guard.focus_warp_agent(agent);
-                        let agent_kind = match agent {
-                            PreferredAgent::Codex => {
-                                wormhole_desktop_core::warp_remote::WarpAgentKind::Codex
-                            }
-                            PreferredAgent::Cursor => {
-                                wormhole_desktop_core::warp_remote::WarpAgentKind::Cursor
-                            }
-                        };
-                        let _ = wormhole_desktop_core::warp_remote::enqueue_prompt(
-                            &data_dir, &task_id, agent_kind, &prompt,
-                        );
                     }
                 }
                 UiCommand::Shutdown => {
@@ -419,72 +401,6 @@ impl CoordinatorView {
         if let Ok(mut guard) = self.state.lock() {
             guard.focus_warp_agent(agent);
         }
-    }
-
-    #[allow(dead_code)]
-    fn open_agent_window(
-        &self,
-        ctx: &mut ViewContext<Self>,
-        window_key: &str,
-        title: &str,
-        session_key: &str,
-        backend: AgentTerminalBackend,
-        codex_binary: Option<PathBuf>,
-        codex_home: Option<String>,
-        api_key: String,
-        profile: String,
-        cwd: Option<String>,
-        node_binary: Option<PathBuf>,
-        cursor_script: Option<PathBuf>,
-        model: Option<String>,
-        cursor_workdir: Option<PathBuf>,
-    ) {
-        if let Some(window_id) = self.agent_window_id(window_key) {
-            ctx.windows().show_window_and_focus_app(window_id);
-            return;
-        }
-
-        let window_key = window_key.to_string();
-        let state = self.state.clone();
-        let data_dir = {
-            let guard = state.lock().expect("coordinator lock");
-            guard.data_dir().to_path_buf()
-        };
-        let session_key = session_key.to_string();
-        let cwd = cwd.map(PathBuf::from);
-
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1120., 760.)),
-            ..Default::default()
-        };
-
-        let window_id = match backend {
-            AgentTerminalBackend::Cursor => {
-                unreachable!("Cursor agent windows are routed to the Warp embed tab");
-            }
-            AgentTerminalBackend::Codex => {
-                let codex_binary = codex_binary.expect("codex binary required");
-                let codex_home = codex_home.unwrap_or_else(|| data_dir.display().to_string());
-                let (window_id, _) = ctx.add_window(options, move |view_ctx| {
-                    CodexTerminalView::new(
-                        view_ctx,
-                        codex_binary,
-                        PathBuf::from(codex_home),
-                        api_key,
-                        profile,
-                        cwd,
-                    )
-                });
-                window_id
-            }
-        };
-
-        {
-            let mut guard = state.lock().expect("coordinator lock");
-            guard.agent_windows.insert(window_key, window_id);
-        }
-        ctx.windows().show_window_and_focus_app(window_id);
     }
 
     #[cfg(any(windows, target_os = "macos"))]

@@ -9,6 +9,8 @@ license.workspace = true
 jemalloc = []
 local_fs = []
 test-util = []
+default = []
+wormhole-slim = []
 crash_reporting = ["dep:sentry"]
 
 [dependencies]
@@ -40,7 +42,6 @@ strum.workspace = true
 strum_macros.workspace = true
 warpui_core.workspace = true
 warpui_extras = { workspace = true, features = ["default"] }
-warp_graphql.workspace = true
 warp_multi_agent_api.workspace = true
 dirs.workspace = true
 lazy_static.workspace = true

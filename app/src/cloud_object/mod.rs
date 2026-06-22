@@ -12,8 +12,7 @@ use regex::Regex;
 use url::Url;
 use warp_core::channel::Channel;
 use warp_core::features::FeatureFlag;
-use warp_graphql::queries::get_updated_cloud_objects::UpdatedObjectInput;
-use warp_graphql::scalars::time::ServerTimestamp;
+use cloud_objects::{ServerTimestamp, UpdatedObjectInput};
 use warpui::{AppContext, SingletonEntity};
 
 use self::breadcrumbs::ContainingObject;
@@ -747,7 +746,7 @@ where
                     .map(|t| t.into());
                 Some(UpdatedObjectInput {
                     uid: id.into(),
-                    revision_ts: revision.timestamp(),
+                    revision_ts: Some(revision.timestamp()),
                     metadata_ts: self.metadata.metadata_last_updated_ts,
                     permissions_ts: self.permissions.permissions_last_updated_ts,
                     actions_ts,
@@ -984,7 +983,7 @@ pub use cloud_object_models::{
     ServerAIExecutionProfile, ServerAIFact, ServerAmbientAgentEnvironment, ServerCloudAgentConfig,
     ServerCloudObject, ServerEnvVarCollection, ServerFolder, ServerMCPServer, ServerNotebook,
     ServerPreference, ServerScheduledAmbientAgent, ServerTemplatableMCPServer, ServerWorkflow,
-    ServerWorkflowEnum, TryFromGql,
+    ServerWorkflowEnum,
 };
 
 #[derive(Default, Clone, Copy, Debug, Eq, Derivative)]

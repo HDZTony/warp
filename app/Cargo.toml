@@ -1,6 +1,6 @@
 [package]
 authors = ["Warp Team <dev@warp.dev>"]
-default-run = "warp-oss"
+default-run = "warp-oss-wormhole"
 description = "The cloud-backed terminal for individuals and teams"
 edition = "2021"
 autobins = false
@@ -18,45 +18,9 @@ path = "src/lib.rs"
 # flag overrides). Otherwise these binaries are exactly identical to our main binary.
 
 [[bin]]
-name = "warp-oss"
-path = "src/bin/oss.rs"
-test = false
-
-[[bin]]
 name = "warp-oss-wormhole"
 path = "src/bin/wormhole_embed.rs"
 required-features = ["wormhole-slim"]
-test = false
-
-[[bin]]
-name = "warp"
-path = "src/bin/local.rs"
-test = false
-
-[[bin]]
-name = "integration"
-path = "src/bin/integration.rs"
-test = false
-
-[[bin]]
-name = "stable"
-path = "src/bin/stable.rs"
-test = false
-
-[[bin]]
-name = "dev"
-path = "src/bin/dev.rs"
-test = false
-
-[[bin]]
-name = "preview"
-path = "src/bin/preview.rs"
-required-features = ["preview_channel"]
-test = false
-
-[[bin]]
-name = "generate_settings_schema"
-path = "src/bin/generate_settings_schema.rs"
 test = false
 
 [dependencies]
@@ -241,11 +205,10 @@ warp_completer.workspace = true
 warp_core.workspace = true
 wormhole_embed.workspace = true
 warp_editor.workspace = true
-warp_graphql.workspace = true
+warp_graphql_slim = { workspace = true, optional = true }
 warp_js = { workspace = true, optional = true }
 warp_search_core.workspace = true
 warp_server_auth.workspace = true
-warp_server_client.workspace = true
 warp_util.workspace = true
 warpui = { workspace = true, features = ["schema_gen", "settings_value"] }
 warpui_core.workspace = true
@@ -308,7 +271,6 @@ winit = { workspace = true }
 wgpu.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-app-installation-detection.workspace = true
 async-io.workspace = true
 axum.workspace = true
 cloud_object_persistence.workspace = true
@@ -424,7 +386,6 @@ winreg.workspace = true
 [dev-dependencies]
 ai = { workspace = true, features = ["test-util"] }
 async-process.workspace = true
-firebase.workspace = true
 jsonschema = { workspace = true, default-features = false }
 async-executor = "1.5.1"
 command = { workspace = true, features = ["test-util"] }
@@ -435,11 +396,9 @@ mockall.workspace = true
 mockito.workspace = true
 serial_test = "0.8.0"
 sum_tree = { workspace = true, features = ["test-util"] }
-virtual-fs.workspace = true
 warp_completer = { workspace = true, features = ["test-util"] }
 warp_core = { workspace = true, features = ["test-util"] }
 warp_editor = { workspace = true, features = ["test-util"] }
-warp_server_client = { workspace = true, features = ["test-util"] }
 warp_server_auth = { workspace = true, features = ["test-util"] }
 warp_terminal = { workspace = true, features = ["test-util"] }
 warpui = { workspace = true, features = ["test-util"] }
@@ -829,7 +788,7 @@ settings_file = []
 sequential_storage = []
 session_sharing = []
 session_sharing_acls = []
-skip_login = ["warp_server_client/skip_login"]
+skip_login = []
 # This feature should only be enabled when building a self-contained binary with the bundle script.
 standalone = ["warp_assets/standalone"]
 prompt_suggestions_via_maa = []
@@ -846,7 +805,6 @@ integration_tests = [
     "warpui/integration_tests",
     "warpui/test-util",
     "warp_core/integration_tests",
-    "warp_server_client/integration_tests",
 ]
 traces = []
 viewing_shared_sessions = []
@@ -1015,7 +973,11 @@ cloud_mode_setup_v2 = ["cloud_mode"]
 cloud_mode_input_v2 = ["cloud_mode"]
 handoff_cloud_cloud = ["cloud_mode_setup_v2"]
 git_credential_refresh = []
-wormhole-slim = []
+wormhole-slim = [
+    "ai/wormhole-slim",
+    "warp_managed_secrets/wormhole-slim",
+    "dep:warp_graphql_slim",
+]
 # Wormhole embed: excises Warp SaaS sources (Drive UI, Teams, Referrals, autoupdate,
 # billing settings, cloud polling). Required for `warp-oss-wormhole` only; stubs live
 # under `app/src/wormhole_slim/`.

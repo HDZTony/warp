@@ -32,7 +32,10 @@ use warp_cli::share::ShareRequest;
 use warp_cli::task::{MessageCommand, TaskCommand};
 use warp_cli::{CliCommand, GlobalOptions, OZ_HARNESS_ENV};
 use warp_core::features::FeatureFlag;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::object_permissions::OwnerType;
+#[cfg(feature = "wormhole-slim")]
+use crate::wormhole_slim::gql_standins::OwnerType;
 use warp_isolation_platform::IsolationPlatformError;
 #[cfg(not(target_family = "wasm"))]
 use warp_logging::log_file_path;

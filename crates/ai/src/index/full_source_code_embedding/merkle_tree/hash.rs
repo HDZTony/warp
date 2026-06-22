@@ -38,12 +38,14 @@ impl FromStr for NodeHash {
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<NodeHash> for warp_graphql::full_source_code_embedding::NodeHash {
     fn from(value: NodeHash) -> Self {
         warp_graphql::full_source_code_embedding::NodeHash(value.0.to_string())
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl TryFrom<warp_graphql::full_source_code_embedding::NodeHash> for NodeHash {
     type Error = Error;
 
@@ -102,12 +104,14 @@ impl FromStr for ContentHash {
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl From<ContentHash> for warp_graphql::full_source_code_embedding::ContentHash {
     fn from(value: ContentHash) -> Self {
         warp_graphql::full_source_code_embedding::ContentHash(value.0.to_string())
     }
 }
 
+#[cfg(feature = "cloud-indexing")]
 impl TryFrom<warp_graphql::full_source_code_embedding::ContentHash> for ContentHash {
     type Error = Error;
 

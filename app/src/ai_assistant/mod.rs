@@ -162,7 +162,7 @@ impl From<RequestLimitInfoGraphql> for RequestLimitInfo {
             is_unlimited: value.is_unlimited,
             limit: value.request_limit as usize,
             num_requests_used_since_refresh: value.requests_used_since_last_refresh as usize,
-            next_refresh_time: value.next_refresh_time,
+            next_refresh_time: value.next_refresh_time.unwrap_or_default(),
             request_limit_refresh_duration: value.request_limit_refresh_duration.into(),
             is_unlimited_voice: value.is_unlimited_voice,
             voice_request_limit: value.voice_request_limit as usize,

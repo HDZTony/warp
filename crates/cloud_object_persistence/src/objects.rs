@@ -15,7 +15,7 @@ use persistence::model::{
 };
 use persistence::schema;
 use warp_core::features::FeatureFlag;
-use warp_graphql::scalars::time::ServerTimestamp;
+use warp_server_auth::ServerTimestamp;
 
 use crate::{decode_guests, decode_link_sharing, encode_guests, encode_link_sharing};
 

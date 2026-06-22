@@ -26,7 +26,7 @@ use warp_cli::share::ShareRequest;
 use warp_cli::skill::SkillSpec;
 use warp_core::features::FeatureFlag;
 use warp_core::{report_error, report_if_error, safe_debug, safe_error, safe_info};
-use warp_graphql::ai::AgentTaskState;
+use crate::server::server_api::ai::AgentTaskState;
 use warp_managed_secrets::ManagedSecretValue;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::r#async::{FutureExt, TimeoutError};

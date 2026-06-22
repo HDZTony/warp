@@ -8,6 +8,9 @@ use warp_cli::schedule::{
     ScheduleSubcommand, UnpauseScheduleArgs, UpdateScheduleArgs,
 };
 use warp_cli::GlobalOptions;
+#[cfg(feature = "wormhole-slim")]
+use crate::server::server_api::ai::ScheduledAgentHistory;
+#[cfg(not(feature = "wormhole-slim"))]
 use warp_graphql::queries::get_scheduled_agent_history::ScheduledAgentHistory;
 use warpui::platform::TerminationMode;
 use warpui::{AppContext, SingletonEntity};
