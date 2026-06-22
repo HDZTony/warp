@@ -99,7 +99,7 @@ pub struct AutoupdateState {
     /// implementing the logic so that we (mostly) limit requests to that endpoint to once a day,
     /// though we don't persist that across app-restarts.
     last_successful_daily_update_check: Option<DateTime<FixedOffset>>,
-    stage: AutoupdateStage,
+    pub(super) stage: AutoupdateStage,
     /// The most recently downloaded and extracted update. We need this so that if there are
     /// multiple update checks without a relaunch, we only download the update once.
     downloaded_update: Option<DownloadedUpdate>,
@@ -598,7 +598,11 @@ impl AutoupdateState {
 
     // Reset the most-recently-downloaded update.
     #[cfg_attr(not(target_os = "macos"), expect(dead_code))]
-    fn clear_downloaded_update(&mut self, update_id: &str, ctx: &mut ModelContext<Self>) {
+    pub(super) fn clear_downloaded_update(
+        &mut self,
+        update_id: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if self
             .downloaded_update
             .as_ref()
@@ -611,7 +615,11 @@ impl AutoupdateState {
 
     /// Set the current autoupdate stage. This must *only* be called from within the [`autoupdate`]
     /// module to correctly maintain the update state machine.
-    fn set_autoupdate_stage(&mut self, stage: AutoupdateStage, ctx: &mut ModelContext<Self>) {
+    pub(super) fn set_autoupdate_stage(
+        &mut self,
+        stage: AutoupdateStage,
+        ctx: &mut ModelContext<Self>,
+    ) {
         self.stage = stage;
         ctx.notify();
     }
@@ -644,7 +652,7 @@ impl AutoupdateState {
     }
 
     /// Mark both the autoupdate stage and the relaunch status as failed.
-    fn relaunch_failed(&mut self, ctx: &mut ModelContext<Self>) {
+    pub(super) fn relaunch_failed(&mut self, ctx: &mut ModelContext<Self>) {
         self.set_unable_to_launch_state(
             |new_version, _update_id| AutoupdateStage::UnableToLaunchNewVersion { new_version },
             ctx,

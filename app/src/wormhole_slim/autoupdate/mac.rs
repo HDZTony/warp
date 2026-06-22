@@ -21,9 +21,8 @@ use warp_core::macos::get_bundle_path;
 use warp_core::safe_error;
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
-use super::{release_assets_directory_url, DownloadReady};
+use super::{release_assets_directory_url, AutoupdateStage, AutoupdateState, DownloadReady};
 use crate::appearance::AppearanceManager;
-use crate::autoupdate::{AutoupdateStage, AutoupdateState};
 use crate::channel::{Channel, ChannelState};
 use crate::safe_info;
 

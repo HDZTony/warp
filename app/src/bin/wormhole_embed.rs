@@ -7,7 +7,7 @@ use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpSer
 use warp_core::AppId;
 use wormhole_embed::{
     apply_embed_launch_env, apply_slim_feature_flags, codex_profile, is_embedded, preferred_agent,
-    DATA_DIR_ENV, PreferredAgent,
+    PreferredAgent, DATA_DIR_ENV,
 };
 
 fn main() -> Result<()> {

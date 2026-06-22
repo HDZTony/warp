@@ -83,6 +83,22 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.bridge_only {
+        std::fs::create_dir_all(&data_dir)?;
+        let tokio = tokio::runtime::Runtime::new()?;
+        let _desktop_runtime = tokio.block_on(bootstrap_desktop(
+            Some(data_dir.clone()),
+            bundled_resource_dir(),
+        ))?;
+        tracing::info!(
+            data_dir = %data_dir.display(),
+            "wormhole-desktop command bridge running without WarpUI shell"
+        );
+        loop {
+            std::thread::park();
+        }
+    }
+
     #[cfg(windows)]
     let mut pending_deeplink: Option<String> = None;
     #[cfg(windows)]
@@ -117,15 +133,6 @@ fn main() -> Result<()> {
         Some(data_dir.clone()),
         bundled_resource_dir(),
     ))?;
-    if args.bridge_only {
-        tracing::info!(
-            data_dir = %data_dir.display(),
-            "wormhole-desktop command bridge running without WarpUI shell"
-        );
-        loop {
-            std::thread::park();
-        }
-    }
     let core = CoreHandle::new(desktop_runtime, tokio);
 
     let coordinator = Arc::new(Mutex::new(CoordinatorState::new(data_dir.clone())));
