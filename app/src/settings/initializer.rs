@@ -54,6 +54,17 @@ impl SettingsInitializer {
                 });
             }
 
+            #[cfg(feature = "wormhole-slim")]
+            if wormhole_embed::is_embedded() {
+                log::debug!("Setting default theme to Wormhole for embedded Wormhole desktop");
+                ThemeSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let current = settings.theme_kind.value();
+                    if matches!(current, ThemeKind::Dark | ThemeKind::Phenomenon) {
+                        report_if_error!(settings.theme_kind.set_value(ThemeKind::Wormhole, ctx));
+                    }
+                });
+            }
+
             if cfg!(windows) {
                 log::debug!("Setting default font size to 16px (12pt) for a new Windows user");
                 FontSettings::handle(ctx).update(ctx, |settings, ctx| {

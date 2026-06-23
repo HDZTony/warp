@@ -10,15 +10,15 @@ license.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
 chrono.workspace = true
-cloud_objects.workspace = true
+cloud_objects = { path = "../cloud_objects" }
 diesel = { workspace = true, features = ["sqlite", "chrono"] }
 log.workspace = true
 persistence.workspace = true
 serde.workspace = true
 warp_core.workspace = true
-warp_server_auth.workspace = true
+warp_server_auth = { path = "../warp_server_auth" }
 
 [dev-dependencies]
-cloud_objects = { workspace = true, features = ["test-util"] }
+cloud_objects = { path = "../cloud_objects", features = ["test-util"] }
 lazy_static.workspace = true
 session-sharing-protocol.workspace = true

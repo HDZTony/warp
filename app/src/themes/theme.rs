@@ -49,7 +49,15 @@ pub enum ThemeKind {
     Adeberry,
     #[schemars(description = "Phenomenon")]
     Phenomenon,
+    #[cfg(feature = "wormhole-slim")]
     #[default]
+    #[schemars(description = "Wormhole")]
+    Wormhole,
+    #[cfg(not(feature = "wormhole-slim"))]
+    #[default]
+    #[schemars(description = "Dark")]
+    Dark,
+    #[cfg(feature = "wormhole-slim")]
     #[schemars(description = "Dark")]
     Dark,
     #[schemars(description = "Dracula")]
@@ -129,6 +137,8 @@ impl std::fmt::Display for ThemeKind {
             ThemeKind::WillowDream => "Willow Dream",
             ThemeKind::FancyDracula => "Fancy Dracula",
             ThemeKind::Phenomenon => "Phenomenon",
+            #[cfg(feature = "wormhole-slim")]
+            ThemeKind::Wormhole => "Wormhole",
             ThemeKind::SolarFlare => "Solar Flare",
             ThemeKind::Adeberry => "Adeberry",
             ThemeKind::SentReferralReward => "Warp Referral",
@@ -491,6 +501,8 @@ impl WarpThemeConfig {
             (ThemeKind::Phenomenon, phenomenon()),
             (ThemeKind::SolarFlare, solar_flare()),
             (ThemeKind::Adeberry, adeberry()),
+            #[cfg(feature = "wormhole-slim")]
+            (ThemeKind::Wormhole, crate::themes::wormhole_theme_generated::wormhole_theme()),
         ]);
         WarpThemeConfig { theme_map }
     }
@@ -556,6 +568,9 @@ impl Default for SelectedSystemThemes {
     fn default() -> Self {
         Self {
             light: ThemeKind::Light,
+            #[cfg(feature = "wormhole-slim")]
+            dark: ThemeKind::Wormhole,
+            #[cfg(not(feature = "wormhole-slim"))]
             dark: ThemeKind::Dark,
         }
     }

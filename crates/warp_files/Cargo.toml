@@ -13,7 +13,7 @@ async-fs.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 warpui_core.workspace = true
-remote_server.workspace = true
+remote_server = { path = "../../app/src/wormhole_slim/inline/remote_server" }
 warp_core.workspace = true
 warp_util.workspace = true
 watcher.workspace = true

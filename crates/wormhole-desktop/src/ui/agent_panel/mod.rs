@@ -690,7 +690,7 @@ impl View for AgentPanelView {
                     1.0,
                     Container::new(render_transcript(&lines, self.font, self.mono))
                         .with_uniform_padding(8.0)
-                        .with_background(ColorU::new(248, 248, 250, 255))
+                        .with_background(theme::panel())
                         .finish(),
                 )
                 .finish(),

@@ -14,7 +14,7 @@ async-trait = { workspace = true }
 cfg-if = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-http_client = { workspace = true }
+http_client = { path = "../../app/src/wormhole_slim/inline/http_client" }
 semver = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }

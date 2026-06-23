@@ -1,0 +1,40 @@
+// GENERATED — do not edit. Source: assets/brand-spec.md
+// Regenerate: uv run scripts/sync-brand-tokens.py
+use pathfinder_color::ColorU;
+
+pub fn canvas() -> ColorU {
+    ColorU::new(8, 7, 11, 255)
+}
+
+pub fn accent() -> ColorU {
+    ColorU::new(253, 249, 230, 255)
+}
+
+pub fn panel() -> ColorU {
+    ColorU::new(42, 39, 54, 255)
+}
+
+pub fn border() -> ColorU {
+    ColorU::new(100, 93, 117, 255)
+}
+
+pub fn text() -> ColorU {
+    ColorU::new(245, 231, 207, 255)
+}
+
+pub fn muted() -> ColorU {
+    ColorU::new(160, 135, 140, 255)
+}
+
+pub fn danger() -> ColorU {
+    ColorU::new(232, 93, 76, 255)
+}
+
+pub fn accent_bg(alpha: u8) -> ColorU {
+    ColorU::new(253, 249, 230, alpha)
+}
+
+
+pub fn accent_bg_default() -> ColorU {
+    accent_bg(40)
+}

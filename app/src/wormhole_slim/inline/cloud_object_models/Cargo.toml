@@ -15,7 +15,7 @@ ai.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 cfg-if.workspace = true
-cloud_objects.workspace = true
+cloud_objects = { path = "../cloud_objects" }
 handlebars.workspace = true
 lazy_static.workspace = true
 log.workspace = true
@@ -34,9 +34,9 @@ warp_core.workspace = true
 warp_util.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-cloud_object_persistence.workspace = true
+cloud_object_persistence = { path = "../cloud_object_persistence" }
 diesel = { workspace = true, features = ["sqlite", "chrono"] }
 persistence.workspace = true
 
 [dev-dependencies]
-cloud_objects = { workspace = true, features = ["test-util"] }
+cloud_objects = { path = "../cloud_objects", features = ["test-util"] }

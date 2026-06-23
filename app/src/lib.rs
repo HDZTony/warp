@@ -1,8 +1,5 @@
 #![allow(clippy::doc_lazy_continuation)]
 
-#[cfg(feature = "wormhole-slim")]
-extern crate warp_graphql_slim as warp_graphql;
-
 mod ai;
 mod alloc;
 mod antivirus;

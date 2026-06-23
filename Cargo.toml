@@ -41,15 +41,9 @@ asset_macro = { path = "crates/asset_macro" }
 channel_versions = { path = "crates/channel_versions", default-features = false }
 command = { path = "crates/command" }
 command-signatures-v2 = { path = "crates/command-signatures-v2" }
-cloud_objects = { path = "crates/cloud_objects" }
-cloud_object_client = { path = "crates/cloud_object_client" }
-cloud_object_persistence = { path = "crates/cloud_object_persistence" }
-cloud_object_models = { path = "crates/cloud_object_models" }
 computer_use = { path = "crates/computer_use" }
-field_mask = { path = "crates/field_mask" }
 fuzzy_match = { path = "crates/fuzzy_match" }
 handlebars = { path = "crates/handlebars" }
-http_client = { path = "crates/http_client" }
 http_server = { path = "crates/http_server" }
 input_classifier = { path = "crates/input_classifier" }
 ipc = { path = "crates/ipc" }
@@ -64,7 +58,6 @@ node_runtime = { path = "crates/node_runtime" }
 onboarding = { path = "crates/onboarding" }
 persistence = { path = "crates/persistence" }
 prevent_sleep = { path = "crates/prevent_sleep" }
-remote_server = { path = "crates/remote_server" }
 repo_metadata = { path = "crates/repo_metadata" }
 settings = { path = "crates/settings" }
 settings_value = { path = "crates/settings_value", default-features = false }
@@ -85,14 +78,11 @@ warp_core = { path = "crates/warp_core" }
 warp_editor = { path = "crates/editor" }
 warp_features = { path = "crates/warp_features" }
 warp_files = { path = "crates/warp_files" }
-warp_graphql_slim = { path = "crates/warp_graphql_slim" }
 warp_isolation_platform = { path = "crates/isolation_platform" }
 warp_js = { path = "crates/warp_js" }
 warp_logging = { path = "crates/warp_logging" }
-warp_managed_secrets = { path = "crates/managed_secrets" }
 warp_ripgrep = { path = "crates/warp_ripgrep" }
 warp_search_core = { path = "crates/warp_search_core" }
-warp_server_auth = { path = "crates/warp_server_auth" }
 warp_terminal = { path = "crates/warp_terminal" }
 warp_util = { path = "crates/warp_util" }
 wormhole_embed = { path = "crates/wormhole_embed" }
@@ -101,7 +91,6 @@ warpui = { path = "crates/warpui" }
 warpui_core = { path = "crates/warpui_core" }
 warpui_extras = { path = "crates/warpui_extras", default-features = false }
 watcher = { path = "crates/watcher" }
-websocket = { path = "crates/websocket" }
 
 # Workspace-level dependencies used by multiple crates. Prefer adding dependencies
 # here to copying-and-pasting versions.
