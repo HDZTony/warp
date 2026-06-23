@@ -2,6 +2,7 @@ mod agent_events_view;
 #[cfg(any(windows, target_os = "macos"))]
 mod computer_use_view;
 mod coordinator;
+mod daemon;
 mod rdp_extras_ui;
 mod rdp_host_control_view;
 mod rdp_invoke;
@@ -37,6 +38,11 @@ struct Args {
     data_dir: Option<PathBuf>,
     #[arg(long)]
     bridge_only: bool,
+    #[arg(long)]
+    headless_rdp: bool,
+    #[cfg(windows)]
+    #[arg(long)]
+    mount_w_drive: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -78,7 +84,14 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let mut data_dir = args.data_dir.unwrap_or_else(default_data_dir);
 
-    if wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
+    #[cfg(windows)]
+    if args.mount_w_drive {
+        std::fs::create_dir_all(&data_dir)?;
+        wormhole_desktop_core::w_drive_headless::run_for_data_dir(data_dir);
+        return Ok(());
+    }
+
+    if args.headless_rdp || wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
         wormhole_desktop_core::rdp_headless::run();
         return Ok(());
     }
@@ -136,6 +149,16 @@ fn main() -> Result<()> {
     let core = CoreHandle::new(desktop_runtime, tokio);
 
     let coordinator = Arc::new(Mutex::new(CoordinatorState::new(data_dir.clone())));
+    {
+        let coordinator = coordinator.clone();
+        std::thread::Builder::new()
+            .name("wormhole-native-ipc".into())
+            .spawn(move || {
+                if let Err(err) = daemon::run(coordinator) {
+                    tracing::error!("native UI IPC failed: {err:#}");
+                }
+            })?;
+    }
 
     tracing::info!(
         data_dir = %data_dir.display(),

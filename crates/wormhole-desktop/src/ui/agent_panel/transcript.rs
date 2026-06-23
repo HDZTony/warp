@@ -34,12 +34,9 @@ pub fn render_transcript(
 
     if lines.is_empty() {
         column.add_child(
-            ui_text::body(
-                "输入消息开始对话，或切换到全自动模式提交任务。",
-                font,
-            )
-            .with_color(theme::muted())
-            .finish(),
+            ui_text::body("输入消息开始对话，或切换到全自动模式提交任务。", font)
+                .with_color(theme::muted())
+                .finish(),
         );
     } else {
         for line in lines {

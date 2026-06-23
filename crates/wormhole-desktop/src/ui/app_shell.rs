@@ -10,6 +10,7 @@ use warpui::{
 };
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
+use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::ChatShellView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
@@ -20,7 +21,6 @@ use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
-use crate::ui::agent_panel::AgentPanelView;
 use crate::ui_text;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
@@ -112,22 +112,19 @@ impl AppShellView {
         settings: ViewHandle<SettingsView>,
     ) {
         let mut rx = events.subscribe();
-        ctx.spawn(
-            async move { rx.recv().await },
-            move |_view, output, ctx| {
-                if let Ok(event) = output {
-                    if event.name == "deeplink-import" {
-                        if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
-                            let url = url.to_string();
-                            ctx.update_view(&settings, |view, ctx| {
-                                view.open_deeplink_url(url, ctx);
-                            });
-                        }
+        ctx.spawn(async move { rx.recv().await }, move |_view, output, ctx| {
+            if let Ok(event) = output {
+                if event.name == "deeplink-import" {
+                    if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
+                        let url = url.to_string();
+                        ctx.update_view(&settings, |view, ctx| {
+                            view.open_deeplink_url(url, ctx);
+                        });
                     }
                 }
-                Self::poll_deeplink_once(ctx, events, settings);
-            },
-        );
+            }
+            Self::poll_deeplink_once(ctx, events, settings);
+        });
     }
 
     fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {

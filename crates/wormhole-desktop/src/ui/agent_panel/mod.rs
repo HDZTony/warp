@@ -103,9 +103,8 @@ impl AgentPanelView {
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let _ = core.block_on(async {
-                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
-            });
+            let _ = core
+                .block_on(async { warp_embed_prefs::set_preferred_agent(&data_dir, agent).await });
         });
         if !self.visible {
             self.set_tab_visible(true, ctx);
@@ -258,9 +257,8 @@ impl AgentPanelView {
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let _ = core.block_on(async {
-                warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
-            });
+            let _ = core
+                .block_on(async { warp_embed_prefs::set_preferred_agent(&data_dir, agent).await });
         });
         self.update_status_line(ctx);
         ctx.notify();
@@ -453,10 +451,7 @@ impl AgentPanelView {
         let agent = self.preferred_agent;
         ctx.spawn(
             async move {
-                let request = AgentStartRequest {
-                    prompt,
-                    cwd: None,
-                };
+                let request = AgentStartRequest { prompt, cwd: None };
                 let state = core.app_state();
                 match agent {
                     PreferredAgent::Codex => agent_start_session(request, state).await,
@@ -599,22 +594,15 @@ impl AgentPanelView {
     }
 
     fn mode_switcher(&self) -> Box<dyn Element> {
-        let mode = self
-            .state
-            .lock()
-            .expect("agent panel state")
-            .mode;
+        let mode = self.state.lock().expect("agent panel state").mode;
         let chat = mode == InteractionMode::Chat;
-        self.segmented(
-            &[("对话", chat), ("全自动", !chat)],
-            |idx| {
-                AgentPanelAction::SelectMode(if idx == 0 {
-                    InteractionMode::Chat
-                } else {
-                    InteractionMode::Task
-                })
-            },
-        )
+        self.segmented(&[("对话", chat), ("全自动", !chat)], |idx| {
+            AgentPanelAction::SelectMode(if idx == 0 {
+                InteractionMode::Chat
+            } else {
+                InteractionMode::Task
+            })
+        })
     }
 
     fn toolbar_button(&self, label: &str, action: AgentPanelAction) -> Box<dyn Element> {
@@ -674,10 +662,7 @@ impl View for AgentPanelView {
                     .with_child(self.toolbar_button("粘贴", AgentPanelAction::PasteInput))
                     .with_child(self.toolbar_button("发送", AgentPanelAction::Send))
                     .with_child(self.toolbar_button("新对话", AgentPanelAction::NewConversation))
-                    .with_child(self.toolbar_button(
-                        "系统终端",
-                        AgentPanelAction::LaunchTerminal,
-                    ))
+                    .with_child(self.toolbar_button("系统终端", AgentPanelAction::LaunchTerminal))
                     .finish(),
             )
             .with_child(
@@ -710,11 +695,7 @@ impl View for AgentPanelView {
                             },
                             self.mono,
                         )
-                        .with_color(if busy {
-                            theme::muted()
-                        } else {
-                            theme::text()
-                        })
+                        .with_color(if busy { theme::muted() } else { theme::text() })
                         .finish(),
                     )
                     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)

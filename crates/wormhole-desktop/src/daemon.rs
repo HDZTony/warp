@@ -1,33 +1,31 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::wormhole_native_ipc::{
+    agent_events_window_key, agent_window_key, computer_use_window_key, host_control_window_key,
+    live_viewer_window_key, session_file_path, workspace_hud_window_key, workspace_window_key,
+    AgentTerminalBackend, ApiErrorBody, BridgeSessionFile, FocusAgentEventsWindowRequest,
+    FocusAgentWindowRequest, FocusComputerUseWindowRequest, FocusHostControlWindowRequest,
+    FocusLiveViewerWindowRequest, FocusRdpWindowRequest, FocusWorkspaceHudWindowRequest,
+    FocusWorkspaceRdpWindowRequest, InvokeRdpRequest, InvokeRdpResponse,
+    OpenAgentEventsWindowRequest, OpenAgentEventsWindowResponse, OpenAgentWindowRequest,
+    OpenAgentWindowResponse, OpenComputerUseWindowRequest, OpenComputerUseWindowResponse,
+    OpenHostControlWindowRequest, OpenHostControlWindowResponse, OpenLiveViewerWindowRequest,
+    OpenLiveViewerWindowResponse, OpenRdpWindowRequest, OpenRdpWindowResponse,
+    OpenWorkspaceHudWindowRequest, OpenWorkspaceHudWindowResponse, OpenWorkspaceRdpWindowRequest,
+    OpenWorkspaceRdpWindowResponse, FOCUS_AGENT_EVENTS_PATH, FOCUS_AGENT_PATH,
+    FOCUS_COMPUTER_USE_PATH, FOCUS_HOST_CONTROL_PATH, FOCUS_LIVE_VIEWER_PATH, FOCUS_RDP_PATH,
+    FOCUS_WORKSPACE_HUD_PATH, FOCUS_WORKSPACE_RDP_PATH, HEALTH_PATH, INVOKE_RDP_PATH,
+    OPEN_AGENT_EVENTS_PATH, OPEN_AGENT_PATH, OPEN_COMPUTER_USE_PATH, OPEN_HOST_CONTROL_PATH,
+    OPEN_LIVE_VIEWER_PATH, OPEN_RDP_PATH, OPEN_WORKSPACE_HUD_PATH, OPEN_WORKSPACE_RDP_PATH,
+    SHUTDOWN_PATH,
+};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::net::TcpListener;
 use uuid::Uuid;
-use crate::wormhole_native_ipc::{
-    agent_window_key, session_file_path, workspace_window_key, ApiErrorBody, BridgeSessionFile,
-    FocusAgentWindowRequest, FocusRdpWindowRequest, FocusWorkspaceRdpWindowRequest,
-    FocusHostControlWindowRequest, FocusWorkspaceHudWindowRequest,
-    OPEN_COMPUTER_USE_PATH, FOCUS_COMPUTER_USE_PATH,
-    OPEN_LIVE_VIEWER_PATH, FOCUS_LIVE_VIEWER_PATH,
-    OPEN_AGENT_EVENTS_PATH, FOCUS_AGENT_EVENTS_PATH,
-    OPEN_HOST_CONTROL_PATH, FOCUS_HOST_CONTROL_PATH,
-    OPEN_WORKSPACE_HUD_PATH, FOCUS_WORKSPACE_HUD_PATH,
-    InvokeRdpRequest, InvokeRdpResponse, OpenAgentWindowRequest, OpenAgentWindowResponse,
-    OpenRdpWindowRequest, OpenRdpWindowResponse, OpenWorkspaceRdpWindowRequest,
-    OpenWorkspaceRdpWindowResponse, OpenComputerUseWindowRequest, OpenComputerUseWindowResponse,
-    FocusComputerUseWindowRequest, OpenLiveViewerWindowRequest, OpenLiveViewerWindowResponse,
-    FocusLiveViewerWindowRequest, OpenAgentEventsWindowRequest, OpenAgentEventsWindowResponse,
-    FocusAgentEventsWindowRequest, OpenHostControlWindowRequest, OpenHostControlWindowResponse,
-    OpenWorkspaceHudWindowRequest, OpenWorkspaceHudWindowResponse,
-    FOCUS_AGENT_PATH, FOCUS_RDP_PATH, FOCUS_WORKSPACE_RDP_PATH,
-    HEALTH_PATH, INVOKE_RDP_PATH, OPEN_AGENT_PATH, OPEN_RDP_PATH, OPEN_WORKSPACE_RDP_PATH,
-    SHUTDOWN_PATH, AgentTerminalBackend, agent_events_window_key, computer_use_window_key,
-    host_control_window_key, workspace_hud_window_key, live_viewer_window_key,
-};
 
 use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::rdp_invoke;
@@ -606,9 +604,9 @@ async fn open_workspace_hud(
             window_key: window_key.clone(),
             title: body.title,
             session_id,
-            app_name: body.app_name,
-            status: body.status,
-            status_detail: body.status_detail,
+            app_name: Some(body.app_name),
+            status: Some(body.status),
+            status_detail: Some(body.status_detail),
         });
     }
     Ok(axum::Json(OpenWorkspaceHudWindowResponse { window_key }))
@@ -664,7 +662,9 @@ async fn shutdown(
     Ok("ok")
 }
 
-fn resolve_codex_binary(explicit: Option<&str>) -> Result<PathBuf, (StatusCode, axum::Json<ApiErrorBody>)> {
+fn resolve_codex_binary(
+    explicit: Option<&str>,
+) -> Result<PathBuf, (StatusCode, axum::Json<ApiErrorBody>)> {
     if let Some(path) = explicit.filter(|p| !p.trim().is_empty()) {
         let path = PathBuf::from(path);
         if path.is_file() {
