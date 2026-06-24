@@ -12,7 +12,7 @@ name = "wormhole-desktop"
 path = "src/main.rs"
 
 [features]
-default = ["media-ffmpeg", "remote-desktop"]
+default = ["media-ffmpeg", "remote-desktop", "native-ui"]
 media-ffmpeg = ["wormhole-desktop-core/media-ffmpeg"]
 remote-desktop = ["wormhole-desktop-core/remote-desktop"]
 native-ui = ["wormhole-desktop-core/native-ui"]
@@ -21,6 +21,7 @@ native-ui = ["wormhole-desktop-core/native-ui"]
 anyhow.workspace = true
 asset_cache.workspace = true
 async-channel.workspace = true
+axum.workspace = true
 clap = { version = "4", features = ["derive"] }
 command.workspace = true
 display-core = { path = "../../../../crates/display-core" }
@@ -40,11 +41,7 @@ uuid = { version = "1", features = ["v4"] }
 vt100 = "0.15"
 warpui.workspace = true
 warpui_core.workspace = true
-wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false, features = [
-  "media-ffmpeg",
-  "remote-desktop",
-  "native-ui",
-] }
+wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false }
 wormhole-native-ipc = { path = "../../../../crates/wormhole-native-ipc" }
 wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", features = [
   "iroh-transport",

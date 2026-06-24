@@ -1,3 +1,4 @@
+pub mod agent_panel;
 pub mod agent_providers_view;
 pub mod app_shell;
 pub mod chat;
@@ -14,6 +15,5 @@ pub mod theme;
 pub mod toolbox_view;
 pub mod w_drive_settings_view;
 pub mod w_drive_view;
-pub mod agent_panel;
 
 pub use app_shell::AppShellView;

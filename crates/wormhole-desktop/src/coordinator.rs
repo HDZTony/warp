@@ -143,6 +143,7 @@ pub struct CoordinatorState {
 
 impl CoordinatorState {
     pub fn new(data_dir: PathBuf) -> Self {
+        let rdp_data_dir = data_dir.join("native-rdp");
         Self {
             data_dir: data_dir.clone(),
             pending: Vec::new(),
@@ -154,7 +155,7 @@ impl CoordinatorState {
             agent_events_windows: HashMap::new(),
             host_control_window: None,
             workspace_hud_windows: HashMap::new(),
-            rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(data_dir))),
+            rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(rdp_data_dir))),
             pending_warp_focus: None,
         }
     }

@@ -20149,6 +20149,7 @@ dependencies = [
  "arboard",
  "asset_cache",
  "async-channel",
+ "axum 0.8.4",
  "clap",
  "command",
  "computer-use",
