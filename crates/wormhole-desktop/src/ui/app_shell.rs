@@ -28,6 +28,7 @@ use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     WDrive,
+    Sync,
     Devices,
     Display,
     Chat,
@@ -51,6 +52,7 @@ pub struct AppShellView {
     #[allow(dead_code)]
     coordinator_view: ViewHandle<CoordinatorView>,
     w_drive: ViewHandle<WDriveView>,
+    sync: ViewHandle<SyncView>,
     devices: ViewHandle<DevicesView>,
     display: ViewHandle<DisplayView>,
     chat: ViewHandle<ChatShellView>,
@@ -71,6 +73,7 @@ impl AppShellView {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let coordinator_view = ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
         let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
+        let sync = ctx.add_view(|ctx| SyncView::new(ctx, core.clone()));
         let devices = ctx.add_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
         let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
@@ -91,6 +94,7 @@ impl AppShellView {
             coordinator,
             coordinator_view,
             w_drive,
+            sync,
             devices,
             display,
             chat,
@@ -186,6 +190,7 @@ impl AppShellView {
     fn tab_label(tab: AppTab) -> &'static str {
         match tab {
             AppTab::WDrive => "W 盘",
+            AppTab::Sync => "同步",
             AppTab::Devices => "设备",
             AppTab::Display => "显示器",
             AppTab::Chat => "聊天",
@@ -195,9 +200,10 @@ impl AppShellView {
         }
     }
 
-    fn tabs() -> [AppTab; 7] {
+    fn tabs() -> [AppTab; 8] {
         [
             AppTab::WDrive,
+            AppTab::Sync,
             AppTab::Devices,
             AppTab::Display,
             AppTab::Chat,
@@ -267,6 +273,7 @@ impl AppShellView {
     fn body(&self) -> Box<dyn Element> {
         let content: Box<dyn Element> = match self.tab {
             AppTab::WDrive => ChildView::new(&self.w_drive).finish(),
+            AppTab::Sync => ChildView::new(&self.sync).finish(),
             AppTab::Devices => ChildView::new(&self.devices).finish(),
             AppTab::Display => ChildView::new(&self.display).finish(),
             AppTab::Chat => ChildView::new(&self.chat).finish(),

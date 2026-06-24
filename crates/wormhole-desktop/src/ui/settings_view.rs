@@ -6,7 +6,6 @@ use warpui::{AppContext, Element, Entity, UpdateView, View, ViewContext};
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::sync_views::SyncView;
 use crate::ui::w_drive_settings_view::WDriveSettingsView;
 use crate::ui::theme;
 use crate::ui_text;
@@ -17,7 +16,6 @@ pub struct SettingsView {
     font: FamilyId,
     data_dir: String,
     vault_line: String,
-    sync_panel: warpui::ViewHandle<SyncView>,
     w_drive_settings: warpui::ViewHandle<WDriveSettingsView>,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
@@ -30,7 +28,6 @@ impl SettingsView {
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let data_dir = core.data_dir().display().to_string();
-        let sync_panel = ctx.add_view(|ctx| SyncView::new(ctx, core.clone()));
         let w_drive_settings = ctx.add_view(|ctx| WDriveSettingsView::new(ctx, core.clone()));
         let agent_providers =
             ctx.add_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
@@ -39,7 +36,6 @@ impl SettingsView {
             font,
             data_dir,
             vault_line: "加载 Vault…".into(),
-            sync_panel,
             w_drive_settings,
             agent_providers,
         };
@@ -99,11 +95,6 @@ impl View for SettingsView {
             )
             .with_child(
                 Container::new(ChildView::new(&self.w_drive_settings).finish())
-                    .with_uniform_padding(8.0)
-                    .finish(),
-            )
-            .with_child(
-                Container::new(ChildView::new(&self.sync_panel).finish())
                     .with_uniform_padding(8.0)
                     .finish(),
             )
