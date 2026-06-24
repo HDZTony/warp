@@ -14,6 +14,31 @@ use super::{FontFamily, LoadedSystemFonts, TextLayoutSystem, ValidateFontSupport
 use crate::fonts::FontId;
 
 const EN_US_LOCALE: &str = "en-US";
+const ZH_CN_LOCALE: &str = "zh-CN";
+
+pub(crate) fn text_shaping_locale() -> String {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
+
+    let mut buf = [0u16; 85];
+    let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
+    if len > 1 {
+        let locale = OsString::from_wide(&buf[..len as usize - 1]);
+        if let Ok(locale) = locale.into_string() {
+            return locale;
+        }
+    }
+    EN_US_LOCALE.to_string()
+}
+
+fn fallback_locale() -> &'static str {
+    if text_shaping_locale().starts_with("zh") {
+        ZH_CN_LOCALE
+    } else {
+        EN_US_LOCALE
+    }
+}
 
 /// Windows symbol fonts that are used to render window control icons. We specifically do not do any
 /// validation of these fonts (i.e. to check if the font contains english characters).
@@ -164,7 +189,7 @@ impl TextLayoutSystem {
         })?;
 
         let fallback_result =
-            loaded_font.get_fallbacks(character.to_string().as_str(), EN_US_LOCALE);
+            loaded_font.get_fallbacks(character.to_string().as_str(), fallback_locale());
 
         // Convert each font-kit fallback `Font` into a UI framework `FontHandle` and load it into
         // fontdb. We deliberately avoid `font_kit::Font::handle()` here: its default impl reads

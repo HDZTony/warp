@@ -292,12 +292,21 @@ impl Default for TextLayoutSystem {
 
 impl TextLayoutSystem {
     pub fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            let locale = windows::text_shaping_locale();
+            if locale.starts_with("zh") {
+                return Self::with_locale(locale);
+            }
+        }
+        Self::with_locale("en".into())
+    }
+
+    fn with_locale(locale: String) -> Self {
         Self {
             families: Default::default(),
             font_store: RwLock::new(cosmic_text::FontSystem::new_with_locale_and_db(
-                // Locale is needed for font fallback. For now, we hardcode this to "en" to match
-                // our mac implementation https://github.com/warpdotdev/warp-internal/blob/bf33d651a9fcece70df8eac35f89b0393ca5189a/ui/src/platform/mac/fonts.rs#L383.
-                "en".into(),
+                locale,
                 Default::default(),
             )),
             font_id_map: Default::default(),

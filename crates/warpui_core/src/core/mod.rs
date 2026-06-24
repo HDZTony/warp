@@ -166,6 +166,10 @@ pub struct AddWindowOptions {
     pub window_bounds: WindowBounds,
     pub title: Option<String>,
     pub fullscreen_state: FullscreenState,
+    /// When true, the platform window is created without native decorations (Warp draws its own
+    /// title bar). Wormhole desktop sets this to false to show system minimize/maximize/close.
+    #[derivative(Default(value = "true"))]
+    pub hide_title_bar: bool,
 
     /// If true, new windows created immediately after this window is closed
     /// will have the same position and size as this window.

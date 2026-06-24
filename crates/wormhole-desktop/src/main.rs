@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod agent_events_view;
 #[cfg(any(windows, target_os = "macos"))]
 mod computer_use_view;
@@ -26,7 +28,7 @@ use tracing_subscriber::EnvFilter;
 use ui::app_shell::AppShellView;
 use ui::codex_provider_import_model::new_shared_import_model;
 use ui::core_handle::CoreHandle;
-use warpui::platform::{AppBuilder, AppCallbacks, WindowBounds};
+use warpui::platform::{AppBuilder, AppCallbacks};
 use wormhole_desktop_core::bootstrap_desktop;
 
 #[derive(Debug, Parser)]
@@ -80,6 +82,18 @@ fn main() -> Result<()> {
 
     if wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
         wormhole_desktop_core::rdp_headless::run();
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    if wormhole_desktop_core::w_drive_headless::is_mount_w_drive_requested() {
+        wormhole_desktop_core::w_drive_headless::run_mount();
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    if wormhole_desktop_core::w_drive_headless::is_init_w_drive_requested() {
+        wormhole_desktop_core::w_drive_headless::run_init();
         return Ok(());
     }
 
@@ -149,12 +163,9 @@ fn main() -> Result<()> {
     let import_model_for_shell = import_model.clone();
     let pending_for_shell = pending_deeplink;
     let _ = app_builder.run(move |ctx| {
+        crate::ui::fonts::warm_up_font_cache(ctx);
         ctx.add_window(
-            warpui::AddWindowOptions {
-                title: Some("Wormhole".to_string()),
-                window_bounds: WindowBounds::ExactSize(vec2f(1280.0, 840.0)),
-                ..Default::default()
-            },
+            ui::window_options::desktop_window_options("Wormhole", vec2f(1280.0, 840.0)),
             move |view_ctx| {
                 AppShellView::new(
                     view_ctx,

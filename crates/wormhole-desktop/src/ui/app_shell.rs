@@ -10,6 +10,7 @@ use warpui::{
 };
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
+use crate::ui::window_chrome::{self, CHROME_ROW_HEIGHT};
 use crate::ui::chat::ChatShellView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
@@ -35,9 +36,12 @@ pub enum AppTab {
     Settings,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum AppShellAction {
     SelectTab(AppTab),
+    MinimizeWindow,
+    ToggleMaximizeWindow,
+    CloseWindow,
 }
 
 pub struct AppShellView {
@@ -97,7 +101,15 @@ impl AppShellView {
         };
         view.start_warp_focus_poll(ctx);
         view.start_deeplink_listener(ctx);
+        Self::sync_titlebar_height(ctx);
         view
+    }
+
+    fn sync_titlebar_height(ctx: &mut ViewContext<Self>) {
+        let window_id = ctx.window_id();
+        if let Some(window) = ctx.windows().platform_window(window_id) {
+            window.set_titlebar_height(CHROME_ROW_HEIGHT as f64);
+        }
     }
 
     fn start_deeplink_listener(&self, ctx: &mut ViewContext<Self>) {
@@ -230,7 +242,25 @@ impl AppShellView {
             .finish();
             row.add_child(tab_btn);
         }
-        Container::new(row.finish())
+        Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(row.finish())
+                .with_child(
+                    Shrinkable::new(1.0, Flex::row().finish())
+                        .finish(),
+                )
+                .with_child(window_chrome::caption_buttons(
+                    self.font,
+                    [
+                        ("−", AppShellAction::MinimizeWindow),
+                        ("□", AppShellAction::ToggleMaximizeWindow),
+                        ("×", AppShellAction::CloseWindow),
+                    ],
+                ))
+                .finish(),
+        )
             .with_background(theme::panel())
             .with_border(Border::all(1.0).with_border_fill(theme::border()))
             .with_uniform_padding(8.0)
@@ -290,6 +320,19 @@ impl TypedActionView for AppShellView {
                 });
                 self.tab = *tab;
                 ctx.notify();
+            }
+            AppShellAction::MinimizeWindow => {
+                if let Some(window) = ctx.windows().platform_window(ctx.window_id()) {
+                    window.minimize();
+                }
+            }
+            AppShellAction::ToggleMaximizeWindow => {
+                if let Some(window) = ctx.windows().platform_window(ctx.window_id()) {
+                    window.toggle_maximized();
+                }
+            }
+            AppShellAction::CloseWindow => {
+                ctx.close_window();
             }
         }
     }

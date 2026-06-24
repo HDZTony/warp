@@ -7,7 +7,7 @@ use warpui::elements::{
     ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex, Image, MainAxisSize,
     ParentElement, Text,
 };
-use warpui::fonts::{Cache as FontCache, FamilyId};
+use warpui::fonts::FamilyId;
 use warpui::{
     assets::asset_cache::AssetCache, AppContext, Element, Entity, SingletonEntity as _,
     TypedActionView, View, ViewContext,
@@ -45,9 +45,7 @@ impl ComputerUseView {
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
         let frame = Arc::new(Mutex::new(SharedFrame::default()));
         let status = Arc::new(Mutex::new("正在采集屏幕…".to_string()));
-        let font = FontCache::handle(ctx)
-            .update(ctx, |cache, _| cache.load_system_font("Segoe UI").ok())
-            .unwrap_or(FamilyId(0));
+        let font = crate::ui::fonts::load_ui_font(ctx);
 
         let view = Self {
             frame: frame.clone(),

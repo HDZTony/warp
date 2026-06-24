@@ -170,9 +170,7 @@ impl RdpViewerView {
         let frame = Arc::new(Mutex::new(SharedFrame::default()));
         let status = Arc::new(Mutex::new("正在连接远程桌面…".to_string()));
         let session_id = Arc::new(Mutex::new(None));
-        let font = FontCache::handle(ctx)
-            .update(ctx, |cache, _| cache.load_system_font("Segoe UI").ok())
-            .unwrap_or(FamilyId(0));
+        let font = crate::ui::fonts::load_ui_font(ctx);
         let mono_font = FontCache::handle(ctx)
             .update(ctx, |cache, _| {
                 cache

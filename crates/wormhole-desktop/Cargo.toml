@@ -56,6 +56,9 @@ wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", featu
 image = { version = "0.25", default-features = false, features = ["png"] }
 arboard = "3"
 
+[dev-dependencies]
+owned_ttf_parser = "0.25.0"
+
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 computer-use = { path = "../../../../crates/computer-use" }
 

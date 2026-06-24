@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use warpui::elements::{Container, Flex, MainAxisSize, ParentElement, Text};
-use warpui::fonts::{Cache as FontCache, FamilyId};
+use warpui::fonts::FamilyId;
 use warpui::{
-    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
+    AppContext, Element, Entity, TypedActionView, View, ViewContext,
 };
 
 use crate::coordinator::{CoordinatorState, UiCommand};
@@ -36,17 +36,8 @@ impl WorkspaceSessionHudView {
         status: Option<String>,
         status_detail: Option<String>,
     ) -> Self {
-        let font = FontCache::handle(ctx)
-            .update(ctx, |cache, _| cache.load_system_font("Segoe UI").ok())
-            .unwrap_or(FamilyId(0));
-        let mono = FontCache::handle(ctx)
-            .update(ctx, |cache, _| {
-                cache
-                    .load_system_font("Consolas")
-                    .or_else(|_| cache.load_system_font("Cascadia Mono"))
-                    .ok()
-            })
-            .unwrap_or(font);
+        let font = crate::ui::fonts::load_ui_font(ctx);
+        let mono = crate::ui::fonts::load_mono_font(ctx, font);
 
         let app_name = app_name.unwrap_or_else(|| "Workspace".into());
         let status = status.unwrap_or_else(|| "unknown".into());

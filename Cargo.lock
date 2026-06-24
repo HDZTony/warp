@@ -20157,6 +20157,7 @@ dependencies = [
  "futures",
  "image",
  "log",
+ "owned_ttf_parser",
  "pathfinder_color",
  "pathfinder_geometry",
  "portable-pty",

@@ -45,9 +45,7 @@ impl AgentEventsView {
         target_node: String,
         task_id: String,
     ) -> Self {
-        let font = FontCache::handle(ctx)
-            .update(ctx, |cache, _| cache.load_system_font("Segoe UI").ok())
-            .unwrap_or(FamilyId(0));
+        let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = FontCache::handle(ctx)
             .update(ctx, |cache, _| {
                 cache

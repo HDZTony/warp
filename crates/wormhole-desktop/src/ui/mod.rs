@@ -7,9 +7,12 @@ pub mod devices_view;
 pub mod display_view;
 pub mod fonts;
 pub mod settings_view;
+pub mod window_chrome;
+pub mod window_options;
 pub mod sync_views;
 pub mod theme;
 pub mod toolbox_view;
+pub mod w_drive_settings_view;
 pub mod w_drive_view;
 pub mod agent_panel;
 

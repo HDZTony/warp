@@ -6,11 +6,11 @@ use std::time::Duration;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{ConstrainedBox, Rect};
-use warpui::platform::{TerminationMode, WindowBounds};
+use warpui::platform::TerminationMode;
 use warpui::{
-    AddWindowOptions, AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View,
-    ViewContext, WindowId,
+    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext, WindowId,
 };
+use crate::ui::window_options::desktop_popout_window_options;
 use warpui_core::assets::asset_cache::AssetCache;
 use wormhole_desktop_rdp::RdpRuntime;
 
@@ -376,11 +376,7 @@ impl CoordinatorView {
         let window_key = window_key.to_string();
         let state = self.state.clone();
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1280., 820.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(1280., 820.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             RdpViewerView::new(view_ctx, runtime, peer, password, totp_code, fps)
@@ -412,11 +408,7 @@ impl CoordinatorView {
 
         let window_key = window_key.to_string();
         let state = self.state.clone();
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1300., 820.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(1300., 820.));
 
         let (window_id, _) = ctx.add_window(options, |view_ctx| ComputerUseView::new(view_ctx));
 
@@ -467,11 +459,7 @@ impl CoordinatorView {
         let window_key = window_key.to_string();
         let state = self.state.clone();
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1280., 820.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(1280., 820.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             new_workspace_rdp_view(view_ctx, runtime, peer, password, fps, watermark_text)
@@ -505,11 +493,7 @@ impl CoordinatorView {
         let state = self.state.clone();
         let fps = fps.max(1);
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1280., 720.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(1280., 720.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             RdpViewerView::new_live(view_ctx, runtime, peer, password, totp_code, fps)
@@ -541,11 +525,7 @@ impl CoordinatorView {
         let window_key = window_key.to_string();
         let state = self.state.clone();
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(1120., 760.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(1120., 760.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             AgentEventsView::new(view_ctx, runtime, target_node, task_id)
@@ -595,11 +575,7 @@ impl CoordinatorView {
         let coordinator = state.clone();
         let window_key = window_key.to_string();
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(760., 620.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(760., 620.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             RdpHostControlView::new(view_ctx, data_dir, runtime, coordinator)
@@ -645,11 +621,7 @@ impl CoordinatorView {
         let session_id = session_id.to_string();
         let hud_title = title.to_string();
 
-        let options = AddWindowOptions {
-            title: Some(title.to_string()),
-            window_bounds: WindowBounds::ExactSize(vec2f(720., 480.)),
-            ..Default::default()
-        };
+        let options = desktop_popout_window_options(title, vec2f(720., 480.));
 
         let (window_id, _) = ctx.add_window(options, move |view_ctx| {
             WorkspaceSessionHudView::new(
