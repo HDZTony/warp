@@ -7,6 +7,8 @@ pub mod core_handle;
 pub mod devices_view;
 pub mod display_view;
 pub mod fonts;
+pub mod desktop_prefs;
+pub mod panel_primitives;
 pub mod settings_view;
 pub mod window_chrome;
 pub mod window_options;

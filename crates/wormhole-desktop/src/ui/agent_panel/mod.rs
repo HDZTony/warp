@@ -6,12 +6,16 @@ use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use transcript::{render_transcript, TranscriptLine};
+use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
+    Border, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
     ParentElement, Shrinkable,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use warpui::{
+    AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext,
+};
+use warpui_core::keymap::Keystroke;
 use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmChatParams};
 use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
 use wormhole_desktop_core::{
@@ -37,6 +41,7 @@ pub enum AgentPanelAction {
     SelectMode(InteractionMode),
     Send,
     PasteInput,
+    FocusInput,
     NewConversation,
     LaunchTerminal,
     RefreshStatus,
@@ -48,12 +53,14 @@ struct PanelState {
     draft: String,
     busy: bool,
     mode: InteractionMode,
-    lines: Vec<TranscriptLine>,
+    lines: Arc<Vec<TranscriptLine>>,
     chat_messages: Vec<AgentLlmChatMessage>,
     resume_id: Option<String>,
     active_session_id: Option<String>,
     event_cursor: u64,
     polling_session: bool,
+    input_focused: bool,
+    pending_send: bool,
 }
 
 pub struct AgentPanelView {
@@ -65,7 +72,8 @@ pub struct AgentPanelView {
     event_poll_inflight: Arc<AtomicBool>,
     visible: bool,
     preferred_agent: PreferredAgent,
-    input_focused: bool,
+    generation_notify_tx: async_channel::Sender<()>,
+    generation_notify_rx: async_channel::Receiver<()>,
 }
 
 impl AgentPanelView {
@@ -73,6 +81,7 @@ impl AgentPanelView {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let preferred_agent = warp_embed_prefs::load_prefs(&core.data_dir()).preferred_agent;
+        let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         Self {
             core,
             font,
@@ -83,18 +92,21 @@ impl AgentPanelView {
                 draft: String::new(),
                 busy: false,
                 mode: InteractionMode::Chat,
-                lines: Vec::new(),
+                lines: Arc::new(Vec::new()),
                 chat_messages: Vec::new(),
                 resume_id: None,
                 active_session_id: None,
                 event_cursor: 0,
                 polling_session: false,
+                input_focused: false,
+                pending_send: false,
             })),
             generation: Arc::new(Mutex::new(0)),
             event_poll_inflight: Arc::new(AtomicBool::new(false)),
             visible: false,
             preferred_agent,
-            input_focused: true,
+            generation_notify_tx,
+            generation_notify_rx,
         }
     }
 
@@ -121,132 +133,238 @@ impl AgentPanelView {
         self.visible = visible;
         if visible {
             self.refresh_status(ctx);
-            self.start_ui_poll(ctx);
+            self.start_generation_listener(ctx);
         }
         ctx.notify();
+    }
+
+    fn notify_generation(&self) {
+        let _ = self.generation_notify_tx.try_send(());
     }
 
     fn bump(&self) {
         if let Ok(mut gen) = self.generation.lock() {
             *gen = gen.saturating_add(1);
         }
+        self.notify_generation();
     }
 
-    fn start_ui_poll(&self, ctx: &mut ViewContext<Self>) {
-        let generation = Arc::clone(&self.generation);
-        let last = Arc::new(Mutex::new(0u64));
+    fn start_session_poll(&self, ctx: &mut ViewContext<Self>) {
         let state = Arc::clone(&self.state);
         let core = self.core.clone();
-        let event_poll_inflight = Arc::clone(&self.event_poll_inflight);
-        let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(350));
-            if tick_tx.send_blocking(()).is_err() {
-                break;
-            }
-        });
-        Self::ui_poll_once(
-            ctx,
-            tick_rx,
-            generation,
-            last,
-            state,
-            core,
-            event_poll_inflight,
-        );
+        let inflight = Arc::clone(&self.event_poll_inflight);
+        let notify_tx = self.generation_notify_tx.clone();
+        Self::session_poll_once(ctx, state, core, inflight, notify_tx);
     }
 
-    fn ui_poll_once(
+    fn session_poll_once(
         ctx: &mut ViewContext<Self>,
-        tick_rx: async_channel::Receiver<()>,
-        generation: Arc<Mutex<u64>>,
-        last: Arc<Mutex<u64>>,
         state: Arc<Mutex<PanelState>>,
         core: CoreHandle,
-        event_poll_inflight: Arc<AtomicBool>,
+        inflight: Arc<AtomicBool>,
+        notify_tx: async_channel::Sender<()>,
     ) {
-        let waiter = tick_rx.clone();
-        ctx.spawn(
-            async move { waiter.recv().await },
-            move |view, output, ctx| {
-                if output.is_err() {
-                    return;
-                }
-                let current = generation.lock().map(|g| *g).unwrap_or(0);
-                let prev = last.lock().map(|g| *g).unwrap_or(0);
-                if current != prev {
-                    if let Ok(mut guard) = last.lock() {
-                        *guard = current;
+        let should_poll = state
+            .lock()
+            .ok()
+            .map(|panel| panel.polling_session && panel.active_session_id.is_some())
+            .unwrap_or(false);
+        if !should_poll {
+            return;
+        }
+
+        if !inflight.swap(true, Ordering::SeqCst) {
+            let (session_id, cursor) = {
+                let panel = state.lock().expect("agent panel state");
+                (
+                    panel.active_session_id.clone().expect("session id"),
+                    panel.event_cursor,
+                )
+            };
+            let state_for_task = Arc::clone(&state);
+            let inflight_for_task = Arc::clone(&inflight);
+            let notify_for_task = notify_tx.clone();
+            let core_for_async = core.clone();
+            let core_for_poll = core.clone();
+            ctx.spawn(
+                async move {
+                    agent_read_local_session_events(
+                        session_id,
+                        cursor,
+                        core_for_async.app_state(),
+                    )
+                    .await
+                },
+                move |view, output, ctx| {
+                    inflight_for_task.store(false, Ordering::SeqCst);
+                    if let Ok(page) = output {
+                        let mut panel = state_for_task.lock().expect("agent panel state");
+                        for event in page.events {
+                            Self::push_line(
+                                &mut panel,
+                                TranscriptLine {
+                                    channel: event.channel,
+                                    text: event.text,
+                                    level: event.level,
+                                },
+                            );
+                        }
+                        panel.event_cursor = page.next_cursor;
+                        if matches!(page.status.as_str(), "completed" | "failed") {
+                            panel.polling_session = false;
+                            panel.busy = false;
+                            panel.active_session_id = None;
+                            panel.status = format!("任务{}", page.status);
+                        }
                     }
+                    let _ = notify_for_task.try_send(());
                     ctx.notify();
-                }
+                    if view.visible {
+                        Self::session_poll_once(
+                            ctx,
+                            state_for_task,
+                            core_for_poll,
+                            inflight_for_task,
+                            notify_for_task,
+                        );
+                    }
+                },
+            );
+            return;
+        }
 
-                let should_poll = state
-                    .lock()
-                    .ok()
-                    .map(|panel| panel.polling_session && panel.active_session_id.is_some())
-                    .unwrap_or(false);
-                if should_poll && !event_poll_inflight.swap(true, Ordering::SeqCst) {
-                    let (session_id, cursor) = {
-                        let panel = state.lock().expect("agent panel state");
-                        (
-                            panel.active_session_id.clone().expect("session id"),
-                            panel.event_cursor,
-                        )
-                    };
-                    let state_for_task = Arc::clone(&state);
-                    let generation_for_task = Arc::clone(&generation);
-                    let inflight = Arc::clone(&event_poll_inflight);
-                    let core_for_task = core.clone();
-                    ctx.spawn(
-                        async move {
-                            agent_read_local_session_events(
-                                session_id,
-                                cursor,
-                                core_for_task.app_state(),
-                            )
-                            .await
-                        },
-                        move |_view, output, ctx| {
-                            inflight.store(false, Ordering::SeqCst);
-                            if let Ok(page) = output {
-                                let mut panel = state_for_task.lock().expect("agent panel state");
-                                for event in page.events {
-                                    panel.lines.push(TranscriptLine {
-                                        channel: event.channel,
-                                        text: event.text,
-                                        level: event.level,
-                                    });
-                                }
-                                panel.event_cursor = page.next_cursor;
-                                if matches!(page.status.as_str(), "completed" | "failed") {
-                                    panel.polling_session = false;
-                                    panel.busy = false;
-                                    panel.active_session_id = None;
-                                    panel.status = format!("任务{}", page.status);
-                                }
-                            }
-                            if let Ok(mut gen) = generation_for_task.lock() {
-                                *gen = gen.saturating_add(1);
-                            }
-                            ctx.notify();
-                        },
-                    );
-                }
-
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            },
+            move |view, _, ctx| {
                 if view.visible {
-                    Self::ui_poll_once(
-                        ctx,
-                        tick_rx,
-                        generation,
-                        last,
-                        state,
-                        core,
-                        event_poll_inflight,
-                    );
+                    Self::session_poll_once(ctx, state, core, inflight, notify_tx);
                 }
             },
         );
+    }
+
+    fn start_generation_listener(&self, ctx: &mut ViewContext<Self>) {
+        let rx = self.generation_notify_rx.clone();
+        let state = Arc::clone(&self.state);
+        Self::generation_notify_once(ctx, rx, state);
+    }
+
+    fn generation_notify_once(
+        ctx: &mut ViewContext<Self>,
+        rx: async_channel::Receiver<()>,
+        state: Arc<Mutex<PanelState>>,
+    ) {
+        let waiter = rx.clone();
+        let state_for_task = Arc::clone(&state);
+        ctx.spawn(
+            async move { waiter.recv().await },
+            move |view, output, ctx| {
+                if output.is_ok() {
+                    let should_send = state_for_task
+                        .lock()
+                        .map(|mut panel| {
+                            if panel.pending_send {
+                                panel.pending_send = false;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if should_send {
+                        view.send_message(ctx);
+                    } else {
+                        ctx.notify();
+                    }
+                    if view.visible {
+                        Self::generation_notify_once(ctx, rx, state_for_task);
+                    }
+                }
+            },
+        );
+    }
+
+    fn push_line(state: &mut PanelState, line: TranscriptLine) {
+        let lines = Arc::make_mut(&mut state.lines);
+        lines.push(line);
+    }
+
+    fn keystroke_action(
+        state: &Arc<Mutex<PanelState>>,
+        preferred_agent: PreferredAgent,
+        keystroke: &Keystroke,
+    ) -> Option<AgentPanelAction> {
+        if keystroke.ctrl || keystroke.meta || keystroke.alt {
+            return None;
+        }
+        let panel = state.lock().ok()?;
+        if panel.input_focused || panel.busy {
+            return None;
+        }
+        match keystroke.key.as_str() {
+            "left" | "right" => {
+                let agent = if preferred_agent == PreferredAgent::Codex {
+                    PreferredAgent::Cursor
+                } else {
+                    PreferredAgent::Codex
+                };
+                Some(AgentPanelAction::SelectAgent(agent))
+            }
+            "up" | "down" => {
+                let mode = if panel.mode == InteractionMode::Chat {
+                    InteractionMode::Task
+                } else {
+                    InteractionMode::Chat
+                };
+                Some(AgentPanelAction::SelectMode(mode))
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_keystroke_panel(
+        state: &Arc<Mutex<PanelState>>,
+        keystroke: &Keystroke,
+        notify_tx: &async_channel::Sender<()>,
+    ) -> bool {
+        if keystroke.key == "tab" {
+            if let Ok(mut panel) = state.lock() {
+                panel.input_focused = !panel.input_focused;
+            }
+            let _ = notify_tx.try_send(());
+            return true;
+        }
+        let mut panel = state.lock().expect("agent panel state");
+        if !panel.input_focused || panel.busy {
+            return false;
+        }
+        match keystroke.key.as_str() {
+            "enter" | "return" => {
+                if !panel.draft.trim().is_empty() {
+                    panel.pending_send = true;
+                }
+            }
+            "backspace" => {
+                panel.draft.pop();
+            }
+            "escape" => {
+                panel.draft.clear();
+                panel.input_focused = false;
+            }
+            key if key.len() == 1 => {
+                if let Some(ch) = key.chars().next() {
+                    if !keystroke.ctrl && !keystroke.meta {
+                        panel.draft.push(ch);
+                    }
+                }
+            }
+            _ => return false,
+        }
+        drop(panel);
+        let _ = notify_tx.try_send(());
+        true
     }
 
     fn select_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
@@ -274,7 +392,7 @@ impl AgentPanelView {
     fn new_conversation(&mut self, ctx: &mut ViewContext<Self>) {
         {
             let mut state = self.state.lock().expect("agent panel state");
-            state.lines.clear();
+            state.lines = Arc::new(Vec::new());
             state.chat_messages.clear();
             state.resume_id = None;
             state.active_session_id = None;
@@ -335,11 +453,14 @@ impl AgentPanelView {
             }
             state.busy = true;
             state.draft.clear();
-            state.lines.push(TranscriptLine {
-                channel: "user".into(),
-                text: text.clone(),
-                level: "info".into(),
-            });
+            Self::push_line(
+                &mut state,
+                TranscriptLine {
+                    channel: "user".into(),
+                    text: text.clone(),
+                    level: "info".into(),
+                },
+            );
             state.chat_messages.push(AgentLlmChatMessage {
                 role: "user".into(),
                 content: text.clone(),
@@ -359,9 +480,9 @@ impl AgentPanelView {
         let core = self.core.clone();
         let shared_async = Arc::clone(&self.state);
         let shared_callback = Arc::clone(&self.state);
-        let generation_async = Arc::clone(&self.generation);
         let generation_callback = Arc::clone(&self.generation);
         let agent = self.preferred_agent;
+        let generation_notify = self.generation_notify_tx.clone();
         ctx.spawn(
             async move {
                 let params = {
@@ -386,7 +507,7 @@ impl AgentPanelView {
                 match agent {
                     PreferredAgent::Codex => {
                         let stream_shared = Arc::clone(&shared_async);
-                        let stream_gen = Arc::clone(&generation_async);
+                        let stream_notify = generation_notify.clone();
                         agent_codex_chat_with_stream(params, state, move |event| {
                             let level = if event.channel == "error" {
                                 "error".to_string()
@@ -394,15 +515,16 @@ impl AgentPanelView {
                                 "info".to_string()
                             };
                             if let Ok(mut panel) = stream_shared.lock() {
-                                panel.lines.push(TranscriptLine {
-                                    channel: event.channel,
-                                    text: event.text,
-                                    level,
-                                });
+                                Self::push_line(
+                                    &mut panel,
+                                    TranscriptLine {
+                                        channel: event.channel,
+                                        text: event.text,
+                                        level,
+                                    },
+                                );
                             }
-                            if let Ok(mut gen) = stream_gen.lock() {
-                                *gen = gen.saturating_add(1);
-                            }
+                            let _ = stream_notify.try_send(());
                         })
                         .await
                     }
@@ -413,11 +535,14 @@ impl AgentPanelView {
                 let mut panel = shared_callback.lock().expect("agent panel state");
                 match output {
                     Ok(reply) => {
-                        panel.lines.push(TranscriptLine {
-                            channel: "assistant".into(),
-                            text: reply.content.clone(),
-                            level: "info".into(),
-                        });
+                        Self::push_line(
+                            &mut panel,
+                            TranscriptLine {
+                                channel: "assistant".into(),
+                                text: reply.content.clone(),
+                                level: "info".into(),
+                            },
+                        );
                         panel.chat_messages.push(AgentLlmChatMessage {
                             role: "assistant".into(),
                             content: reply.content,
@@ -426,11 +551,14 @@ impl AgentPanelView {
                         panel.status = format!("完成 · {}", reply.model);
                     }
                     Err(err) => {
-                        panel.lines.push(TranscriptLine {
-                            channel: "stderr".into(),
-                            text: err.clone(),
-                            level: "error".into(),
-                        });
+                        Self::push_line(
+                            &mut panel,
+                            TranscriptLine {
+                                channel: "stderr".into(),
+                                text: err.clone(),
+                                level: "error".into(),
+                            },
+                        );
                         panel.status = err;
                     }
                 }
@@ -458,26 +586,34 @@ impl AgentPanelView {
                     PreferredAgent::Cursor => agent_cursor_start_session(request, state).await,
                 }
             },
-            move |_view, output, ctx| {
+            move |view, output, ctx| {
                 let mut panel = shared.lock().expect("agent panel state");
+                let mut started = false;
                 match output {
                     Ok(session) => {
-                        panel.lines.push(TranscriptLine {
-                            channel: "status".into(),
-                            text: format!("任务已启动 · session {}", session.id),
-                            level: "info".into(),
-                        });
+                        Self::push_line(
+                            &mut panel,
+                            TranscriptLine {
+                                channel: "status".into(),
+                                text: format!("任务已启动 · session {}", session.id),
+                                level: "info".into(),
+                            },
+                        );
                         panel.active_session_id = Some(session.id);
                         panel.event_cursor = 0;
                         panel.polling_session = true;
                         panel.status = "任务运行中…".into();
+                        started = true;
                     }
                     Err(err) => {
-                        panel.lines.push(TranscriptLine {
-                            channel: "stderr".into(),
-                            text: err.clone(),
-                            level: "error".into(),
-                        });
+                        Self::push_line(
+                            &mut panel,
+                            TranscriptLine {
+                                channel: "stderr".into(),
+                                text: err.clone(),
+                                level: "error".into(),
+                            },
+                        );
                         panel.status = err;
                         panel.busy = false;
                     }
@@ -490,6 +626,9 @@ impl AgentPanelView {
                     *gen = gen.saturating_add(1);
                 }
                 ctx.notify();
+                if started {
+                    view.start_session_poll(ctx);
+                }
             },
         );
     }
@@ -568,14 +707,14 @@ impl AgentPanelView {
                     })
                     .finish(),
             )
-            .with_uniform_padding(8.0)
+            .with_uniform_padding(12.0)
             .with_background(bg)
             .finish();
             row.add_child(btn);
         }
         Container::new(row.finish())
             .with_uniform_padding(4.0)
-            .with_background(theme::panel())
+            .with_background(theme::bg())
             .finish()
     }
 
@@ -605,9 +744,19 @@ impl AgentPanelView {
         })
     }
 
-    fn toolbar_button(&self, label: &str, action: AgentPanelAction) -> Box<dyn Element> {
+    fn toolbar_button(
+        &self,
+        label: &str,
+        action: AgentPanelAction,
+        primary: bool,
+    ) -> Box<dyn Element> {
+        let (fg, bg) = if primary {
+            (theme::accent(), theme::accent_bg(40))
+        } else {
+            (theme::text(), ColorU::new(0, 0, 0, 0))
+        };
         let label_el = ui_text::body(label.to_string(), self.font)
-            .with_color(theme::accent())
+            .with_color(fg)
             .finish();
         Container::new(
             EventHandler::new(label_el)
@@ -617,8 +766,8 @@ impl AgentPanelView {
                 })
                 .finish(),
         )
-        .with_uniform_padding(8.0)
-        .with_background(theme::accent_bg(24))
+        .with_uniform_padding(12.0)
+        .with_background(bg)
         .finish()
     }
 }
@@ -638,13 +787,31 @@ impl View for AgentPanelView {
         let draft = state.draft.clone();
         let status = state.status.clone();
         let busy = state.busy;
-        let lines = state.lines.clone();
+        let input_focused = state.input_focused;
+        let lines = Arc::clone(&state.lines);
         drop(state);
 
-        let input_border = if self.input_focused {
-            theme::accent()
+        let preferred_agent = self.preferred_agent;
+
+        let input_border = if input_focused {
+            theme::accent_cool()
         } else {
             theme::border()
+        };
+
+        let placeholder = if busy {
+            "执行中…"
+        } else if input_focused {
+            "输入消息，Enter 发送，Esc 取消焦点"
+        } else {
+            "点击输入框或按 Tab 聚焦，Enter 发送"
+        };
+
+        let draft_empty = draft.is_empty();
+        let input_text = if draft_empty {
+            placeholder.to_string()
+        } else {
+            draft
         };
 
         let body = Flex::column()
@@ -659,15 +826,19 @@ impl View for AgentPanelView {
             .with_child(self.mode_switcher())
             .with_child(
                 Flex::row()
-                    .with_child(self.toolbar_button("粘贴", AgentPanelAction::PasteInput))
-                    .with_child(self.toolbar_button("发送", AgentPanelAction::Send))
-                    .with_child(self.toolbar_button("新对话", AgentPanelAction::NewConversation))
-                    .with_child(self.toolbar_button("系统终端", AgentPanelAction::LaunchTerminal))
+                    .with_child(self.toolbar_button("粘贴", AgentPanelAction::PasteInput, false))
+                    .with_child(self.toolbar_button("发送", AgentPanelAction::Send, true))
+                    .with_child(
+                        self.toolbar_button("新对话", AgentPanelAction::NewConversation, false),
+                    )
+                    .with_child(
+                        self.toolbar_button("系统终端", AgentPanelAction::LaunchTerminal, false),
+                    )
                     .finish(),
             )
             .with_child(
                 ui_text::body(status, self.font)
-                    .with_color(theme::muted())
+                    .with_color(theme::text())
                     .finish(),
             )
             .with_child(
@@ -675,7 +846,8 @@ impl View for AgentPanelView {
                     1.0,
                     Container::new(render_transcript(&lines, self.font, self.mono))
                         .with_uniform_padding(8.0)
-                        .with_background(theme::panel())
+                        .with_background(theme::bg())
+                        .with_border(Border::all(1.0).with_border_color(theme::border()))
                         .finish(),
                 )
                 .finish(),
@@ -683,34 +855,82 @@ impl View for AgentPanelView {
             .with_child(
                 Container::new(
                     EventHandler::new(
-                        ui_text::mono(
-                            if draft.is_empty() {
-                                if busy {
-                                    "执行中…".to_string()
-                                } else {
-                                    "从剪贴板粘贴后点击「发送」".to_string()
-                                }
-                            } else {
-                                draft
-                            },
-                            self.mono,
-                        )
-                        .with_color(if busy { theme::muted() } else { theme::text() })
+                        ui_text::mono(input_text, self.mono)
+                        .with_color(if busy {
+                            theme::placeholder()
+                        } else if draft_empty {
+                            theme::placeholder()
+                        } else {
+                            theme::text()
+                        })
                         .finish(),
                     )
-                    .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                        DispatchEventResult::StopPropagation
+                    })
                     .finish(),
                 )
-                .with_uniform_padding(10.0)
-                .with_background(theme::panel())
-                .with_border(warpui::elements::Border::all(1.0).with_border_color(input_border))
+                .with_uniform_padding(12.0)
+                .with_background(theme::bg())
+                .with_border(Border::all(1.0).with_border_color(input_border))
                 .finish(),
             );
 
-        Container::new(body.finish())
+        let panel = Container::new(body.finish())
             .with_background(theme::panel())
             .with_uniform_padding(12.0)
+            .finish();
+
+        EventHandler::new(panel)
+            .with_always_handle()
+            .on_keydown({
+                let state = Arc::clone(&self.state);
+                let notify_tx = self.generation_notify_tx.clone();
+                move |ctx, _, keystroke| {
+                    if let Some(action) =
+                        Self::keystroke_action(&state, preferred_agent, keystroke)
+                    {
+                        ctx.dispatch_typed_action(action);
+                        return DispatchEventResult::StopPropagation;
+                    }
+                    if Self::handle_keystroke_panel(&state, keystroke, &notify_tx) {
+                        DispatchEventResult::StopPropagation
+                    } else {
+                        DispatchEventResult::PropagateToParent
+                    }
+                }
+            })
             .finish()
+    }
+
+    fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
+        let agent = match self.preferred_agent {
+            PreferredAgent::Codex => "Codex",
+            PreferredAgent::Cursor => "Cursor",
+        };
+        let mode = self
+            .state
+            .lock()
+            .map(|p| {
+                if p.mode == InteractionMode::Chat {
+                    "对话"
+                } else {
+                    "全自动"
+                }
+            })
+            .unwrap_or("对话");
+        Some(AccessibilityContent::new(
+            format!("Warp Agent，{agent}，{mode} 模式"),
+            "左右方向键切换 Agent。上下方向键切换对话或全自动模式。Tab 聚焦输入框，Enter 发送。",
+            WarpA11yRole::WindowRole,
+        ))
+    }
+
+    fn accessibility_data(&self, _ctx: &mut ViewContext<Self>) -> Option<AccessibilityData> {
+        Some(AccessibilityData {
+            content: "Warp Agent 面板".into(),
+        })
     }
 }
 
@@ -724,9 +944,63 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::SelectMode(mode) => self.select_mode(*mode, ctx),
             AgentPanelAction::Send => self.send_message(ctx),
             AgentPanelAction::PasteInput => self.paste_input(ctx),
+            AgentPanelAction::FocusInput => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.input_focused = true;
+                }
+                ctx.notify();
+            }
             AgentPanelAction::NewConversation => self.new_conversation(ctx),
             AgentPanelAction::LaunchTerminal => self.launch_terminal(ctx),
             AgentPanelAction::RefreshStatus => self.refresh_status(ctx),
         }
+    }
+
+    fn action_accessibility_contents(
+        &mut self,
+        action: &AgentPanelAction,
+        _ctx: &mut ViewContext<Self>,
+    ) -> ActionAccessibilityContent {
+        let content = match action {
+            AgentPanelAction::SelectAgent(PreferredAgent::Codex) => AccessibilityContent::new_without_help(
+                "选择 Codex Agent",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::SelectAgent(PreferredAgent::Cursor) => AccessibilityContent::new_without_help(
+                "选择 Cursor Agent",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::SelectMode(InteractionMode::Chat) => AccessibilityContent::new_without_help(
+                "对话模式",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::SelectMode(InteractionMode::Task) => AccessibilityContent::new_without_help(
+                "全自动模式",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::Send => {
+                AccessibilityContent::new_without_help("发送消息", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::FocusInput => AccessibilityContent::new_without_help(
+                "聚焦输入框",
+                WarpA11yRole::TextfieldRole,
+            ),
+            AgentPanelAction::NewConversation => AccessibilityContent::new_without_help(
+                "新对话",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::LaunchTerminal => AccessibilityContent::new_without_help(
+                "打开系统终端",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::PasteInput => AccessibilityContent::new_without_help(
+                "粘贴到输入框",
+                WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::SetVisible(_) | AgentPanelAction::RefreshStatus => {
+                return ActionAccessibilityContent::Empty;
+            }
+        };
+        ActionAccessibilityContent::Custom(content)
     }
 }

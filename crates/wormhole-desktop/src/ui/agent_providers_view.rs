@@ -13,6 +13,9 @@ use crate::ui::codex_provider_import_model::{
     snapshot_preview, SharedCodexProviderImportModel,
 };
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::{
+    section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
+};
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -294,19 +297,15 @@ impl View for AgentProvidersView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(ui_text::title("Codex 供应商", self.font).finish());
+        col.add_child(section_title("Codex 供应商", self.font));
         col.add_child(
-            ui_text::body(self.llm_summary.clone(), self.font)
-                .with_color(theme::muted())
-                .finish(),
+            section_hint(
+                "兼容 CC Switch 的 ccswitch:// 深度链接。若系统默认处理程序不是 Wormhole，可从剪贴板导入。",
+                self.font,
+            ),
         );
         col.add_child(
-            ui_text::body(
-                "兼容 CC Switch 的 ccswitch:// 深度链接。若系统默认处理程序不是 Wormhole，可在下方从剪贴板导入。",
-                self.font,
-            )
-            .with_color(theme::muted())
-            .finish(),
+            status_line(self.llm_summary.clone(), self.font, StatusTone::Muted),
         );
 
         let mut toolbar = Flex::row();
@@ -319,30 +318,43 @@ impl View for AgentProvidersView {
         }
 
         if !self.status.is_empty() {
-            col.add_child(
-                ui_text::body(self.status.clone(), self.font)
-                    .with_color(theme::muted())
-                    .finish(),
-            );
+            let tone = if self.status.contains("错误")
+                || self.status.contains("失败")
+                || self.status.contains("未找到")
+            {
+                StatusTone::Danger
+            } else if self.status.contains("已") {
+                StatusTone::Success
+            } else {
+                StatusTone::Neutral
+            };
+            col.add_child(status_line(self.status.clone(), self.font, tone));
         }
 
-        col.add_child(ui_text::body("已导入供应商", self.font).finish());
+        col.add_child(section_title("已导入供应商", self.font));
         if self.providers.is_empty() {
-            col.add_child(ui_text::body("暂无自定义供应商", self.font).finish());
+            col.add_child(status_line(
+                "暂无自定义供应商。使用「从剪贴板导入」或打开 ccswitch:// 链接添加。",
+                self.font,
+                StatusTone::Placeholder,
+            ));
         } else {
             for provider in &self.providers {
                 let active = provider.is_active;
-                let line = format!(
-                    "{}{} · {} · {}{}",
-                    provider.name,
-                    if active { " [当前]" } else { "" },
-                    provider.model,
-                    provider.base_url,
-                    if provider.chat_completions_upstream {
-                        " · Chat 代理"
-                    } else {
-                        " · Responses 直连"
-                    }
+                let line = truncate_middle(
+                    &format!(
+                        "{}{} · {} · {}{}",
+                        provider.name,
+                        if active { " [当前]" } else { "" },
+                        provider.model,
+                        provider.base_url,
+                        if provider.chat_completions_upstream {
+                            " · Chat 代理"
+                        } else {
+                            " · Responses 直连"
+                        }
+                    ),
+                    120,
                 );
                 col.add_child(ui_text::mono(line, self.font).finish());
                 let mut row = Flex::row();
@@ -362,12 +374,7 @@ impl View for AgentProvidersView {
             }
         }
 
-        Container::new(col.finish())
-            .with_background(theme::panel())
-            .with_uniform_padding(12.0)
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
-            .finish()
+        section_card(col.finish())
     }
 }
 

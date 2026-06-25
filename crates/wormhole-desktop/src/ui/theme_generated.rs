@@ -6,8 +6,16 @@ pub fn canvas() -> ColorU {
     ColorU::new(8, 7, 11, 255)
 }
 
+pub fn bg() -> ColorU {
+    ColorU::new(15, 18, 35, 255)
+}
+
 pub fn accent() -> ColorU {
     ColorU::new(253, 249, 230, 255)
+}
+
+pub fn accent_cool() -> ColorU {
+    ColorU::new(222, 231, 247, 255)
 }
 
 pub fn panel() -> ColorU {
@@ -26,8 +34,20 @@ pub fn muted() -> ColorU {
     ColorU::new(160, 135, 140, 255)
 }
 
+pub fn placeholder() -> ColorU {
+    ColorU::new(215, 203, 207, 255)
+}
+
 pub fn danger() -> ColorU {
     ColorU::new(232, 93, 76, 255)
+}
+
+pub fn success() -> ColorU {
+    ColorU::new(91, 196, 122, 255)
+}
+
+pub fn warn() -> ColorU {
+    ColorU::new(229, 199, 107, 255)
 }
 
 pub fn accent_bg(alpha: u8) -> ColorU {

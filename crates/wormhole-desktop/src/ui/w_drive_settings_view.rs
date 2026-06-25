@@ -12,6 +12,9 @@ mod imp {
     };
 
     use crate::ui::core_handle::CoreHandle;
+    use crate::ui::panel_primitives::{
+        section_card, section_hint, section_title, status_line, StatusTone,
+    };
     use crate::ui::theme;
     use crate::ui_text;
 
@@ -138,15 +141,14 @@ mod imp {
 
         fn render(&self, _app: &AppContext) -> Box<dyn Element> {
             let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-            col.add_child(ui_text::title("同步数据 / W 盘", self.font).finish());
-            col.add_child(
-                ui_text::body(
-                    "程序安装位置与同步数据分离。默认数据在 %LOCALAPPDATA%\\Wormhole\\data；可迁移到其他磁盘。",
-                    self.font,
-                )
-                .with_color(theme::muted())
-                .finish(),
-            );
+            col.add_child(section_title("同步数据 / W 盘", self.font));
+            col.add_child(section_hint(
+                "程序安装位置与同步数据分离。默认数据在 %LOCALAPPDATA%\\Wormhole\\data；可迁移到其他磁盘。",
+                self.font,
+            ));
+            if self.busy {
+                col.add_child(status_line("操作进行中…", self.font, StatusTone::Warn));
+            }
             col.add_child(ui_text::body(self.drive_status.clone(), self.font).finish());
             col.add_child(ui_text::body(self.logon_line.clone(), self.font).finish());
 
@@ -160,11 +162,7 @@ mod imp {
             }
 
             if !self.status.is_empty() {
-                col.add_child(
-                    ui_text::body(self.status.clone(), self.font)
-                        .with_color(theme::danger())
-                        .finish(),
-                );
+                col.add_child(status_line(self.status.clone(), self.font, StatusTone::Danger));
             }
 
             let mut toolbar = Flex::row();
@@ -192,10 +190,7 @@ mod imp {
                 }
             }
 
-            Container::new(col.finish())
-                .with_background(theme::panel())
-                .with_uniform_padding(12.0)
-                .finish()
+            section_card(col.finish())
         }
     }
 
@@ -257,13 +252,12 @@ pub use imp::WDriveSettingsView;
 
 #[cfg(not(windows))]
 mod stub {
-    use warpui::elements::{Container, Flex, ParentElement};
+    use warpui::elements::{Flex, ParentElement};
     use warpui::fonts::FamilyId;
     use warpui::{AppContext, Element, Entity, View, ViewContext};
 
     use crate::ui::core_handle::CoreHandle;
-    use crate::ui::theme;
-    use crate::ui_text;
+    use crate::ui::panel_primitives::{section_card, section_hint, section_title};
 
     pub struct WDriveSettingsView {
         font: FamilyId,
@@ -288,16 +282,9 @@ mod stub {
 
         fn render(&self, _app: &AppContext) -> Box<dyn Element> {
             let col = Flex::column()
-                .with_child(ui_text::title("同步数据 / W 盘", self.font).finish())
-                .with_child(
-                    ui_text::body("W 盘迁移仅适用于 Windows。", self.font)
-                        .with_color(theme::muted())
-                        .finish(),
-                );
-            Container::new(col.finish())
-                .with_background(theme::panel())
-                .with_uniform_padding(12.0)
-                .finish()
+                .with_child(section_title("同步数据 / W 盘", self.font))
+                .with_child(section_hint("W 盘迁移仅适用于 Windows。", self.font));
+            section_card(col.finish())
         }
     }
 }

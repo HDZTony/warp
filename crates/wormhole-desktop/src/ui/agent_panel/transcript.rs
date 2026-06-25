@@ -17,10 +17,12 @@ pub fn channel_color(channel: &str, level: &str) -> ColorU {
     if level == "error" || channel == "stderr" {
         return theme::danger();
     }
-    if channel == "status" || channel == "assistant" || channel == "user" {
-        return theme::accent();
+    match channel {
+        "user" => theme::text(),
+        "assistant" => theme::accent_cool(),
+        "status" => theme::warn(),
+        _ => theme::muted(),
     }
-    theme::muted()
 }
 
 pub fn render_transcript(
@@ -35,7 +37,7 @@ pub fn render_transcript(
     if lines.is_empty() {
         column.add_child(
             ui_text::body("输入消息开始对话，或切换到全自动模式提交任务。", font)
-                .with_color(theme::muted())
+                .with_color(theme::text())
                 .finish(),
         );
     } else {
