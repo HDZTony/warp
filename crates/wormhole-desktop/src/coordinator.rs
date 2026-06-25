@@ -450,9 +450,9 @@ impl CoordinatorView {
         watermark_text: Option<String>,
         fps: i32,
     ) {
-        if let Some(window_id) = self.workspace_window_id(window_key) {
-            ctx.windows().show_window_and_focus_app(window_id);
-            return;
+        if let Some(window_id) = self.take_workspace_window_id(window_key) {
+            ctx.windows()
+                .close_window(window_id, TerminationMode::ForceTerminate);
         }
 
         let runtime = self.rdp_runtime();
@@ -667,6 +667,11 @@ impl CoordinatorView {
     fn workspace_window_id(&self, window_key: &str) -> Option<WindowId> {
         let guard = self.state.lock().expect("coordinator lock");
         guard.workspace_windows.get(window_key).copied()
+    }
+
+    fn take_workspace_window_id(&self, window_key: &str) -> Option<WindowId> {
+        let mut guard = self.state.lock().expect("coordinator lock");
+        guard.workspace_windows.remove(window_key)
     }
 
     fn focus_rdp_window(&self, ctx: &mut ViewContext<Self>, window_key: &str) {
