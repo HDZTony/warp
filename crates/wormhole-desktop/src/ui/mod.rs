@@ -7,6 +7,8 @@ pub mod core_handle;
 pub mod devices_view;
 pub mod display_view;
 pub mod fonts;
+pub mod hud_effects;
+pub mod multiline_input;
 pub mod desktop_prefs;
 pub mod panel_primitives;
 pub mod settings_view;

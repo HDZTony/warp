@@ -1,6 +1,7 @@
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, ChildView, Container, DispatchEventResult, EventHandler, Flex, ParentElement,
+    Border, ChildView, ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex,
+    ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -11,6 +12,7 @@ use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::sticker_picker::StickerPickerView;
 use crate::ui::chat::video::ChatVideoView;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::multiline_input;
 use crate::ui::panel_primitives::status_line;
 use crate::ui::panel_primitives::StatusTone;
 use crate::ui::theme;
@@ -24,6 +26,7 @@ pub enum ChatComposeAction {
     ToggleFocus,
     Backspace,
     InsertChar(char),
+    InsertNewline,
     ClearAndUnfocus,
 }
 
@@ -141,17 +144,15 @@ impl View for ChatComposeView {
         };
 
         let draft_empty = self.draft.is_empty();
-        let input_text = if draft_empty {
-            placeholder.to_string()
-        } else {
-            self.draft.clone()
-        };
+        let input_text = multiline_input::display_draft(&self.draft, placeholder);
 
         let input_color = if self.sending || draft_empty {
             theme::placeholder()
         } else {
             theme::text()
         };
+
+        let input_height = multiline_input::box_height(&self.draft, multiline_input::DEFAULT_COLS);
 
         let input_focused = self.input_focused;
         let sending = self.sending;
@@ -160,17 +161,29 @@ impl View for ChatComposeView {
             .with_child(ChildView::new(&self.video).finish())
             .with_child(ChildView::new(&self.sticker_picker).finish())
             .with_child(
-                Container::new(
-                    EventHandler::new(ui_text::mono(input_text, self.mono).with_color(input_color).finish())
+                ConstrainedBox::new(
+                    Container::new(
+                        EventHandler::new(
+                            ui_text::mono(input_text, self.mono)
+                                .with_color(input_color)
+                                .finish(),
+                        )
                         .on_left_mouse_down(|ctx, _, _| {
                             ctx.dispatch_typed_action(ChatComposeAction::FocusInput);
                             DispatchEventResult::StopPropagation
                         })
                         .finish(),
+                    )
+                    .with_uniform_padding(12.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_color(input_border))
+                    .finish(),
                 )
-                .with_uniform_padding(12.0)
-                .with_background(theme::bg())
-                .with_border(Border::all(1.0).with_border_color(input_border))
+                .with_height(input_height)
+                .with_max_height(multiline_input::box_height(
+                    &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
+                    multiline_input::DEFAULT_COLS,
+                ))
                 .finish(),
             )
             .with_child(status_line(self.status.clone(), self.font, self.status_tone));
@@ -190,7 +203,11 @@ impl View for ChatComposeView {
                 }
                 match keystroke.key.as_str() {
                     "enter" | "return" => {
-                        ctx.dispatch_typed_action(ChatComposeAction::Send);
+                        if keystroke.shift {
+                            ctx.dispatch_typed_action(ChatComposeAction::InsertNewline);
+                        } else {
+                            ctx.dispatch_typed_action(ChatComposeAction::Send);
+                        }
                         DispatchEventResult::StopPropagation
                     }
                     "backspace" => {
@@ -216,7 +233,7 @@ impl View for ChatComposeView {
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
         Some(AccessibilityContent::new(
             "聊天消息输入",
-            "Tab 聚焦输入框。Enter 发送。Esc 清空并取消焦点。",
+            "Tab 聚焦输入框。Enter 发送，Shift+Enter 换行。Esc 清空并取消焦点。",
             WarpA11yRole::TextfieldRole,
         ))
     }
@@ -262,6 +279,12 @@ impl TypedActionView for ChatComposeView {
                     ctx.notify();
                 }
             }
+            ChatComposeAction::InsertNewline => {
+                if self.input_focused && !self.sending {
+                    self.draft.push('\n');
+                    ctx.notify();
+                }
+            }
             ChatComposeAction::ClearAndUnfocus => {
                 if self.input_focused && !self.sending {
                     self.draft.clear();
@@ -290,6 +313,7 @@ impl TypedActionView for ChatComposeView {
             }
             ChatComposeAction::Backspace
             | ChatComposeAction::InsertChar(_)
+            | ChatComposeAction::InsertNewline
             | ChatComposeAction::ClearAndUnfocus => AccessibilityContent::new_without_help(
                 "编辑消息草稿",
                 WarpA11yRole::TextfieldRole,

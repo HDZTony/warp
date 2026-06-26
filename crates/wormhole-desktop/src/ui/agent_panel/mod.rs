@@ -1,3 +1,4 @@
+mod sidebar;
 mod transcript;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,8 +9,8 @@ use pathfinder_color::ColorU;
 use transcript::{render_transcript, TranscriptLine};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
-    ParentElement, Shrinkable,
+    Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
+    MainAxisSize, ParentElement, Shrinkable,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -25,6 +26,7 @@ use wormhole_desktop_core::{
 };
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::multiline_input;
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -45,6 +47,11 @@ pub enum AgentPanelAction {
     NewConversation,
     LaunchTerminal,
     RefreshStatus,
+    SelectProject(String),
+    SelectSession(String),
+    NewProject,
+    NewThread,
+    FocusSidebarSearch,
 }
 
 struct PanelState {
@@ -61,6 +68,13 @@ struct PanelState {
     polling_session: bool,
     input_focused: bool,
     pending_send: bool,
+    projects: Vec<sidebar::AgentProject>,
+    sidebar_sessions: Vec<sidebar::AgentSession>,
+    active_project_id: String,
+    active_sidebar_session_id: String,
+    thread_title: String,
+    sidebar_search: String,
+    sidebar_search_focused: bool,
 }
 
 pub struct AgentPanelView {
@@ -100,6 +114,13 @@ impl AgentPanelView {
                 polling_session: false,
                 input_focused: false,
                 pending_send: false,
+                projects: sidebar::seed_projects(),
+                sidebar_sessions: sidebar::seed_sessions(),
+                active_project_id: "wormhole".into(),
+                active_sidebar_session_id: "sync-share".into(),
+                thread_title: "同步终端共享文件夹".into(),
+                sidebar_search: String::new(),
+                sidebar_search_focused: false,
             })),
             generation: Arc::new(Mutex::new(0)),
             event_poll_inflight: Arc::new(AtomicBool::new(false)),
@@ -331,18 +352,48 @@ impl AgentPanelView {
     ) -> bool {
         if keystroke.key == "tab" {
             if let Ok(mut panel) = state.lock() {
-                panel.input_focused = !panel.input_focused;
+                if panel.sidebar_search_focused {
+                    panel.sidebar_search_focused = false;
+                    panel.input_focused = true;
+                } else {
+                    panel.input_focused = !panel.input_focused;
+                    panel.sidebar_search_focused = false;
+                }
             }
             let _ = notify_tx.try_send(());
             return true;
         }
         let mut panel = state.lock().expect("agent panel state");
+        if panel.sidebar_search_focused {
+            match keystroke.key.as_str() {
+                "backspace" => {
+                    panel.sidebar_search.pop();
+                }
+                "escape" => {
+                    panel.sidebar_search.clear();
+                    panel.sidebar_search_focused = false;
+                }
+                key if key.len() == 1 => {
+                    if let Some(ch) = key.chars().next() {
+                        if !keystroke.ctrl && !keystroke.meta {
+                            panel.sidebar_search.push(ch);
+                        }
+                    }
+                }
+                _ => return false,
+            }
+            drop(panel);
+            let _ = notify_tx.try_send(());
+            return true;
+        }
         if !panel.input_focused || panel.busy {
             return false;
         }
         match keystroke.key.as_str() {
             "enter" | "return" => {
-                if !panel.draft.trim().is_empty() {
+                if keystroke.shift {
+                    panel.draft.push('\n');
+                } else if !panel.draft.trim().is_empty() {
                     panel.pending_send = true;
                 }
             }
@@ -365,6 +416,100 @@ impl AgentPanelView {
         drop(panel);
         let _ = notify_tx.try_send(());
         true
+    }
+
+    fn select_project(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
+        let first = {
+            let mut panel = self.state.lock().expect("agent panel state");
+            if panel.active_project_id == project_id {
+                return;
+            }
+            panel.active_project_id = project_id.clone();
+            panel
+                .sidebar_sessions
+                .iter()
+                .find(|s| s.project_id == project_id)
+                .map(|s| s.id.clone())
+        };
+        if let Some(session_id) = first {
+            self.select_session(session_id, ctx);
+        } else {
+            ctx.notify();
+        }
+    }
+
+    fn select_session(&mut self, session_id: String, ctx: &mut ViewContext<Self>) {
+        let snapshot = {
+            let panel = self.state.lock().expect("agent panel state");
+            panel
+                .sidebar_sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .cloned()
+        };
+        let mut panel = self.state.lock().expect("agent panel state");
+        panel.active_sidebar_session_id = session_id;
+        if let Some(session) = snapshot {
+            panel.thread_title = session.label.clone();
+            panel.lines = Arc::new(vec![
+                TranscriptLine {
+                    channel: "user".into(),
+                    text: session.prompt.clone(),
+                    level: "info".into(),
+                },
+                TranscriptLine {
+                    channel: "assistant".into(),
+                    text: format!("已加载会话「{}」的演示上下文。", session.label),
+                    level: "info".into(),
+                },
+            ]);
+        }
+        drop(panel);
+        self.bump();
+        ctx.notify();
+    }
+
+    fn new_project(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut panel = self.state.lock().expect("agent panel state");
+        let n = panel.projects.len() + 1;
+        let id = format!("project-{n}");
+        panel.projects.push(sidebar::AgentProject {
+            id: id.clone(),
+            label: format!("新项目 {n}"),
+            time: "now".into(),
+        });
+        panel.active_project_id = id;
+        drop(panel);
+        ctx.notify();
+    }
+
+    fn new_thread(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut panel = self.state.lock().expect("agent panel state");
+        let n = panel
+            .sidebar_sessions
+            .iter()
+            .filter(|s| s.project_id == panel.active_project_id)
+            .count()
+            + 1;
+        let id = format!("thread-{n}");
+        let project_id = panel.active_project_id.clone();
+        panel.sidebar_sessions.insert(
+            0,
+            sidebar::AgentSession {
+                id: id.clone(),
+                label: format!("新会话 {n}"),
+                project_id,
+                time: "now".into(),
+                running: false,
+                prompt: String::new(),
+            },
+        );
+        panel.active_sidebar_session_id = id.clone();
+        panel.thread_title = format!("新会话 {n}");
+        panel.lines = Arc::new(Vec::new());
+        drop(panel);
+        self.bump();
+        ctx.notify();
     }
 
     fn select_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
@@ -789,6 +934,13 @@ impl View for AgentPanelView {
         let busy = state.busy;
         let input_focused = state.input_focused;
         let lines = Arc::clone(&state.lines);
+        let projects = state.projects.clone();
+        let sidebar_sessions = state.sidebar_sessions.clone();
+        let active_project_id = state.active_project_id.clone();
+        let active_sidebar_session_id = state.active_sidebar_session_id.clone();
+        let thread_title = state.thread_title.clone();
+        let sidebar_search = state.sidebar_search.clone();
+        let sidebar_search_focused = state.sidebar_search_focused;
         drop(state);
 
         let preferred_agent = self.preferred_agent;
@@ -802,23 +954,20 @@ impl View for AgentPanelView {
         let placeholder = if busy {
             "执行中…"
         } else if input_focused {
-            "输入消息，Enter 发送，Esc 取消焦点"
+            "输入消息，Enter 发送，Shift+Enter 换行"
         } else {
-            "点击输入框或按 Tab 聚焦，Enter 发送"
+            "点击输入框或按 Tab 聚焦"
         };
 
         let draft_empty = draft.is_empty();
-        let input_text = if draft_empty {
-            placeholder.to_string()
-        } else {
-            draft
-        };
+        let input_text = multiline_input::display_draft(&draft, placeholder);
+        let input_height = multiline_input::box_height(&draft, multiline_input::DEFAULT_COLS);
 
-        let body = Flex::column()
+        let main = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(
-                ui_text::body("Warp Agent", self.font)
+                ui_text::title(thread_title, self.font)
                     .with_color(theme::text())
                     .finish(),
             )
@@ -853,33 +1002,59 @@ impl View for AgentPanelView {
                 .finish(),
             )
             .with_child(
-                Container::new(
-                    EventHandler::new(
-                        ui_text::mono(input_text, self.mono)
-                        .with_color(if busy {
-                            theme::placeholder()
-                        } else if draft_empty {
-                            theme::placeholder()
-                        } else {
-                            theme::text()
+                ConstrainedBox::new(
+                    Container::new(
+                        EventHandler::new(
+                            ui_text::mono(input_text, self.mono)
+                                .with_color(if busy || draft_empty {
+                                    theme::placeholder()
+                                } else {
+                                    theme::text()
+                                })
+                                .finish(),
+                        )
+                        .on_left_mouse_down(|ctx, _, _| {
+                            ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                            DispatchEventResult::StopPropagation
                         })
                         .finish(),
                     )
-                    .on_left_mouse_down(|ctx, _, _| {
-                        ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
-                        DispatchEventResult::StopPropagation
-                    })
+                    .with_uniform_padding(12.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_color(input_border))
                     .finish(),
                 )
-                .with_uniform_padding(12.0)
-                .with_background(theme::bg())
-                .with_border(Border::all(1.0).with_border_color(input_border))
+                .with_height(input_height)
                 .finish(),
             );
 
-        let panel = Container::new(body.finish())
+        let shell = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(
+                ConstrainedBox::new(sidebar::render_sidebar(
+                    self.font,
+                    &projects,
+                    &sidebar_sessions,
+                    &active_project_id,
+                    &active_sidebar_session_id,
+                    &sidebar_search,
+                    sidebar_search_focused,
+                ))
+                .with_width(sidebar::SIDEBAR_WIDTH)
+                .finish(),
+            )
+            .with_child(
+                Shrinkable::new(
+                    1.0,
+                    Container::new(main.finish())
+                        .with_uniform_padding(12.0)
+                        .finish(),
+                )
+                .finish(),
+            );
+
+        let panel = Container::new(shell.finish())
             .with_background(theme::panel())
-            .with_uniform_padding(12.0)
             .finish();
 
         EventHandler::new(panel)
@@ -947,6 +1122,18 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::FocusInput => {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.input_focused = true;
+                    panel.sidebar_search_focused = false;
+                }
+                ctx.notify();
+            }
+            AgentPanelAction::SelectProject(id) => self.select_project(id.clone(), ctx),
+            AgentPanelAction::SelectSession(id) => self.select_session(id.clone(), ctx),
+            AgentPanelAction::NewProject => self.new_project(ctx),
+            AgentPanelAction::NewThread => self.new_thread(ctx),
+            AgentPanelAction::FocusSidebarSearch => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.sidebar_search_focused = true;
+                    panel.input_focused = false;
                 }
                 ctx.notify();
             }
@@ -996,6 +1183,16 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::PasteInput => AccessibilityContent::new_without_help(
                 "粘贴到输入框",
                 WarpA11yRole::ButtonRole,
+            ),
+            AgentPanelAction::SelectProject(_) | AgentPanelAction::SelectSession(_) => {
+                AccessibilityContent::new_without_help("选择侧栏项", WarpA11yRole::MenuItemRole)
+            }
+            AgentPanelAction::NewProject | AgentPanelAction::NewThread => {
+                AccessibilityContent::new_without_help("新建侧栏项", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::FocusSidebarSearch => AccessibilityContent::new_without_help(
+                "聚焦会话搜索",
+                WarpA11yRole::TextfieldRole,
             ),
             AgentPanelAction::SetVisible(_) | AgentPanelAction::RefreshStatus => {
                 return ActionAccessibilityContent::Empty;

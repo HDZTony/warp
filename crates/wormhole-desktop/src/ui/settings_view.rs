@@ -1,40 +1,34 @@
 use warpui::elements::{
-    ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, CrossAxisAlignment, Fill,
-    Flex, ParentElement, ScrollbarWidth, Shrinkable,
+    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
+    ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, UpdateView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
-    section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
-    SECTION_GAP,
+    section_card, section_hint, section_title, status_line, StatusTone,
 };
-use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
-use crate::ui::w_drive_settings_view::WDriveSettingsView;
 use crate::ui_text;
-use wormhole_desktop_core::commands::vault_status;
+use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
 
-enum VaultDisplay {
-    Loading,
-    Ready {
-        endpoint: String,
-    },
-    NotReady,
-    Error(String),
+#[derive(Debug, Clone)]
+pub enum SettingsAction {
+    SavePath(String),
+    Refresh,
 }
 
 pub struct SettingsView {
     core: CoreHandle,
     font: FamilyId,
-    data_dir: String,
-    vault: VaultDisplay,
-    scroll: ClippedScrollStateHandle,
-    sync_panel: warpui::ViewHandle<SyncView>,
-    w_drive_settings: warpui::ViewHandle<WDriveSettingsView>,
+    root_path: String,
+    drive_options: Vec<String>,
+    status: String,
+    status_tone: StatusTone,
+    busy: bool,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
 
@@ -45,22 +39,19 @@ impl SettingsView {
         import_model: SharedCodexProviderImportModel,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let data_dir = core.data_dir().display().to_string();
-        let sync_panel = ctx.add_view(|ctx| SyncView::new(ctx, core.clone()));
-        let w_drive_settings = ctx.add_view(|ctx| WDriveSettingsView::new(ctx, core.clone()));
         let agent_providers =
             ctx.add_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
         let mut view = Self {
             core,
             font,
-            data_dir,
-            vault: VaultDisplay::Loading,
-            scroll: ClippedScrollStateHandle::new(),
-            sync_panel,
-            w_drive_settings,
+            root_path: String::new(),
+            drive_options: Vec::new(),
+            status: String::new(),
+            status_tone: StatusTone::Placeholder,
+            busy: false,
             agent_providers,
         };
-        view.refresh_vault(ctx);
+        view.refresh(ctx);
         view
     }
 
@@ -73,80 +64,124 @@ impl SettingsView {
         ctx.update_view(&agent, |view, ctx| view.open_deeplink_url(url, ctx));
     }
 
-    fn refresh_vault(&mut self, ctx: &mut ViewContext<Self>) {
-        self.vault = VaultDisplay::Loading;
+    fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                vault_status(&state).await
+                let status = sync_status(&state).await;
+                let drives = list_local_drives().await;
+                (status, drives)
             },
             |view, output, ctx| {
-                view.vault = match output {
-                    Ok(s) if s.ready => VaultDisplay::Ready {
-                        endpoint: s.endpoint_id.unwrap_or_else(|| "—".into()),
-                    },
-                    Ok(_) => VaultDisplay::NotReady,
-                    Err(e) => VaultDisplay::Error(e),
-                };
+                view.busy = false;
+                let (status, drives) = output;
+                match status {
+                    Ok(s) => {
+                        view.root_path = s.root_path;
+                        if view.status.is_empty() {
+                            view.status =
+                                "终端共享文件夹的本地副本将写入此目录。修改后建议重启同步服务。"
+                                    .into();
+                            view.status_tone = StatusTone::Placeholder;
+                        }
+                    }
+                    Err(e) => {
+                        view.status = format!("无法读取同步路径: {e}");
+                        view.status_tone = StatusTone::Danger;
+                    }
+                }
+                view.drive_options = drives
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| format!("{}:\\Wormhole", d.letter.trim_end_matches(':')))
+                    .collect();
                 ctx.notify();
             },
         );
     }
 
-    fn vault_block(&self) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("Vault", self.font));
-        col.add_child(section_hint(
-            "Iroh P2P 保险库状态。同步与聊天依赖 Vault 就绪。",
-            self.font,
-        ));
-        match &self.vault {
-            VaultDisplay::Loading => {
-                col.add_child(status_line("正在检查 Vault…", self.font, StatusTone::Placeholder));
-            }
-            VaultDisplay::Ready { endpoint } => {
-                col.add_child(status_line("Vault 已就绪", self.font, StatusTone::Success));
-                col.add_child(
-                    ui_text::mono(
-                        format!("endpoint: {}", truncate_middle(endpoint, 72)),
-                        self.font,
-                    )
+    fn action_button(&self, label: &str, path: String) -> Box<dyn Element> {
+        let label = label.to_string();
+        Container::new(
+            EventHandler::new(
+                ui_text::body(label, self.font)
                     .with_color(theme::text())
                     .finish(),
-                );
-            }
-            VaultDisplay::NotReady => {
-                col.add_child(status_line(
-                    "Vault 尚未就绪，请稍后重试或重启应用。",
-                    self.font,
-                    StatusTone::Warn,
-                ));
-            }
-            VaultDisplay::Error(message) => {
-                col.add_child(status_line(
-                    format!("Vault 错误: {}", truncate_middle(message, 160)),
-                    self.font,
-                    StatusTone::Danger,
-                ));
-            }
-        }
-        section_card(col.finish())
+            )
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(SettingsAction::SavePath(path.clone()));
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_uniform_padding(8.0)
+        .with_background(theme::accent_bg(24))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
     }
 
-    fn system_block(&self) -> Box<dyn Element> {
+    fn shared_path_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("系统", self.font));
-        col.add_child(section_hint("本地数据与配置目录。", self.font));
+        col.add_child(section_title("DATA · 共享文件存放位置", self.font));
+        col.add_child(section_hint(
+            "终端共享文件夹的本地副本将写入此目录。选择新位置后自动保存。",
+            self.font,
+        ));
         col.add_child(
-            ui_text::mono(
-                truncate_middle(&self.data_dir, 96),
-                self.font,
+            Container::new(
+                ui_text::mono(self.root_path.clone(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
             )
-            .with_color(theme::text())
+            .with_uniform_padding(10.0)
+            .with_background(theme::bg())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
             .finish(),
         );
+
+        if !self.drive_options.is_empty() {
+            col.add_child(
+                ui_text::body("选择存放磁盘:", self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+            let mut picks = Flex::row();
+            for path in &self.drive_options {
+                let label = format!("使用 {path}");
+                picks.add_child(
+                    Container::new(self.action_button(&label, path.clone()))
+                        .with_horizontal_margin(4.0)
+                        .finish(),
+                );
+            }
+            col.add_child(picks.finish());
+        }
+
+        col.add_child(
+            Container::new(
+                EventHandler::new(
+                    ui_text::body("刷新", self.font)
+                        .with_color(theme::accent_cool())
+                        .finish(),
+                )
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(SettingsAction::Refresh);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+
+        if !self.status.is_empty() {
+            col.add_child(status_line(self.status.clone(), self.font, self.status_tone));
+        }
         section_card(col.finish())
     }
 }
@@ -163,34 +198,62 @@ impl View for SettingsView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(ui_text::title("设置", self.font).with_color(theme::text()).finish());
-        col.add_child(section_hint(
-            "同步、Agent 供应商与 W 盘数据路径。",
-            self.font,
-        ));
-        col.add_child(self.system_block());
-        col.add_child(self.vault_block());
-        col.add_child(ChildView::new(&self.agent_providers).finish());
-        col.add_child(ChildView::new(&self.w_drive_settings).finish());
-        col.add_child(ChildView::new(&self.sync_panel).finish());
+        col.add_child(self.shared_path_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
                 .with_color(theme::placeholder())
                 .finish(),
         );
 
-        let scrollable = ClippedScrollable::vertical(
-            self.scroll.clone(),
-            col.finish(),
-            ScrollbarWidth::Auto,
-            Fill::None,
-            Fill::None,
-            Fill::None,
-        )
-        .finish();
-
-        Container::new(Shrinkable::new(1.0, scrollable).finish())
+        Container::new(col.finish())
             .with_background(theme::panel())
-            .with_uniform_padding(SECTION_GAP)
+            .with_uniform_padding(16.0)
             .finish()
+    }
+}
+
+impl TypedActionView for SettingsView {
+    type Action = SettingsAction;
+
+    fn handle_action(&mut self, action: &SettingsAction, ctx: &mut ViewContext<Self>) {
+        match action {
+            SettingsAction::Refresh => self.refresh(ctx),
+            SettingsAction::SavePath(path) => {
+                if path.trim().is_empty() {
+                    return;
+                }
+                if path == &self.root_path {
+                    self.refresh(ctx);
+                    return;
+                }
+                self.busy = true;
+                self.status = "正在保存…".into();
+                self.status_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                let path_arg = Some(path.clone());
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        set_sync_root(&state, path_arg).await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(saved) => {
+                                view.root_path = saved;
+                                view.status = "已保存共享文件夹路径。".into();
+                                view.status_tone = StatusTone::Success;
+                            }
+                            Err(e) => {
+                                view.status = format!("保存失败: {e}");
+                                view.status_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+        }
     }
 }

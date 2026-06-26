@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use warpui::elements::{ChildView, Flex, ParentElement, Shrinkable};
 use warpui::{AppContext, Element, Entity, View, ViewContext, ViewHandle};
 
-use crate::ui::chat::agent_threads_sidebar::AgentThreadsSidebar;
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::thread::ChatThreadView;
@@ -16,7 +15,6 @@ pub struct ChatShellView {
     sidebar: ViewHandle<ChatSidebarView>,
     thread: ViewHandle<ChatThreadView>,
     compose: ViewHandle<ChatComposeView>,
-    agents: ViewHandle<AgentThreadsSidebar>,
 }
 
 impl ChatShellView {
@@ -27,13 +25,11 @@ impl ChatShellView {
         let thread = ctx.add_view(|ctx| ChatThreadView::new(ctx, core.clone(), selection.clone()));
         let compose =
             ctx.add_view(|ctx| ChatComposeView::new(ctx, core.clone(), selection.clone()));
-        let agents = ctx.add_view(|ctx| AgentThreadsSidebar::new(ctx, core));
         Self {
             selection,
             sidebar,
             thread,
             compose,
-            agents,
         }
     }
 }
@@ -60,7 +56,6 @@ impl View for ChatShellView {
                 )
                 .finish(),
             )
-            .with_child(ChildView::new(&self.agents).finish())
             .finish()
     }
 }

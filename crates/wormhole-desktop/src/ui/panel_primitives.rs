@@ -5,8 +5,10 @@ use warpui::Element;
 use crate::ui::theme;
 use crate::ui_text;
 
-pub const SECTION_PADDING: f32 = 12.0;
+/// Matches `desktop-current.html` `--panel-pad` / `--radius`.
+pub const SECTION_PADDING: f32 = 14.0;
 pub const SECTION_GAP: f32 = 8.0;
+pub const HUD_RADIUS: f32 = 2.0;
 
 pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
@@ -28,20 +30,21 @@ pub fn section_card(inner: Box<dyn Element>) -> Box<dyn Element> {
     Container::new(inner)
         .with_background(theme::bg())
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .with_uniform_padding(SECTION_PADDING)
         .finish()
 }
 
 pub fn section_title(text: impl Into<std::borrow::Cow<'static, str>>, font: FamilyId) -> Box<dyn Element> {
-    ui_text::title(text, font)
-        .with_color(theme::text())
+    let label = text.into().to_uppercase();
+    ui_text::hud_title(label, font)
+        .with_color(theme::accent_cool())
         .finish()
 }
 
 pub fn section_hint(text: impl Into<std::borrow::Cow<'static, str>>, font: FamilyId) -> Box<dyn Element> {
     ui_text::body(text, font)
-        .with_color(theme::placeholder())
+        .with_color(theme::muted())
         .finish()
 }
 

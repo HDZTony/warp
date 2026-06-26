@@ -1,15 +1,13 @@
-use std::sync::{Arc, Mutex};
-
-use warpui::elements::{Container, DispatchEventResult, EventHandler, Flex, ParentElement};
+use warpui::elements::{
+    Border, Container, CornerRadius, CrossAxisAlignment, Flex, MainAxisSize, ParentElement, Radius,
+};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
-use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{section_hint, SECTION_GAP};
 use crate::ui::theme;
 use crate::ui_text;
-use crate::wormhole_native_ipc::host_control_window_key;
 
 #[derive(Debug, Clone, Copy)]
 struct ToolboxEntry {
@@ -18,14 +16,13 @@ struct ToolboxEntry {
 }
 
 #[derive(Debug, Clone)]
-pub enum ToolboxAction {
-    OpenRdpHost,
-}
+pub enum ToolboxAction {}
 
 pub struct ToolboxView {
     #[allow(dead_code)]
     core: CoreHandle,
-    coordinator: Arc<Mutex<CoordinatorState>>,
+    #[allow(dead_code)]
+    coordinator: std::sync::Arc<std::sync::Mutex<crate::coordinator::CoordinatorState>>,
     font: FamilyId,
     tools: Vec<ToolboxEntry>,
 }
@@ -34,7 +31,7 @@ impl ToolboxView {
     pub fn new(
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
-        coordinator: Arc<Mutex<CoordinatorState>>,
+        coordinator: std::sync::Arc<std::sync::Mutex<crate::coordinator::CoordinatorState>>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         Self {
@@ -42,10 +39,6 @@ impl ToolboxView {
             coordinator,
             font,
             tools: vec![
-                ToolboxEntry {
-                    label: "RDP Host 控制台",
-                    enabled: true,
-                },
                 ToolboxEntry {
                     label: "剪贴板历史",
                     enabled: false,
@@ -62,18 +55,7 @@ impl ToolboxView {
         }
     }
 
-    fn open_rdp_host(&self, ctx: &mut ViewContext<Self>) {
-        let window_key = host_control_window_key().to_string();
-        if let Ok(mut guard) = self.coordinator.lock() {
-            guard.enqueue(UiCommand::OpenHostControl {
-                window_key: window_key.clone(),
-                title: "Remote Desktop Host".into(),
-            });
-        }
-        ctx.notify();
-    }
-
-    fn tool_row(&self, entry: ToolboxEntry) -> Box<dyn Element> {
+    fn tool_card(&self, entry: ToolboxEntry) -> Box<dyn Element> {
         let display = if entry.enabled {
             entry.label.to_string()
         } else {
@@ -84,28 +66,16 @@ impl ToolboxView {
         } else {
             theme::muted()
         };
-        let background = if entry.enabled {
-            theme::panel()
-        } else {
-            theme::bg()
-        };
-        let label_el = ui_text::body(display, self.font)
-            .with_color(text_color)
-            .finish();
-        let interactive = if entry.enabled {
-            EventHandler::new(label_el)
-                .on_left_mouse_down(|ctx, _, _| {
-                    ctx.dispatch_typed_action(ToolboxAction::OpenRdpHost);
-                    DispatchEventResult::StopPropagation
-                })
-                .finish()
-        } else {
-            label_el
-        };
-        Container::new(interactive)
-            .with_background(background)
-            .with_uniform_padding(12.0)
-            .finish()
+        Container::new(
+            ui_text::body(display, self.font)
+                .with_color(text_color)
+                .finish(),
+        )
+        .with_uniform_padding(16.0)
+        .with_background(theme::panel())
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(crate::ui::panel_primitives::HUD_RADIUS)))
+        .finish()
     }
 }
 
@@ -119,18 +89,21 @@ impl View for ToolboxView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut grid = Flex::column();
-        grid.add_child(ui_text::title("工具箱", self.font).finish());
-        grid.add_child(section_hint("可用工具可直接打开；灰色项正在开发中。", self.font));
+        let mut col = Flex::column();
+        col.add_child(ui_text::title("工具箱", self.font).finish());
+        col.add_child(section_hint("系统模块以网格展示；灰色项正在开发中。", self.font));
+
+        let mut row = Flex::row().with_main_axis_size(MainAxisSize::Max);
         for entry in &self.tools {
-            grid.add_child(self.tool_row(*entry));
-            grid.add_child(
-                Container::new(Flex::column().finish())
-                    .with_vertical_margin(SECTION_GAP / 2.0)
+            row.add_child(
+                Container::new(self.tool_card(*entry))
+                    .with_uniform_margin(SECTION_GAP / 2.0)
                     .finish(),
             );
         }
-        Container::new(grid.finish())
+        col.add_child(row.finish());
+
+        Container::new(col.finish())
             .with_uniform_padding(8.0)
             .finish()
     }
@@ -139,9 +112,5 @@ impl View for ToolboxView {
 impl TypedActionView for ToolboxView {
     type Action = ToolboxAction;
 
-    fn handle_action(&mut self, action: &ToolboxAction, ctx: &mut ViewContext<Self>) {
-        match action {
-            ToolboxAction::OpenRdpHost => self.open_rdp_host(ctx),
-        }
-    }
+    fn handle_action(&mut self, _action: &ToolboxAction, _ctx: &mut ViewContext<Self>) {}
 }

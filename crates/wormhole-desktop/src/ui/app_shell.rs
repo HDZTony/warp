@@ -3,8 +3,8 @@ use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Fill, Flex, MainAxisSize,
-    ParentElement, Radius, Rect, ScrollbarWidth, Shrinkable,
+    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
+    MainAxisSize, ParentElement, Radius, ScrollbarWidth, Shrinkable,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -21,14 +21,16 @@ use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self};
 use crate::ui::devices_view::DevicesView;
+use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::display_view::DisplayView;
-use crate::ui::panel_primitives::section_hint;
+use crate::ui::panel_primitives::{section_hint, HUD_RADIUS};
 use crate::ui::settings_view::SettingsView;
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
 use crate::ui_text;
+use wormhole_desktop_core::cluster_commands::cluster_status;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,7 @@ impl AppTab {
     pub fn persist_id(self) -> &'static str {
         match self {
             AppTab::WDrive => "w_drive",
+            AppTab::Sync => "sync",
             AppTab::Devices => "devices",
             AppTab::Display => "display",
             AppTab::Chat => "chat",
@@ -58,11 +61,10 @@ impl AppTab {
 
     pub fn from_persist_id(id: &str) -> Option<Self> {
         match id {
-            "w_drive" => Some(AppTab::WDrive),
-            "devices" => Some(AppTab::Devices),
-            "display" => Some(AppTab::Display),
+            "w_drive" | "sync" | "devices" | "terminals" => Some(AppTab::Devices),
+            "display" => Some(AppTab::Devices),
             "chat" => Some(AppTab::Chat),
-            "warp" => Some(AppTab::Warp),
+            "warp" | "agent" => Some(AppTab::Warp),
             "toolbox" => Some(AppTab::Toolbox),
             "settings" => Some(AppTab::Settings),
             _ => None,
@@ -79,6 +81,7 @@ pub enum TabSelectSource {
 #[derive(Debug, Clone, Copy)]
 pub enum AppShellAction {
     SelectTab(AppTab, TabSelectSource),
+    SetTabHover(Option<AppTab>),
     DismissOnboarding,
     MinimizeWindow,
     ToggleMaximizeWindow,
@@ -87,6 +90,7 @@ pub enum AppShellAction {
 
 pub struct AppShellView {
     tab: AppTab,
+    hovered_tab: Option<AppTab>,
     tab_focus: AppTab,
     tab_bar_keyboard_focus: bool,
     core: CoreHandle,
@@ -102,6 +106,8 @@ pub struct AppShellView {
     toolbox: ViewHandle<ToolboxView>,
     settings: ViewHandle<SettingsView>,
     font: FamilyId,
+    mono: FamilyId,
+    hud_nodes: usize,
     tab_scroll: ClippedScrollStateHandle,
     show_onboarding: bool,
 }
@@ -115,6 +121,7 @@ impl AppShellView {
         pending_deeplink: Option<String>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let coordinator_view = ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
         let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
         let sync = ctx.add_view(|ctx| SyncView::new(ctx, core.clone()));
@@ -130,6 +137,12 @@ impl AppShellView {
             .as_deref()
             .and_then(AppTab::from_persist_id)
             .unwrap_or(AppTab::Chat);
+        if matches!(
+            tab,
+            AppTab::WDrive | AppTab::Sync | AppTab::Display
+        ) {
+            tab = AppTab::Devices;
+        }
         if let Some(ref url) = pending_deeplink {
             tab = AppTab::Settings;
             let settings_handle = settings.clone();
@@ -140,6 +153,7 @@ impl AppShellView {
         let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
         let view = Self {
             tab,
+            hovered_tab: None,
             tab_focus: tab,
             tab_bar_keyboard_focus: false,
             core,
@@ -154,10 +168,13 @@ impl AppShellView {
             toolbox,
             settings,
             font,
+            mono,
+            hud_nodes: 1,
             tab_scroll: ClippedScrollStateHandle::new(),
             show_onboarding,
         };
         view.start_warp_focus_poll(ctx);
+        view.start_hud_poll(ctx);
         view.start_deeplink_listener(ctx);
         Self::sync_titlebar_height(ctx);
         view
@@ -168,6 +185,41 @@ impl AppShellView {
         if let Some(window) = ctx.windows().platform_window(window_id) {
             window.set_titlebar_height(CHROME_ROW_HEIGHT as f64);
         }
+    }
+
+    fn start_hud_poll(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
+            }
+        });
+        Self::poll_hud_once(ctx, tick_rx, core);
+    }
+
+    fn poll_hud_once(
+        ctx: &mut ViewContext<Self>,
+        tick_rx: async_channel::Receiver<()>,
+        core: CoreHandle,
+    ) {
+        let waiter = tick_rx.clone();
+        let core_for_task = core.clone();
+        ctx.spawn(
+            async move {
+                let _ = waiter.recv().await;
+                let state = core_for_task.runtime().state.clone();
+                cluster_status(&state).await
+            },
+            move |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.hud_nodes = status.nodes.len().max(1);
+                    ctx.notify();
+                }
+                Self::poll_hud_once(ctx, tick_rx, core);
+            },
+        );
     }
 
     fn start_deeplink_listener(&self, ctx: &mut ViewContext<Self>) {
@@ -245,15 +297,36 @@ impl AppShellView {
 
     fn tab_label(tab: AppTab) -> &'static str {
         match tab {
-            AppTab::WDrive => "W 盘",
+            AppTab::WDrive => "共享",
             AppTab::Sync => "同步",
-            AppTab::Devices => "设备",
+            AppTab::Devices => "终端",
             AppTab::Display => "显示器",
             AppTab::Chat => "聊天",
-            AppTab::Warp => "Warp",
+            AppTab::Warp => "智能体",
             AppTab::Toolbox => "工具箱",
             AppTab::Settings => "设置",
         }
+    }
+
+    fn tab_icon(tab: AppTab) -> &'static str {
+        match tab {
+            AppTab::Devices => "端",
+            AppTab::Chat => "聊",
+            AppTab::Warp => "智",
+            AppTab::Toolbox => "箱",
+            AppTab::Settings => "设",
+            _ => "",
+        }
+    }
+
+    fn visible_tabs() -> [AppTab; 5] {
+        [
+            AppTab::Devices,
+            AppTab::Chat,
+            AppTab::Warp,
+            AppTab::Toolbox,
+            AppTab::Settings,
+        ]
     }
 
     fn tabs() -> [AppTab; 8] {
@@ -270,7 +343,7 @@ impl AppShellView {
     }
 
     fn adjacent_tab(current: AppTab, delta: i32) -> AppTab {
-        let tabs = Self::tabs();
+        let tabs = Self::visible_tabs();
         let idx = tabs.iter().position(|&t| t == current).unwrap_or(0);
         let len = tabs.len() as i32;
         let next = (idx as i32 + delta).rem_euclid(len) as usize;
@@ -284,8 +357,8 @@ impl AppShellView {
         match keystroke.key.as_str() {
             "left" => Some(Self::adjacent_tab(current, -1)),
             "right" => Some(Self::adjacent_tab(current, 1)),
-            "home" => Some(Self::tabs()[0]),
-            "end" => Some(Self::tabs()[6]),
+            "home" => Some(Self::visible_tabs()[0]),
+            "end" => Some(Self::visible_tabs()[4]),
             _ => None,
         }
     }
@@ -295,24 +368,13 @@ impl AppShellView {
             return None;
         }
         match keystroke.key.as_str() {
-            "1" => Some(AppTab::WDrive),
-            "2" => Some(AppTab::Devices),
-            "3" => Some(AppTab::Display),
-            "4" => Some(AppTab::Chat),
-            "5" => Some(AppTab::Warp),
-            "6" => Some(AppTab::Toolbox),
-            "7" => Some(AppTab::Settings),
+            "1" => Some(AppTab::Devices),
+            "2" => Some(AppTab::Chat),
+            "3" => Some(AppTab::Warp),
+            "4" => Some(AppTab::Toolbox),
+            "5" => Some(AppTab::Settings),
             _ => None,
         }
-    }
-
-    fn tab_groups() -> [&'static [AppTab]; 4] {
-        [
-            &[AppTab::WDrive, AppTab::Devices],
-            &[AppTab::Display, AppTab::Chat],
-            &[AppTab::Warp, AppTab::Toolbox],
-            &[AppTab::Settings],
-        ]
     }
 
     fn persist_last_tab(&self) {
@@ -323,68 +385,120 @@ impl AppShellView {
         });
     }
 
-    fn tab_divider(&self) -> Box<dyn Element> {
-        Container::new(
-            ConstrainedBox::new(
-                Rect::new()
-                    .with_background_color(theme::border())
+    fn hud_status_bar(&self) -> Box<dyn Element> {
+        let nodes = format!("{}", self.hud_nodes);
+        let metrics = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                ui_text::hud_title("IROH · SYNC", self.mono)
+                    .with_color(theme::muted())
                     .finish(),
             )
-            .with_width(1.0)
-            .with_height(22.0)
-            .finish(),
-        )
-        .with_horizontal_margin(4.0)
-        .finish()
+            .with_child(
+                Container::new(Flex::row().finish())
+                    .with_horizontal_margin(16.0)
+                    .finish(),
+            )
+            .with_child(
+                Flex::row()
+                    .with_child(
+                        ui_text::hud_title("NODES ", self.mono)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_child(
+                        ui_text::hud_title(nodes, self.mono)
+                            .with_color(theme::accent())
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .finish();
+        Container::new(metrics)
+            .with_uniform_padding(12.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .finish()
+    }
+
+    fn tab_button_label(&self, tab: AppTab) -> String {
+        let expand = self.tab == tab || self.hovered_tab == Some(tab);
+        if expand {
+            format!("{} {}", Self::tab_icon(tab), Self::tab_label(tab))
+        } else {
+            Self::tab_icon(tab).to_string()
+        }
     }
 
     fn tab_button(&self, tab: AppTab) -> Box<dyn Element> {
         let selected = self.tab == tab;
         let keyboard_focused = self.tab_bar_keyboard_focus && self.tab_focus == tab;
+        let text_color = if selected {
+            theme::accent_cool()
+        } else {
+            theme::muted()
+        };
         let bg = if selected {
-            theme::accent_bg(40)
+            theme::accent_cool_bg_default()
         } else {
             ColorU::new(0, 0, 0, 0)
         };
-        let label = ui_text::body(Self::tab_label(tab), self.font)
-            .with_color(if selected {
-                theme::accent()
-            } else {
-                theme::text()
-            })
-            .finish();
-        let mut btn = Container::new(
-            EventHandler::new(label)
-                .on_left_mouse_down(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AppShellAction::SelectTab(
-                        tab,
-                        TabSelectSource::Mouse,
-                    ));
-                    DispatchEventResult::StopPropagation
-                })
+        let label = self.tab_button_label(tab);
+
+        let mut label_container = Container::new(
+            ui_text::hud_title(label, self.mono)
+                .with_color(text_color)
                 .finish(),
         )
-        .with_uniform_padding(10.0)
-        .with_background(bg)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)));
+        .with_vertical_padding(16.0)
+        .with_horizontal_padding(if selected || self.hovered_tab == Some(tab) {
+            16.0
+        } else {
+            12.0
+        })
+        .with_background(bg);
+        if selected {
+            label_container = label_container.with_border(
+                Border::bottom(2.0).with_border_fill(theme::accent_cool()),
+            );
+        }
+
+        let mut btn = Container::new(label_container.finish())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()));
         if keyboard_focused {
             btn = btn.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
         }
-        btn.finish()
+        EventHandler::new(btn.finish())
+            .on_mouse_in(
+                move |ctx, _, _| {
+                    ctx.dispatch_typed_action(AppShellAction::SetTabHover(Some(tab)));
+                    DispatchEventResult::PropagateToParent
+                },
+                None,
+            )
+            .on_mouse_out(move |ctx, _, _| {
+                ctx.dispatch_typed_action(AppShellAction::SetTabHover(None));
+                DispatchEventResult::PropagateToParent
+            })
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(AppShellAction::SelectTab(
+                    tab,
+                    TabSelectSource::Mouse,
+                ));
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
     }
 
     fn tab_bar(&self) -> Box<dyn Element> {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
-        let groups = Self::tab_groups();
-        for (group_idx, group) in groups.iter().enumerate() {
-            if group_idx > 0 {
-                row.add_child(self.tab_divider());
-            }
-            for &tab in *group {
-                row.add_child(self.tab_button(tab));
-            }
+            .with_main_axis_size(MainAxisSize::Min);
+        for tab in Self::visible_tabs() {
+            row.add_child(
+                ConstrainedBox::new(self.tab_button(tab))
+                    .with_height(CHROME_ROW_HEIGHT)
+                    .finish(),
+            );
         }
         let scrollable_tabs = ClippedScrollable::horizontal(
             self.tab_scroll.clone(),
@@ -400,20 +514,22 @@ impl AppShellView {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_child(Shrinkable::new(1.0, scrollable_tabs).finish())
+                .with_child(self.hud_status_bar())
                 .with_child(window_chrome::caption_buttons(
                     self.font,
                     [
-                        ("最小化", AppShellAction::MinimizeWindow),
-                        ("最大化", AppShellAction::ToggleMaximizeWindow),
-                        ("关闭", AppShellAction::CloseWindow),
+                        ("−", AppShellAction::MinimizeWindow),
+                        ("□", AppShellAction::ToggleMaximizeWindow),
+                        ("×", AppShellAction::CloseWindow),
                     ],
                 ))
                 .finish(),
         )
-            .with_background(theme::panel())
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
-            .with_uniform_padding(8.0)
-            .finish()
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_vertical_padding(0.0)
+        .with_horizontal_padding(4.0)
+        .finish()
     }
 
     fn onboarding_chip(&self, label: &str, tab: AppTab) -> Box<dyn Element> {
@@ -436,7 +552,7 @@ impl AppShellView {
         .with_uniform_padding(10.0)
         .with_background(theme::accent_bg(24))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish()
     }
 
@@ -452,13 +568,13 @@ impl AppShellView {
                 .finish(),
         );
         col.add_child(section_hint(
-            "约 2 分钟了解核心能力：虚拟盘、本机节点、P2P 聊天。可随时跳过。",
+            "约 2 分钟：浏览终端共享、P2P 聊天、智能体任务。可随时跳过。",
             self.font,
         ));
         let mut steps = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-        steps.add_child(self.onboarding_chip("1 · W 盘", AppTab::WDrive));
-        steps.add_child(self.onboarding_chip("2 · 设备", AppTab::Devices));
-        steps.add_child(self.onboarding_chip("3 · 聊天", AppTab::Chat));
+        steps.add_child(self.onboarding_chip("1 · 终端", AppTab::Devices));
+        steps.add_child(self.onboarding_chip("2 · 聊天", AppTab::Chat));
+        steps.add_child(self.onboarding_chip("3 · 智能体", AppTab::Warp));
         steps.add_child(
             Container::new(
                 EventHandler::new(
@@ -497,7 +613,9 @@ impl AppShellView {
             AppTab::Toolbox => ChildView::new(&self.toolbox).finish(),
             AppTab::Settings => ChildView::new(&self.settings).finish(),
         };
-        let mut column = Flex::column().with_child(self.tab_bar());
+        let mut column = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(self.tab_bar());
         if let Some(banner) = self.onboarding_banner() {
             column.add_child(
                 Container::new(banner)
@@ -506,9 +624,13 @@ impl AppShellView {
             );
         }
         column.add_child(
-            Shrinkable::new(
+            Expanded::new(
                 1.0,
-                Container::new(content).with_uniform_padding(12.0).finish(),
+                HudBackdrop::live(
+                    Container::new(content)
+                        .with_background(theme::bg())
+                        .finish(),
+                ),
             )
             .finish(),
         );
@@ -556,7 +678,7 @@ impl View for AppShellView {
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
         Some(AccessibilityContent::new(
             format!("Wormhole，当前标签：{}", Self::tab_label(self.tab)),
-            "Ctrl 加数字 1 到 7 切换标签。左右方向键切换相邻标签并显示键盘焦点环。Home 与 End 跳到首尾标签。",
+            "Ctrl 加数字 1 到 5 切换标签。左右方向键切换相邻标签并显示键盘焦点环。Home 与 End 跳到首尾标签。",
             WarpA11yRole::WindowRole,
         ))
     }
@@ -573,6 +695,10 @@ impl TypedActionView for AppShellView {
 
     fn handle_action(&mut self, action: &AppShellAction, ctx: &mut ViewContext<Self>) {
         match action {
+            AppShellAction::SetTabHover(tab) => {
+                self.hovered_tab = *tab;
+                ctx.notify();
+            }
             AppShellAction::SelectTab(tab, source) => {
                 let warp_visible = *tab == AppTab::Warp;
                 let warp_handle = self.warp.clone();
@@ -616,6 +742,7 @@ impl TypedActionView for AppShellView {
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         let content = match action {
+            AppShellAction::SetTabHover(_) => return ActionAccessibilityContent::Empty,
             AppShellAction::SelectTab(tab, _) => AccessibilityContent::new_without_help(
                 format!("切换到{}", Self::tab_label(*tab)),
                 WarpA11yRole::MenuItemRole,
@@ -647,9 +774,7 @@ mod tests {
     #[test]
     fn tab_persist_id_roundtrip() {
         let tabs = [
-            AppTab::WDrive,
             AppTab::Devices,
-            AppTab::Display,
             AppTab::Chat,
             AppTab::Warp,
             AppTab::Toolbox,
@@ -659,5 +784,8 @@ mod tests {
             let id = tab.persist_id();
             assert_eq!(AppTab::from_persist_id(id), Some(tab));
         }
+        assert_eq!(AppTab::from_persist_id("terminals"), Some(AppTab::Devices));
+        assert_eq!(AppTab::from_persist_id("w_drive"), Some(AppTab::Devices));
+        assert_eq!(AppTab::from_persist_id("agent"), Some(AppTab::Warp));
     }
 }

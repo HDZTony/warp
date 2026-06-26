@@ -1,5 +1,5 @@
 use warpui::elements::{
-    Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
+    Border, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
     ParentElement,
 };
 use warpui::fonts::FamilyId;
@@ -11,7 +11,8 @@ use crate::ui_text;
 /// Height of the integrated title row (tabs + caption). Must match [`super::app_shell`] layout.
 pub const CHROME_ROW_HEIGHT: f32 = 54.0;
 
-const CAPTION_HIT_PADDING: f32 = 12.0;
+const CAPTION_BTN_WIDTH: f32 = 46.0;
+const CAPTION_BTN_HEIGHT: f32 = 38.0;
 
 pub fn caption_buttons<A: Action + Copy + 'static>(
     font: FamilyId,
@@ -20,9 +21,9 @@ pub fn caption_buttons<A: Action + Copy + 'static>(
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Min);
-    for (label_text, action) in buttons {
-        let label = ui_text::body(label_text, font)
-            .with_color(theme::text())
+    for (glyph, action) in buttons {
+        let label = ui_text::caption_glyph(glyph, font)
+            .with_color(theme::muted())
             .finish();
         let button = Container::new(
             EventHandler::new(label)
@@ -32,9 +33,12 @@ pub fn caption_buttons<A: Action + Copy + 'static>(
                 })
                 .finish(),
         )
-        .with_uniform_padding(CAPTION_HIT_PADDING)
+        .with_horizontal_padding((CAPTION_BTN_WIDTH - 16.0) / 2.0)
+        .with_vertical_padding((CAPTION_BTN_HEIGHT - ui_text::CAPTION_GLYPH_SIZE) / 2.0)
         .finish();
         row.add_child(button);
     }
-    row.finish()
+    Container::new(row.finish())
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
 }

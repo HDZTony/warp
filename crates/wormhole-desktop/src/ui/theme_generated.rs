@@ -22,8 +22,16 @@ pub fn panel() -> ColorU {
     ColorU::new(42, 39, 54, 255)
 }
 
+pub fn panel_elevated() -> ColorU {
+    ColorU::new(64, 53, 61, 255)
+}
+
 pub fn border() -> ColorU {
     ColorU::new(100, 93, 117, 255)
+}
+
+pub fn border_bright() -> ColorU {
+    ColorU::new(122, 114, 136, 255)
 }
 
 pub fn text() -> ColorU {
@@ -54,6 +62,17 @@ pub fn accent_bg(alpha: u8) -> ColorU {
     ColorU::new(253, 249, 230, alpha)
 }
 
+
 pub fn accent_bg_default() -> ColorU {
     accent_bg(40)
+}
+
+
+pub fn accent_cool_bg(alpha: u8) -> ColorU {
+    ColorU::new(222, 231, 247, alpha)
+}
+
+
+pub fn accent_cool_bg_default() -> ColorU {
+    accent_cool_bg(20)
 }
