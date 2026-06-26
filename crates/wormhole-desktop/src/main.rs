@@ -98,6 +98,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    wormhole_desktop_core::rdp_headless::bootstrap_dev_env();
+    std::fs::create_dir_all(&data_dir)?;
+    if wormhole_desktop_core::rdp_headless::spawn_headless_companion_requested() {
+        match wormhole_desktop_core::rdp_headless::spawn_headless_companion(&data_dir) {
+            Ok(()) => unsafe {
+                std::env::set_var("WORMHOLE_SKIP_UNATTENDED_RDP", "1");
+            },
+            Err(err) => tracing::warn!("failed to spawn headless RDP companion: {err}"),
+        }
+    }
+
     #[cfg(windows)]
     if wormhole_desktop_core::w_drive_headless::is_mount_w_drive_requested() {
         wormhole_desktop_core::w_drive_headless::run_mount();
