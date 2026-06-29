@@ -91,7 +91,9 @@ impl DisplayView {
                 .with_color(theme::text())
                 .finish(),
         );
-        col.add_child(self.capability_row("iPad Display Host", self.platform.supports_display_host));
+        col.add_child(
+            self.capability_row("iPad Display Host", self.platform.supports_display_host),
+        );
         col.add_child(self.capability_row("扩展屏 (extend)", self.platform.supports_extend));
         col.add_child(self.capability_row("iPad USB", self.platform.supports_ipad_usb));
         col.add_child(self.capability_row("Mac Client 收流", self.platform.supports_mac_client));
@@ -113,7 +115,11 @@ impl DisplayView {
         );
         match &self.host {
             HostStatus::Loading => {
-                col.add_child(status_line("正在读取 Host 状态…", self.font, StatusTone::Muted));
+                col.add_child(status_line(
+                    "正在读取 Host 状态…",
+                    self.font,
+                    StatusTone::Muted,
+                ));
             }
             HostStatus::Error(message) => {
                 col.add_child(status_line(message.clone(), self.font, StatusTone::Danger));

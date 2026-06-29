@@ -25,8 +25,8 @@ pub fn load(data_dir: &Path) -> DesktopUiPrefs {
 
 pub fn save(data_dir: &Path, prefs: &DesktopUiPrefs) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|err| format!("无法创建数据目录: {err}"))?;
-    let bytes = serde_json::to_vec_pretty(prefs)
-        .map_err(|err| format!("无法序列化桌面 UI 偏好: {err}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(prefs).map_err(|err| format!("无法序列化桌面 UI 偏好: {err}"))?;
     std::fs::write(data_dir.join(PREFS_FILE), bytes)
         .map_err(|err| format!("无法写入桌面 UI 偏好: {err}"))
 }
@@ -43,10 +43,8 @@ mod tests {
 
     #[test]
     fn roundtrip_last_tab() {
-        let dir = std::env::temp_dir().join(format!(
-            "wormhole-desktop-ui-prefs-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wormhole-desktop-ui-prefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let prefs = DesktopUiPrefs {
             onboarding_dismissed: true,

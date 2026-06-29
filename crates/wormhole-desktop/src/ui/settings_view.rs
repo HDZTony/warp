@@ -39,8 +39,9 @@ impl SettingsView {
         import_model: SharedCodexProviderImportModel,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let agent_providers =
-            ctx.add_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
+        let agent_providers = ctx.add_typed_action_view(|ctx| {
+            AgentProvidersView::new(ctx, core.clone(), import_model)
+        });
         let mut view = Self {
             core,
             font,
@@ -180,7 +181,11 @@ impl SettingsView {
         );
 
         if !self.status.is_empty() {
-            col.add_child(status_line(self.status.clone(), self.font, self.status_tone));
+            col.add_child(status_line(
+                self.status.clone(),
+                self.font,
+                self.status_tone,
+            ));
         }
         section_card(col.finish())
     }
@@ -197,7 +202,11 @@ impl View for SettingsView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(ui_text::title("设置", self.font).with_color(theme::text()).finish());
+        col.add_child(
+            ui_text::title("设置", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
         col.add_child(self.shared_path_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)

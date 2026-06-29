@@ -30,6 +30,7 @@ use ui::app_shell::AppShellView;
 use ui::codex_provider_import_model::new_shared_import_model;
 use ui::core_handle::CoreHandle;
 use warpui::platform::{AppBuilder, AppCallbacks};
+use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
 
 #[derive(Debug, Parser)]
@@ -139,8 +140,11 @@ fn main() -> Result<()> {
 
     #[cfg(windows)]
     let mut pending_deeplink: Option<String> = None;
+    #[cfg(not(windows))]
+    let pending_deeplink: Option<String> = None;
+
     #[cfg(windows)]
-    {
+    let tray = {
         use wormhole_desktop_platform_windows::{
             desktop_process_entry, handle_startup_args, DeepLinkState, DesktopProcessRole,
             TrayController,
@@ -159,11 +163,8 @@ fn main() -> Result<()> {
         if let Some(ref url) = pending_deeplink {
             wormhole_desktop_core::deeplink_commands::on_deeplink_received(&data_dir, url);
         }
-        let _tray = TrayController::spawn("Wormhole")?;
-    }
-    #[cfg(not(windows))]
-    let pending_deeplink: Option<String> = None;
-
+        Arc::new(TrayController::spawn("Wormhole")?)
+    };
     std::fs::create_dir_all(&data_dir)?;
 
     let tokio = tokio::runtime::Runtime::new()?;
@@ -190,14 +191,33 @@ fn main() -> Result<()> {
         "wormhole-desktop starting WarpUI shell"
     );
 
-    let app_builder = AppBuilder::new(AppCallbacks::default(), Box::new(assets::EmptyAssets), None);
+    let coordinator_for_close = coordinator.clone();
+    let mut callbacks = AppCallbacks::default();
+    #[cfg(windows)]
+    {
+        callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
+            if ui::windows_shell::should_hide_main_window_to_tray(window_id, &coordinator_for_close)
+            {
+                ui::windows_shell::hide_main_window(window_id, ctx);
+                ApproveTerminateResult::Cancel
+            } else {
+                ApproveTerminateResult::Terminate
+            }
+        }));
+    }
+
+    let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
     let import_model = new_shared_import_model();
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
     let import_model_for_shell = import_model.clone();
     let pending_for_shell = pending_deeplink;
+    #[cfg(windows)]
+    let tray_for_shell = tray.clone();
     let _ = app_builder.run(move |ctx| {
         crate::ui::fonts::warm_up_font_cache(ctx);
+        #[cfg(windows)]
+        ctx.add_singleton_model(crate::ui::window_chrome::WindowsSymbolFontState::new);
         ctx.add_window(
             ui::window_options::desktop_window_options("Wormhole", vec2f(1280.0, 840.0)),
             move |view_ctx| {
@@ -207,6 +227,8 @@ fn main() -> Result<()> {
                     coordinator_for_shell,
                     import_model_for_shell,
                     pending_for_shell,
+                    #[cfg(windows)]
+                    tray_for_shell,
                 )
             },
         );

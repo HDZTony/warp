@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::ui::window_options::desktop_popout_window_options;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{ConstrainedBox, Rect};
@@ -10,7 +11,6 @@ use warpui::platform::TerminationMode;
 use warpui::{
     AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext, WindowId,
 };
-use crate::ui::window_options::desktop_popout_window_options;
 use warpui_core::assets::asset_cache::AssetCache;
 use wormhole_desktop_rdp::RdpRuntime;
 
@@ -139,6 +139,7 @@ pub struct CoordinatorState {
     workspace_hud_windows: HashMap<String, WindowId>,
     rdp_runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
     pending_warp_focus: Option<PreferredAgent>,
+    main_shell_window: Option<WindowId>,
 }
 
 impl CoordinatorState {
@@ -157,7 +158,20 @@ impl CoordinatorState {
             workspace_hud_windows: HashMap::new(),
             rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(rdp_data_dir))),
             pending_warp_focus: None,
+            main_shell_window: None,
         }
+    }
+
+    pub fn set_main_shell_window(&mut self, window_id: WindowId) {
+        self.main_shell_window = Some(window_id);
+    }
+
+    pub fn main_shell_window(&self) -> Option<WindowId> {
+        self.main_shell_window
+    }
+
+    pub fn is_main_shell_window(&self, window_id: WindowId) -> bool {
+        self.main_shell_window == Some(window_id)
     }
 
     pub fn take_pending_warp_focus(&mut self) -> Option<PreferredAgent> {

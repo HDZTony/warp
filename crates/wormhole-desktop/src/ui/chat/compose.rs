@@ -4,9 +4,7 @@ use warpui::elements::{
     ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::{
-    AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext,
-};
+use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::sticker_picker::StickerPickerView;
@@ -132,15 +130,13 @@ impl View for ChatComposeView {
         let input_border = if self.input_focused {
             theme::accent_cool()
         } else {
-            theme::border()
+            theme::border_bright()
         };
 
         let placeholder = if self.sending {
             "发送中…"
-        } else if self.input_focused {
-            "输入消息，Enter 发送，Esc 取消焦点"
         } else {
-            "点击输入框或按 Tab 聚焦，Enter 发送"
+            "输入消息并发送…"
         };
 
         let draft_empty = self.draft.is_empty();
@@ -157,77 +153,87 @@ impl View for ChatComposeView {
         let input_focused = self.input_focused;
         let sending = self.sending;
 
-        let column = Flex::column()
-            .with_child(ChildView::new(&self.video).finish())
-            .with_child(ChildView::new(&self.sticker_picker).finish())
-            .with_child(
-                ConstrainedBox::new(
-                    Container::new(
-                        EventHandler::new(
-                            ui_text::mono(input_text, self.mono)
-                                .with_color(input_color)
-                                .finish(),
-                        )
-                        .on_left_mouse_down(|ctx, _, _| {
-                            ctx.dispatch_typed_action(ChatComposeAction::FocusInput);
-                            DispatchEventResult::StopPropagation
-                        })
-                        .finish(),
+        let column = Flex::column().with_child(
+            ConstrainedBox::new(
+                Container::new(
+                    EventHandler::new(
+                        ui_text::mono(input_text, self.mono)
+                            .with_color(input_color)
+                            .finish(),
                     )
-                    .with_uniform_padding(12.0)
-                    .with_background(theme::bg())
-                    .with_border(Border::all(1.0).with_border_color(input_border))
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(ChatComposeAction::FocusInput);
+                        DispatchEventResult::StopPropagation
+                    })
                     .finish(),
                 )
-                .with_height(input_height)
-                .with_max_height(multiline_input::box_height(
-                    &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
-                    multiline_input::DEFAULT_COLS,
-                ))
+                .with_uniform_padding(10.0)
+                .with_background(theme::canvas())
+                .with_border(Border::all(1.0).with_border_color(input_border))
                 .finish(),
             )
-            .with_child(status_line(self.status.clone(), self.font, self.status_tone));
+            .with_height(input_height)
+            .with_max_height(multiline_input::box_height(
+                &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
+                multiline_input::DEFAULT_COLS,
+            ))
+            .finish(),
+        );
 
-        EventHandler::new(column.finish())
-            .with_always_handle()
-            .on_keydown(move |ctx, _, keystroke| {
-                if keystroke.key == "tab" {
-                    ctx.dispatch_typed_action(ChatComposeAction::ToggleFocus);
-                    return DispatchEventResult::StopPropagation;
-                }
-                if !input_focused || sending {
-                    return DispatchEventResult::PropagateToParent;
-                }
-                if keystroke.ctrl || keystroke.meta || keystroke.alt {
-                    return DispatchEventResult::PropagateToParent;
-                }
-                match keystroke.key.as_str() {
-                    "enter" | "return" => {
-                        if keystroke.shift {
-                            ctx.dispatch_typed_action(ChatComposeAction::InsertNewline);
-                        } else {
-                            ctx.dispatch_typed_action(ChatComposeAction::Send);
-                        }
-                        DispatchEventResult::StopPropagation
+        let mut compose = Flex::column().with_child(column.finish());
+        if !self.status.is_empty() && self.status_tone != StatusTone::Success {
+            compose.add_child(status_line(
+                self.status.clone(),
+                self.font,
+                self.status_tone,
+            ));
+        }
+
+        EventHandler::new(
+            Container::new(compose.finish())
+                .with_uniform_padding(crate::ui::panel_primitives::SECTION_PADDING)
+                .with_background(theme::panel())
+                .finish(),
+        )
+        .with_always_handle()
+        .on_keydown(move |ctx, _, keystroke| {
+            if keystroke.key == "tab" {
+                ctx.dispatch_typed_action(ChatComposeAction::ToggleFocus);
+                return DispatchEventResult::StopPropagation;
+            }
+            if !input_focused || sending {
+                return DispatchEventResult::PropagateToParent;
+            }
+            if keystroke.ctrl || keystroke.meta || keystroke.alt {
+                return DispatchEventResult::PropagateToParent;
+            }
+            match keystroke.key.as_str() {
+                "enter" | "return" => {
+                    if keystroke.shift {
+                        ctx.dispatch_typed_action(ChatComposeAction::InsertNewline);
+                    } else {
+                        ctx.dispatch_typed_action(ChatComposeAction::Send);
                     }
-                    "backspace" => {
-                        ctx.dispatch_typed_action(ChatComposeAction::Backspace);
-                        DispatchEventResult::StopPropagation
-                    }
-                    "escape" => {
-                        ctx.dispatch_typed_action(ChatComposeAction::ClearAndUnfocus);
-                        DispatchEventResult::StopPropagation
-                    }
-                    key if key.len() == 1 => {
-                        if let Some(ch) = key.chars().next() {
-                            ctx.dispatch_typed_action(ChatComposeAction::InsertChar(ch));
-                        }
-                        DispatchEventResult::StopPropagation
-                    }
-                    _ => DispatchEventResult::PropagateToParent,
+                    DispatchEventResult::StopPropagation
                 }
-            })
-            .finish()
+                "backspace" => {
+                    ctx.dispatch_typed_action(ChatComposeAction::Backspace);
+                    DispatchEventResult::StopPropagation
+                }
+                "escape" => {
+                    ctx.dispatch_typed_action(ChatComposeAction::ClearAndUnfocus);
+                    DispatchEventResult::StopPropagation
+                }
+                key if key.len() == 1 => {
+                    if let Some(ch) = key.chars().next() {
+                        ctx.dispatch_typed_action(ChatComposeAction::InsertChar(ch));
+                    }
+                    DispatchEventResult::StopPropagation
+                }
+                _ => DispatchEventResult::PropagateToParent,
+            }
+        })
+        .finish()
     }
 
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
@@ -301,23 +307,18 @@ impl TypedActionView for ChatComposeView {
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         let content = match action {
-            ChatComposeAction::Send => AccessibilityContent::new_without_help(
-                "发送消息",
-                WarpA11yRole::ButtonRole,
-            ),
+            ChatComposeAction::Send => {
+                AccessibilityContent::new_without_help("发送消息", WarpA11yRole::ButtonRole)
+            }
             ChatComposeAction::FocusInput | ChatComposeAction::ToggleFocus => {
-                AccessibilityContent::new_without_help(
-                    "聚焦消息输入框",
-                    WarpA11yRole::ButtonRole,
-                )
+                AccessibilityContent::new_without_help("聚焦消息输入框", WarpA11yRole::ButtonRole)
             }
             ChatComposeAction::Backspace
             | ChatComposeAction::InsertChar(_)
             | ChatComposeAction::InsertNewline
-            | ChatComposeAction::ClearAndUnfocus => AccessibilityContent::new_without_help(
-                "编辑消息草稿",
-                WarpA11yRole::TextfieldRole,
-            ),
+            | ChatComposeAction::ClearAndUnfocus => {
+                AccessibilityContent::new_without_help("编辑消息草稿", WarpA11yRole::TextfieldRole)
+            }
         };
         ActionAccessibilityContent::Custom(content)
     }

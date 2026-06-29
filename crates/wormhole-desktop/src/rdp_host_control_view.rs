@@ -7,9 +7,7 @@ use warpui::elements::{
     Container, DispatchEventResult, EventHandler, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::{
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
-};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_rdp::settings::{load_settings, save_settings, RdpSettings};
 use wormhole_desktop_rdp::wol::send_magic_packet;

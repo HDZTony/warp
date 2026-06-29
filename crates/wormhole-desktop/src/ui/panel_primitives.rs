@@ -1,4 +1,4 @@
-use warpui::elements::{Border, Container, CornerRadius, Radius};
+use warpui::elements::{Border, ConstrainedBox, Container, CornerRadius, Flex, Radius};
 use warpui::fonts::FamilyId;
 use warpui::Element;
 
@@ -9,6 +9,14 @@ use crate::ui_text;
 pub const SECTION_PADDING: f32 = 14.0;
 pub const SECTION_GAP: f32 = 8.0;
 pub const HUD_RADIUS: f32 = 2.0;
+/// `.agent-row-item` / `.agent-search-wrap` in `desktop-current.html`.
+pub const AGENT_ROW_RADIUS: f32 = 10.0;
+/// `.agent-sidebar-icon-btn` border-radius.
+pub const AGENT_ICON_BTN_RADIUS: f32 = 7.0;
+/// `.agent-composer` max content width.
+pub const AGENT_THREAD_MAX_WIDTH: f32 = 720.0;
+/// `.agent-thread` bottom padding (composer overlay clearance).
+pub const AGENT_THREAD_BOTTOM_PAD: f32 = 120.0;
 
 pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
@@ -35,14 +43,66 @@ pub fn section_card(inner: Box<dyn Element>) -> Box<dyn Element> {
         .finish()
 }
 
-pub fn section_title(text: impl Into<std::borrow::Cow<'static, str>>, font: FamilyId) -> Box<dyn Element> {
+pub fn section_title(
+    text: impl Into<std::borrow::Cow<'static, str>>,
+    font: FamilyId,
+) -> Box<dyn Element> {
+    ui_title(text, font)
+}
+
+/// Matches `.ui-title` in `desktop-current.html` (mono HUD heading).
+pub fn ui_title(
+    text: impl Into<std::borrow::Cow<'static, str>>,
+    font: FamilyId,
+) -> Box<dyn Element> {
     let label = text.into().to_uppercase();
     ui_text::hud_title(label, font)
         .with_color(theme::accent_cool())
         .finish()
 }
 
-pub fn section_hint(text: impl Into<std::borrow::Cow<'static, str>>, font: FamilyId) -> Box<dyn Element> {
+/// Matches `.agent-sidebar-head-label` — sentence case, muted.
+pub fn agent_sidebar_label(
+    text: impl Into<std::borrow::Cow<'static, str>>,
+    font: FamilyId,
+) -> Box<dyn Element> {
+    ui_text::body(text, font)
+        .with_color(theme::muted())
+        .finish()
+}
+
+/// `color-mix(in srgb, var(--panel) 38%, var(--canvas))`.
+pub fn agent_sidebar_bg() -> pathfinder_color::ColorU {
+    pathfinder_color::ColorU::new(21, 19, 27, 255)
+}
+
+/// `.agent-header` background: 55% panel + 45% canvas.
+pub fn agent_header_bg() -> pathfinder_color::ColorU {
+    pathfinder_color::ColorU::new(27, 25, 35, 255)
+}
+
+/// `.agent-row-item.active` background: 14% accent-cool + panel.
+pub fn agent_row_active_bg() -> pathfinder_color::ColorU {
+    pathfinder_color::ColorU::new(67, 66, 81, 255)
+}
+
+/// `.conv-device-status .dot` — online indicator.
+pub fn online_dot() -> Box<dyn Element> {
+    Container::new(
+        ConstrainedBox::new(Flex::row().finish())
+            .with_width(5.0)
+            .with_height(5.0)
+            .finish(),
+    )
+    .with_background(theme::success())
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+    .finish()
+}
+
+pub fn section_hint(
+    text: impl Into<std::borrow::Cow<'static, str>>,
+    font: FamilyId,
+) -> Box<dyn Element> {
     ui_text::body(text, font)
         .with_color(theme::muted())
         .finish()
@@ -61,7 +121,7 @@ pub fn status_line(
         StatusTone::Warn => theme::warn(),
         StatusTone::Danger => theme::danger(),
     };
-    ui_text::body(text, font).with_color(color).finish()
+    ui_text::device_meta(text, font).with_color(color).finish()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

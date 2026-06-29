@@ -1,3 +1,4 @@
+mod composer_menus;
 mod sidebar;
 mod transcript;
 
@@ -6,19 +7,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pathfinder_color::ColorU;
-use transcript::{render_transcript, TranscriptLine};
+use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
+use composer_menus::{access_label, model_label};
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
-    MainAxisSize, ParentElement, Shrinkable,
+    Align, Border, ClippedScrollStateHandle, ConstrainedBox, Container, CrossAxisAlignment,
+    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Shrinkable,
+    Stack,
 };
 use warpui::fonts::FamilyId;
-use warpui::{
-    AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext,
-};
+use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmChatParams};
-use wormhole_desktop_core::warp_embed_prefs::{self, PreferredAgent};
+use wormhole_desktop_core::warp_embed_prefs::{self, AgentAccessMode, PreferredAgent};
 use wormhole_desktop_core::{
     agent_codex_chat_with_stream, agent_cursor_chat, agent_cursor_start_session,
     agent_launch_codex_terminal, agent_launch_cursor_terminal, agent_read_local_session_events,
@@ -26,9 +27,16 @@ use wormhole_desktop_core::{
 };
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::icons;
 use crate::ui::multiline_input;
+use crate::ui::panel_primitives::{agent_header_bg, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
 use crate::ui::theme;
 use crate::ui_text;
+
+const COMPOSER_BAR_LIFT: f32 = 44.0;
+const ACCESS_POPOVER_INSET_LEFT: f32 = 46.0;
+const MODEL_POPOVER_INSET_RIGHT: f32 = 48.0;
+const CARET_BLINK_MS: u64 = 530;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -40,6 +48,10 @@ pub enum InteractionMode {
 pub enum AgentPanelAction {
     SetVisible(bool),
     SelectAgent(PreferredAgent),
+    SelectAccessMode(AgentAccessMode),
+    ToggleAccessMenu,
+    ToggleModelMenu,
+    DismissComposerMenus,
     SelectMode(InteractionMode),
     Send,
     PasteInput,
@@ -52,6 +64,8 @@ pub enum AgentPanelAction {
     NewProject,
     NewThread,
     FocusSidebarSearch,
+    SidebarMore,
+    Stop,
 }
 
 struct PanelState {
@@ -67,6 +81,7 @@ struct PanelState {
     event_cursor: u64,
     polling_session: bool,
     input_focused: bool,
+    caret_blink: bool,
     pending_send: bool,
     projects: Vec<sidebar::AgentProject>,
     sidebar_sessions: Vec<sidebar::AgentSession>,
@@ -75,6 +90,13 @@ struct PanelState {
     thread_title: String,
     sidebar_search: String,
     sidebar_search_focused: bool,
+    demo_user_prompt: Option<String>,
+    demo_status_line: Option<String>,
+    demo_assistant_body: Option<String>,
+    demo_thinking: bool,
+    access_menu_open: bool,
+    model_menu_open: bool,
+    session_running: bool,
 }
 
 pub struct AgentPanelView {
@@ -86,6 +108,9 @@ pub struct AgentPanelView {
     event_poll_inflight: Arc<AtomicBool>,
     visible: bool,
     preferred_agent: PreferredAgent,
+    access_mode: AgentAccessMode,
+    sidebar_scroll: ClippedScrollStateHandle,
+    caret_blink_running: bool,
     generation_notify_tx: async_channel::Sender<()>,
     generation_notify_rx: async_channel::Receiver<()>,
 }
@@ -94,7 +119,9 @@ impl AgentPanelView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
-        let preferred_agent = warp_embed_prefs::load_prefs(&core.data_dir()).preferred_agent;
+        let prefs = warp_embed_prefs::load_prefs(&core.data_dir());
+        let preferred_agent = prefs.preferred_agent;
+        let access_mode = prefs.access_mode;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         Self {
             core,
@@ -113,6 +140,7 @@ impl AgentPanelView {
                 event_cursor: 0,
                 polling_session: false,
                 input_focused: false,
+                caret_blink: true,
                 pending_send: false,
                 projects: sidebar::seed_projects(),
                 sidebar_sessions: sidebar::seed_sessions(),
@@ -121,11 +149,29 @@ impl AgentPanelView {
                 thread_title: "同步终端共享文件夹".into(),
                 sidebar_search: String::new(),
                 sidebar_search_focused: false,
+                demo_user_prompt: Some(
+                    "扫描三台终端的共享文件夹，把未同步的 Specs 文档全部拉取到本机。".into(),
+                ),
+                demo_status_line: Some("已运行 19 秒".into()),
+                demo_assistant_body: Some(
+                    sidebar::seed_sessions()
+                        .into_iter()
+                        .find(|s| s.id == "sync-share")
+                        .map(|s| s.body)
+                        .unwrap_or_default(),
+                ),
+                demo_thinking: true,
+                access_menu_open: false,
+                model_menu_open: false,
+                session_running: true,
             })),
             generation: Arc::new(Mutex::new(0)),
             event_poll_inflight: Arc::new(AtomicBool::new(false)),
             visible: false,
             preferred_agent,
+            access_mode,
+            sidebar_scroll: ClippedScrollStateHandle::default(),
+            caret_blink_running: false,
             generation_notify_tx,
             generation_notify_rx,
         }
@@ -153,8 +199,14 @@ impl AgentPanelView {
         }
         self.visible = visible;
         if visible {
+            if let Ok(mut panel) = self.state.lock() {
+                panel.input_focused = true;
+                panel.sidebar_search_focused = false;
+                panel.caret_blink = true;
+            }
             self.refresh_status(ctx);
             self.start_generation_listener(ctx);
+            self.start_caret_blink(ctx);
         }
         ctx.notify();
     }
@@ -209,12 +261,8 @@ impl AgentPanelView {
             let core_for_poll = core.clone();
             ctx.spawn(
                 async move {
-                    agent_read_local_session_events(
-                        session_id,
-                        cursor,
-                        core_for_async.app_state(),
-                    )
-                    .await
+                    agent_read_local_session_events(session_id, cursor, core_for_async.app_state())
+                        .await
                 },
                 move |view, output, ctx| {
                     inflight_for_task.store(false, Ordering::SeqCst);
@@ -359,6 +407,9 @@ impl AgentPanelView {
                     panel.input_focused = !panel.input_focused;
                     panel.sidebar_search_focused = false;
                 }
+                if panel.input_focused {
+                    panel.caret_blink = true;
+                }
             }
             let _ = notify_tx.try_send(());
             return true;
@@ -386,6 +437,21 @@ impl AgentPanelView {
             let _ = notify_tx.try_send(());
             return true;
         }
+        if !panel.busy && !panel.input_focused {
+            let key = keystroke.key.as_str();
+            if key.len() == 1 && !keystroke.ctrl && !keystroke.meta && !keystroke.alt {
+                if let Some(ch) = key.chars().next() {
+                    if !ch.is_control() {
+                        panel.input_focused = true;
+                        panel.caret_blink = true;
+                        panel.draft.push(ch);
+                        drop(panel);
+                        let _ = notify_tx.try_send(());
+                        return true;
+                    }
+                }
+            }
+        }
         if !panel.input_focused || panel.busy {
             return false;
         }
@@ -403,6 +469,7 @@ impl AgentPanelView {
             "escape" => {
                 panel.draft.clear();
                 panel.input_focused = false;
+                panel.caret_blink = false;
             }
             key if key.len() == 1 => {
                 if let Some(ch) = key.chars().next() {
@@ -449,20 +516,19 @@ impl AgentPanelView {
         };
         let mut panel = self.state.lock().expect("agent panel state");
         panel.active_sidebar_session_id = session_id;
+        panel.lines = Arc::new(Vec::new());
         if let Some(session) = snapshot {
             panel.thread_title = session.label.clone();
-            panel.lines = Arc::new(vec![
-                TranscriptLine {
-                    channel: "user".into(),
-                    text: session.prompt.clone(),
-                    level: "info".into(),
-                },
-                TranscriptLine {
-                    channel: "assistant".into(),
-                    text: format!("已加载会话「{}」的演示上下文。", session.label),
-                    level: "info".into(),
-                },
-            ]);
+            panel.session_running = session.running;
+            panel.demo_user_prompt = Some(session.prompt.clone());
+            panel.demo_assistant_body = Some(session.body.clone());
+            panel.demo_status_line = Some(if session.running {
+                "已运行 19 秒".into()
+            } else {
+                "已完成".into()
+            });
+            panel.demo_thinking = session.running;
+            panel.busy = session.running;
         }
         drop(panel);
         self.bump();
@@ -501,29 +567,91 @@ impl AgentPanelView {
                 project_id,
                 time: "now".into(),
                 running: false,
+                model: "GPT-5.5".into(),
                 prompt: String::new(),
+                body: String::new(),
             },
         );
         panel.active_sidebar_session_id = id.clone();
         panel.thread_title = format!("新会话 {n}");
         panel.lines = Arc::new(Vec::new());
+        panel.demo_user_prompt = None;
+        panel.demo_status_line = None;
+        panel.demo_assistant_body = None;
+        panel.demo_thinking = false;
+        panel.session_running = false;
         drop(panel);
         self.bump();
         ctx.notify();
     }
 
-    fn select_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
-        if self.preferred_agent == agent {
+    fn dismiss_composer_menus(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut changed = false;
+        if let Ok(mut panel) = self.state.lock() {
+            if panel.access_menu_open || panel.model_menu_open {
+                panel.access_menu_open = false;
+                panel.model_menu_open = false;
+                changed = true;
+            }
+        }
+        if changed {
+            ctx.notify();
+        }
+    }
+
+    fn toggle_access_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.model_menu_open = false;
+            panel.access_menu_open = !panel.access_menu_open;
+        }
+        ctx.notify();
+    }
+
+    fn toggle_model_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = !panel.model_menu_open;
+        }
+        ctx.notify();
+    }
+
+    fn select_access_mode(&mut self, mode: AgentAccessMode, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+        }
+        if self.access_mode == mode {
+            ctx.notify();
             return;
         }
-        self.preferred_agent = agent;
+        self.access_mode = mode;
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let _ = core
-                .block_on(async { warp_embed_prefs::set_preferred_agent(&data_dir, agent).await });
+            let _ = core.block_on(async { warp_embed_prefs::set_access_mode(&data_dir, mode).await });
         });
-        self.update_status_line(ctx);
+        ctx.notify();
+    }
+
+    fn select_agent(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.model_menu_open = false;
+            panel.access_menu_open = false;
+        }
+        if self.preferred_agent != agent {
+            self.preferred_agent = agent;
+            if let Ok(mut panel) = self.state.lock() {
+                panel.resume_id = None;
+            }
+            let data_dir = self.core.data_dir();
+            let core = self.core.clone();
+            std::thread::spawn(move || {
+                let _ = core.block_on(async {
+                    warp_embed_prefs::set_preferred_agent(&data_dir, agent).await
+                });
+            });
+            self.update_status_line(ctx);
+        }
         ctx.notify();
     }
 
@@ -546,6 +674,11 @@ impl AgentPanelView {
             state.busy = false;
             state.draft.clear();
             state.status = "已开启新对话".into();
+            state.demo_user_prompt = None;
+            state.demo_status_line = None;
+            state.demo_assistant_body = None;
+            state.demo_thinking = false;
+            state.session_running = false;
         }
         self.bump();
         ctx.notify();
@@ -610,6 +743,11 @@ impl AgentPanelView {
                 role: "user".into(),
                 content: text.clone(),
             });
+            state.demo_user_prompt = None;
+            state.demo_status_line = None;
+            state.demo_assistant_body = None;
+            state.demo_thinking = false;
+            state.session_running = false;
             state.status = "执行中…".into();
             (text, state.mode)
         };
@@ -627,6 +765,7 @@ impl AgentPanelView {
         let shared_callback = Arc::clone(&self.state);
         let generation_callback = Arc::clone(&self.generation);
         let agent = self.preferred_agent;
+        let access_mode = self.access_mode;
         let generation_notify = self.generation_notify_tx.clone();
         ctx.spawn(
             async move {
@@ -637,6 +776,7 @@ impl AgentPanelView {
                         cwd: None,
                         thread_id: None,
                         agent_id: None,
+                        force_full_auto: access_mode.force_full_auto(),
                     };
                     let resume = state.resume_id.clone();
                     match agent {
@@ -915,6 +1055,368 @@ impl AgentPanelView {
         .with_background(bg)
         .finish()
     }
+
+    fn composer_chip(
+        &self,
+        label: impl Into<String>,
+        action: Option<AgentPanelAction>,
+        accent: bool,
+    ) -> Box<dyn Element> {
+        let label = label.into();
+        let text = ui_text::body(label, self.font)
+            .with_color(if accent {
+                theme::text()
+            } else {
+                theme::muted()
+            })
+            .finish();
+        let inner = if let Some(action) = action {
+            EventHandler::new(text)
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            text
+        };
+        Container::new(inner)
+            .with_uniform_padding(8.0)
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(8.0),
+            ))
+            .finish()
+    }
+
+    fn composer_icon_chip(
+        &self,
+        path: &'static str,
+        color: ColorU,
+        action: Option<AgentPanelAction>,
+    ) -> Box<dyn Element> {
+        let inner = icons::agent_composer_icon(path, color);
+        let wrapped: Box<dyn Element> = if let Some(action) = action {
+            EventHandler::new(inner)
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            inner
+        };
+        Container::new(wrapped)
+            .with_uniform_padding(8.0)
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(8.0),
+            ))
+            .finish()
+    }
+
+    fn composer_labeled_chip(
+        &self,
+        label: impl Into<String>,
+        action: Option<AgentPanelAction>,
+        leading_icon: Option<&'static str>,
+        trailing_chevron: bool,
+    ) -> Box<dyn Element> {
+        let label = label.into();
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if let Some(path) = leading_icon {
+            row.add_child(
+                Container::new(icons::agent_composer_icon(path, theme::warn()))
+                    .with_horizontal_margin(4.0)
+                    .finish(),
+            );
+        }
+        row.add_child(
+            ui_text::body(label, self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        if trailing_chevron {
+            row.add_child(
+                Container::new(icons::agent_icon("agent-chevron.svg", theme::muted()))
+                    .with_horizontal_margin(4.0)
+                    .finish(),
+            );
+        }
+        let inner: Box<dyn Element> = if let Some(action) = action {
+            EventHandler::new(row.finish())
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            row.finish()
+        };
+        Container::new(inner)
+            .with_uniform_padding(8.0)
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(8.0),
+            ))
+            .finish()
+    }
+
+    fn composer_bar(&self, busy: bool, access_mode: AgentAccessMode) -> Box<dyn Element> {
+        let access_chip = self.composer_labeled_chip(
+            access_label(access_mode),
+            Some(AgentPanelAction::ToggleAccessMenu),
+            Some("agent-warn.svg"),
+            true,
+        );
+        let model_chip = self.composer_labeled_chip(
+            model_label(self.preferred_agent),
+            Some(AgentPanelAction::ToggleModelMenu),
+            None,
+            true,
+        );
+        let bar = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(self.composer_icon_chip("agent-attach.svg", theme::muted(), None))
+            .with_child(access_chip)
+            .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
+            .with_child(model_chip)
+            .with_child(self.stop_button(busy));
+        Container::new(bar.finish())
+            .with_padding_left(10.0)
+            .with_padding_right(10.0)
+            .with_padding_top(6.0)
+            .with_padding_bottom(10.0)
+            .finish()
+    }
+
+    fn start_caret_blink(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.caret_blink_running {
+            return;
+        }
+        let focused = self
+            .state
+            .lock()
+            .map(|panel| panel.input_focused)
+            .unwrap_or(false);
+        if !focused {
+            return;
+        }
+        self.caret_blink_running = true;
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_millis(CARET_BLINK_MS)).await;
+            },
+            move |view, _, ctx| {
+                let still_focused = view
+                    .state
+                    .lock()
+                    .map(|mut panel| {
+                        if panel.input_focused {
+                            panel.caret_blink = !panel.caret_blink;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if !still_focused {
+                    view.caret_blink_running = false;
+                    return;
+                }
+                ctx.notify();
+                view.caret_blink_running = false;
+                view.start_caret_blink(ctx);
+            },
+        );
+    }
+
+    fn agent_composer_input(
+        &self,
+        draft: &str,
+        input_focused: bool,
+        caret_blink: bool,
+        busy: bool,
+        placeholder: &str,
+    ) -> Box<dyn Element> {
+        let draft_empty = draft.is_empty();
+        let show_caret = input_focused && !busy;
+        let caret = Container::new(
+            ConstrainedBox::new(Flex::row().finish())
+                .with_width(2.0)
+                .with_height(18.0)
+                .finish(),
+        )
+        .with_background(if show_caret && caret_blink {
+            theme::accent_cool()
+        } else {
+            ColorU::transparent_black()
+        })
+        .with_horizontal_margin(1.0)
+        .finish();
+
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if draft_empty && !input_focused {
+            row.add_child(
+                ui_text::body(placeholder.to_string(), self.font)
+                    .with_color(theme::placeholder())
+                    .finish(),
+            );
+        } else {
+            if !draft_empty {
+                row.add_child(
+                    ui_text::body(draft.to_string(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                );
+            }
+            if show_caret {
+                row.add_child(caret);
+            }
+        }
+
+        EventHandler::new(row.finish())
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn wrap_composer_with_popovers(
+        &self,
+        composer: Box<dyn Element>,
+        access_mode: AgentAccessMode,
+        access_menu_open: bool,
+        model_menu_open: bool,
+    ) -> Box<dyn Element> {
+        if !access_menu_open && !model_menu_open {
+            return composer;
+        }
+        let mut stack = Stack::new();
+        stack.add_child(composer);
+        if access_menu_open {
+            stack.add_child(
+                Align::new(
+                    Container::new(composer_menus::render_access_menu(self.font, access_mode))
+                        .with_margin_left(ACCESS_POPOVER_INSET_LEFT)
+                        .with_margin_bottom(COMPOSER_BAR_LIFT)
+                        .finish(),
+                )
+                .bottom_left()
+                .finish(),
+            );
+        }
+        if model_menu_open {
+            stack.add_child(
+                Align::new(
+                    Container::new(composer_menus::render_model_menu(
+                        self.font,
+                        self.preferred_agent,
+                    ))
+                    .with_margin_right(MODEL_POPOVER_INSET_RIGHT)
+                    .with_margin_bottom(COMPOSER_BAR_LIFT)
+                    .finish(),
+                )
+                .bottom_right()
+                .finish(),
+            );
+        }
+        stack.finish()
+    }
+
+    fn composer_menu_scrim(&self) -> Box<dyn Element> {
+        EventHandler::new(
+            Container::new(Flex::row().finish())
+                .with_background(ColorU::new(8, 7, 11, 150))
+                .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::DismissComposerMenus);
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+    }
+
+    fn stop_button(&self, busy: bool) -> Box<dyn Element> {
+        let (bg, border, icon_color) = if busy {
+            (theme::accent(), ColorU::new(0, 0, 0, 0), theme::canvas())
+        } else {
+            (theme::panel_elevated(), theme::border(), theme::muted())
+        };
+        let stop_icon = Container::new(
+            ConstrainedBox::new(Flex::row().finish())
+                .with_width(10.0)
+                .with_height(10.0)
+                .finish(),
+        )
+        .with_background(icon_color)
+        .with_corner_radius(warpui::elements::CornerRadius::with_all(
+            warpui::elements::Radius::Pixels(2.0),
+        ))
+        .finish();
+        let mut btn = Container::new(
+            ConstrainedBox::new(
+                Align::new(stop_icon)
+                    .finish(),
+            )
+            .with_width(32.0)
+            .with_height(32.0)
+            .finish(),
+        )
+        .with_background(bg)
+        .with_corner_radius(warpui::elements::CornerRadius::with_all(
+            warpui::elements::Radius::Pixels(999.0),
+        ));
+        if !busy {
+            btn = btn.with_border(Border::all(1.0).with_border_fill(border));
+        }
+        Container::new(
+            EventHandler::new(btn.finish())
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(AgentPanelAction::Stop);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+        )
+        .with_horizontal_margin(4.0)
+        .finish()
+    }
+
+    fn agent_header(&self, thread_title: &str) -> Box<dyn Element> {
+        let menu_btn = Container::new(
+            ConstrainedBox::new(
+                Align::new(icons::agent_icon("agent-more.svg", theme::muted())).finish(),
+            )
+            .with_width(28.0)
+            .with_height(28.0)
+            .finish(),
+        )
+        .with_corner_radius(warpui::elements::CornerRadius::with_all(
+            warpui::elements::Radius::Pixels(6.0),
+        ))
+        .finish();
+
+        Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Shrinkable::new(
+                        1.0,
+                        ui_text::section_title(thread_title.to_string(), self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_child(menu_btn)
+                .finish(),
+        )
+        .with_padding_left(20.0)
+        .with_padding_right(20.0)
+        .with_padding_top(10.0)
+        .with_padding_bottom(10.0)
+        .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+        .with_background(agent_header_bg())
+        .finish()
+    }
 }
 
 impl Entity for AgentPanelView {
@@ -930,10 +1432,18 @@ impl View for AgentPanelView {
         let _ = self.generation.lock().map(|g| *g).unwrap_or(0);
         let state = self.state.lock().expect("agent panel state");
         let draft = state.draft.clone();
-        let status = state.status.clone();
         let busy = state.busy;
+        let _mode = state.mode;
         let input_focused = state.input_focused;
+        let caret_blink = state.caret_blink;
         let lines = Arc::clone(&state.lines);
+        let demo_user_prompt = state.demo_user_prompt.clone();
+        let demo_status_line = state.demo_status_line.clone();
+        let demo_assistant_body = state.demo_assistant_body.clone();
+        let demo_thinking = state.demo_thinking;
+        let access_menu_open = state.access_menu_open;
+        let model_menu_open = state.model_menu_open;
+        let access_mode = self.access_mode;
         let projects = state.projects.clone();
         let sidebar_sessions = state.sidebar_sessions.clone();
         let active_project_id = state.active_project_id.clone();
@@ -948,91 +1458,120 @@ impl View for AgentPanelView {
         let input_border = if input_focused {
             theme::accent_cool()
         } else {
-            theme::border()
+            theme::border_bright()
         };
 
         let placeholder = if busy {
             "执行中…"
-        } else if input_focused {
-            "输入消息，Enter 发送，Shift+Enter 换行"
         } else {
-            "点击输入框或按 Tab 聚焦"
+            "输入后续修改或追问…"
         };
 
-        let draft_empty = draft.is_empty();
-        let input_text = multiline_input::display_draft(&draft, placeholder);
         let input_height = multiline_input::box_height(&draft, multiline_input::DEFAULT_COLS);
 
-        let main = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(
-                ui_text::title(thread_title, self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_child(self.agent_switcher())
-            .with_child(self.mode_switcher())
-            .with_child(
-                Flex::row()
-                    .with_child(self.toolbar_button("粘贴", AgentPanelAction::PasteInput, false))
-                    .with_child(self.toolbar_button("发送", AgentPanelAction::Send, true))
-                    .with_child(
-                        self.toolbar_button("新对话", AgentPanelAction::NewConversation, false),
-                    )
-                    .with_child(
-                        self.toolbar_button("系统终端", AgentPanelAction::LaunchTerminal, false),
-                    )
-                    .finish(),
-            )
-            .with_child(
-                ui_text::body(status, self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_child(
-                Shrinkable::new(
-                    1.0,
-                    Container::new(render_transcript(&lines, self.font, self.mono))
-                        .with_uniform_padding(8.0)
-                        .with_background(theme::bg())
-                        .with_border(Border::all(1.0).with_border_color(theme::border()))
-                        .finish(),
-                )
-                .finish(),
-            )
-            .with_child(
-                ConstrainedBox::new(
-                    Container::new(
-                        EventHandler::new(
-                            ui_text::mono(input_text, self.mono)
-                                .with_color(if busy || draft_empty {
-                                    theme::placeholder()
-                                } else {
-                                    theme::text()
-                                })
+        let transcript_model = TranscriptViewModel {
+            user_prompt: demo_user_prompt,
+            status_line: demo_status_line,
+            assistant_body: demo_assistant_body,
+            thinking: demo_thinking,
+            lines: lines.to_vec(),
+        };
+
+        let composer_body = Container::new(
+            ConstrainedBox::new(
+                Container::new(
+                    Flex::column()
+                        .with_child(
+                            ConstrainedBox::new(
+                                Container::new(self.agent_composer_input(
+                                    &draft,
+                                    input_focused,
+                                    caret_blink,
+                                    busy,
+                                    placeholder,
+                                ))
+                                .with_padding_left(16.0)
+                                .with_padding_right(16.0)
+                                .with_padding_top(14.0)
+                                .with_padding_bottom(8.0)
                                 .finish(),
+                            )
+                            .with_height(input_height)
+                            .with_max_height(multiline_input::box_height(
+                                &"x".repeat(
+                                    multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES,
+                                ),
+                                multiline_input::DEFAULT_COLS,
+                            ))
+                            .finish(),
                         )
-                        .on_left_mouse_down(|ctx, _, _| {
-                            ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
-                            DispatchEventResult::StopPropagation
-                        })
+                        .with_child(self.composer_bar(busy, access_mode))
                         .finish(),
-                    )
-                    .with_uniform_padding(12.0)
-                    .with_background(theme::bg())
-                    .with_border(Border::all(1.0).with_border_color(input_border))
-                    .finish(),
                 )
-                .with_height(input_height)
+                .with_background(theme::panel())
+                .with_border(Border::all(1.0).with_border_color(input_border))
+                .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                    warpui::elements::Radius::Pixels(16.0),
+                ))
                 .finish(),
-            );
+            )
+            .with_max_width(AGENT_THREAD_MAX_WIDTH)
+            .finish(),
+        )
+        .finish();
+
+        let composer = self.wrap_composer_with_popovers(
+            composer_body,
+            access_mode,
+            access_menu_open,
+            model_menu_open,
+        );
+
+        let thread_scroll = Container::new(
+            Align::new(render_transcript(&transcript_model, self.font, self.mono))
+                .finish(),
+        )
+        .with_padding_left(24.0)
+        .with_padding_right(24.0)
+        .with_padding_top(28.0)
+        .with_padding_bottom(AGENT_THREAD_BOTTOM_PAD)
+        .with_background(theme::canvas())
+        .finish();
+
+        let mut main_stack = Stack::new();
+        main_stack.add_child(
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(self.agent_header(&thread_title))
+                .with_child(Expanded::new(1.0, thread_scroll).finish())
+                .finish(),
+        );
+        main_stack.add_child(
+            Align::new(
+                Container::new(composer)
+                    .with_padding_left(24.0)
+                    .with_padding_right(24.0)
+                    .with_padding_bottom(20.0)
+                    .finish(),
+            )
+            .bottom_center()
+            .finish(),
+        );
+
+        if access_menu_open || model_menu_open {
+            main_stack.add_child(self.composer_menu_scrim());
+        }
+
+        let main_area = main_stack.finish();
 
         let shell = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
                 ConstrainedBox::new(sidebar::render_sidebar(
                     self.font,
+                    self.sidebar_scroll.clone(),
                     &projects,
                     &sidebar_sessions,
                     &active_project_id,
@@ -1044,32 +1583,46 @@ impl View for AgentPanelView {
                 .finish(),
             )
             .with_child(
-                Shrinkable::new(
+                Expanded::new(
                     1.0,
-                    Container::new(main.finish())
-                        .with_uniform_padding(12.0)
+                    Container::new(main_area)
+                        .with_background(theme::canvas())
                         .finish(),
                 )
                 .finish(),
             );
 
         let panel = Container::new(shell.finish())
-            .with_background(theme::panel())
+            .with_background(theme::canvas())
             .finish();
 
         EventHandler::new(panel)
             .with_always_handle()
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::DismissComposerMenus);
+                DispatchEventResult::PropagateToParent
+            })
             .on_keydown({
                 let state = Arc::clone(&self.state);
                 let notify_tx = self.generation_notify_tx.clone();
                 move |ctx, _, keystroke| {
-                    if let Some(action) =
-                        Self::keystroke_action(&state, preferred_agent, keystroke)
+                    if let Some(action) = Self::keystroke_action(&state, preferred_agent, keystroke)
                     {
                         ctx.dispatch_typed_action(action);
                         return DispatchEventResult::StopPropagation;
                     }
+                    let was_focused = state
+                        .lock()
+                        .map(|panel| panel.input_focused)
+                        .unwrap_or(false);
                     if Self::handle_keystroke_panel(&state, keystroke, &notify_tx) {
+                        let now_focused = state
+                            .lock()
+                            .map(|panel| panel.input_focused)
+                            .unwrap_or(false);
+                        if now_focused && !was_focused {
+                            ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                        }
                         DispatchEventResult::StopPropagation
                     } else {
                         DispatchEventResult::PropagateToParent
@@ -1116,14 +1669,22 @@ impl TypedActionView for AgentPanelView {
         match action {
             AgentPanelAction::SetVisible(visible) => self.set_tab_visible(*visible, ctx),
             AgentPanelAction::SelectAgent(agent) => self.select_agent(*agent, ctx),
+            AgentPanelAction::SelectAccessMode(mode) => self.select_access_mode(*mode, ctx),
+            AgentPanelAction::ToggleAccessMenu => self.toggle_access_menu(ctx),
+            AgentPanelAction::ToggleModelMenu => self.toggle_model_menu(ctx),
+            AgentPanelAction::DismissComposerMenus => self.dismiss_composer_menus(ctx),
             AgentPanelAction::SelectMode(mode) => self.select_mode(*mode, ctx),
             AgentPanelAction::Send => self.send_message(ctx),
             AgentPanelAction::PasteInput => self.paste_input(ctx),
             AgentPanelAction::FocusInput => {
                 if let Ok(mut panel) = self.state.lock() {
-                    panel.input_focused = true;
-                    panel.sidebar_search_focused = false;
+                    if !panel.busy {
+                        panel.input_focused = true;
+                        panel.sidebar_search_focused = false;
+                        panel.caret_blink = true;
+                    }
                 }
+                self.start_caret_blink(ctx);
                 ctx.notify();
             }
             AgentPanelAction::SelectProject(id) => self.select_project(id.clone(), ctx),
@@ -1137,9 +1698,21 @@ impl TypedActionView for AgentPanelView {
                 }
                 ctx.notify();
             }
+            AgentPanelAction::SidebarMore => {}
             AgentPanelAction::NewConversation => self.new_conversation(ctx),
             AgentPanelAction::LaunchTerminal => self.launch_terminal(ctx),
             AgentPanelAction::RefreshStatus => self.refresh_status(ctx),
+            AgentPanelAction::Stop => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.busy = false;
+                    panel.demo_thinking = false;
+                    panel.session_running = false;
+                    if panel.demo_status_line.is_some() {
+                        panel.demo_status_line = Some("已完成".into());
+                    }
+                }
+                ctx.notify();
+            }
         }
     }
 
@@ -1149,51 +1722,66 @@ impl TypedActionView for AgentPanelView {
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         let content = match action {
-            AgentPanelAction::SelectAgent(PreferredAgent::Codex) => AccessibilityContent::new_without_help(
-                "选择 Codex Agent",
-                WarpA11yRole::ButtonRole,
-            ),
-            AgentPanelAction::SelectAgent(PreferredAgent::Cursor) => AccessibilityContent::new_without_help(
-                "选择 Cursor Agent",
-                WarpA11yRole::ButtonRole,
-            ),
-            AgentPanelAction::SelectMode(InteractionMode::Chat) => AccessibilityContent::new_without_help(
-                "对话模式",
-                WarpA11yRole::ButtonRole,
-            ),
-            AgentPanelAction::SelectMode(InteractionMode::Task) => AccessibilityContent::new_without_help(
-                "全自动模式",
-                WarpA11yRole::ButtonRole,
-            ),
+            AgentPanelAction::SelectAgent(PreferredAgent::Codex) => {
+                AccessibilityContent::new_without_help("选择 GPT-5.5", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::SelectAgent(PreferredAgent::Cursor) => {
+                AccessibilityContent::new_without_help(
+                    "选择 Cursor Agent",
+                    WarpA11yRole::ButtonRole,
+                )
+            }
+            AgentPanelAction::SelectAccessMode(AgentAccessMode::FullAccess) => {
+                AccessibilityContent::new_without_help("完全访问", WarpA11yRole::MenuItemRole)
+            }
+            AgentPanelAction::SelectAccessMode(AgentAccessMode::WorkspaceWrite) => {
+                AccessibilityContent::new_without_help("工作区写入", WarpA11yRole::MenuItemRole)
+            }
+            AgentPanelAction::ToggleAccessMenu => {
+                AccessibilityContent::new_without_help("访问权限菜单", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::ToggleModelMenu => {
+                AccessibilityContent::new_without_help("模型菜单", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::DismissComposerMenus => {
+                return ActionAccessibilityContent::Empty;
+            }
+            AgentPanelAction::SelectMode(InteractionMode::Chat) => {
+                AccessibilityContent::new_without_help("对话模式", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::SelectMode(InteractionMode::Task) => {
+                AccessibilityContent::new_without_help("全自动模式", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::Send => {
                 AccessibilityContent::new_without_help("发送消息", WarpA11yRole::ButtonRole)
             }
-            AgentPanelAction::FocusInput => AccessibilityContent::new_without_help(
-                "聚焦输入框",
-                WarpA11yRole::TextfieldRole,
-            ),
-            AgentPanelAction::NewConversation => AccessibilityContent::new_without_help(
-                "新对话",
-                WarpA11yRole::ButtonRole,
-            ),
-            AgentPanelAction::LaunchTerminal => AccessibilityContent::new_without_help(
-                "打开系统终端",
-                WarpA11yRole::ButtonRole,
-            ),
-            AgentPanelAction::PasteInput => AccessibilityContent::new_without_help(
-                "粘贴到输入框",
-                WarpA11yRole::ButtonRole,
-            ),
+            AgentPanelAction::FocusInput => {
+                AccessibilityContent::new_without_help("聚焦输入框", WarpA11yRole::TextfieldRole)
+            }
+            AgentPanelAction::NewConversation => {
+                AccessibilityContent::new_without_help("新对话", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::LaunchTerminal => {
+                AccessibilityContent::new_without_help("打开系统终端", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::PasteInput => {
+                AccessibilityContent::new_without_help("粘贴到输入框", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::SelectProject(_) | AgentPanelAction::SelectSession(_) => {
                 AccessibilityContent::new_without_help("选择侧栏项", WarpA11yRole::MenuItemRole)
             }
             AgentPanelAction::NewProject | AgentPanelAction::NewThread => {
                 AccessibilityContent::new_without_help("新建侧栏项", WarpA11yRole::ButtonRole)
             }
-            AgentPanelAction::FocusSidebarSearch => AccessibilityContent::new_without_help(
-                "聚焦会话搜索",
-                WarpA11yRole::TextfieldRole,
-            ),
+            AgentPanelAction::FocusSidebarSearch => {
+                AccessibilityContent::new_without_help("聚焦会话搜索", WarpA11yRole::TextfieldRole)
+            }
+            AgentPanelAction::SidebarMore => {
+                AccessibilityContent::new_without_help("侧栏菜单", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::Stop => {
+                AccessibilityContent::new_without_help("停止 Agent", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::SetVisible(_) | AgentPanelAction::RefreshStatus => {
                 return ActionAccessibilityContent::Empty;
             }

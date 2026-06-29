@@ -1,15 +1,18 @@
 use std::sync::{Arc, Mutex};
 
-use pathfinder_geometry::vector::vec2f;
-use warpui::elements::{ChildView, Container, Flex, ParentElement, Scrollable, ScrollableElement};
+use warpui::elements::Fill;
+use warpui::elements::{
+    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex, MainAxisSize,
+    ParentElement, ScrollbarWidth,
+};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
 use crate::ui::chat::bubble::ChatBubbleView;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::{ui_title, SECTION_PADDING};
 use crate::ui::theme;
-use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
     chat_list_messages, ChatMessageDto, ListChatMessagesParams,
 };
@@ -21,6 +24,8 @@ pub struct ChatThreadView {
     loaded_for: Option<String>,
     messages: Vec<ChatMessageDto>,
     bubbles: Vec<warpui::ViewHandle<ChatBubbleView>>,
+    hint_bubble: warpui::ViewHandle<ChatBubbleView>,
+    scroll: ClippedScrollStateHandle,
 }
 
 impl ChatThreadView {
@@ -30,6 +35,12 @@ impl ChatThreadView {
         selection: ConversationSelection,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let hint_bubble = ctx.add_view(|ctx| {
+            ChatBubbleView::system_hint(
+                ctx,
+                "Vault ready · endpoint 已连接 · 等待消息…".into(),
+            )
+        });
         let view = Self {
             core,
             selection,
@@ -37,6 +48,8 @@ impl ChatThreadView {
             loaded_for: None,
             messages: Vec::new(),
             bubbles: Vec::new(),
+            hint_bubble,
+            scroll: ClippedScrollStateHandle::new(),
         };
         view.start_poll(ctx);
         view
@@ -102,6 +115,12 @@ impl ChatThreadView {
                 .push(ctx.add_view(move |ctx| ChatBubbleView::new(ctx, author, body)));
         }
     }
+
+    fn thread_title(&self) -> String {
+        self.loaded_for
+            .clone()
+            .unwrap_or_else(|| "选择左侧终端".into())
+    }
 }
 
 impl Entity for ChatThreadView {
@@ -114,17 +133,39 @@ impl View for ChatThreadView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut col = Flex::column();
-        col.add_child(ui_text::title("消息", self.font).finish());
+        let mut col = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_child(ui_title(self.thread_title(), self.font));
         if self.messages.is_empty() {
-            col.add_child(ui_text::body("选择左侧会话", self.font).finish());
+            col.add_child(
+                Container::new(ChildView::new(&self.hint_bubble).finish())
+                    .with_margin_top(10.0)
+                    .finish(),
+            );
+        } else {
+            for bubble in &self.bubbles {
+                col.add_child(
+                    Container::new(ChildView::new(bubble).finish())
+                        .with_vertical_margin(5.0)
+                        .finish(),
+                );
+            }
         }
-        for bubble in &self.bubbles {
-            col.add_child(ChildView::new(bubble).finish());
-        }
-        Container::new(col.finish())
-            .with_background(theme::panel())
-            .with_uniform_padding(8.0)
-            .finish()
+
+        Container::new(
+            ClippedScrollable::vertical(
+                self.scroll.clone(),
+                col.finish(),
+                ScrollbarWidth::Auto,
+                Fill::None,
+                Fill::None,
+                Fill::None,
+            )
+            .finish(),
+        )
+        .with_uniform_padding(SECTION_PADDING)
+        .with_background(theme::canvas())
+        .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+        .finish()
     }
 }

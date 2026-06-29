@@ -1,34 +1,37 @@
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth, Shrinkable,
+    Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
+    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
+    Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
     AccessibilityData, AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext,
-    ViewHandle,
+    ViewHandle, WindowId,
 };
 use warpui_core::keymap::Keystroke;
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
-use crate::ui::window_chrome::{self, CHROME_ROW_HEIGHT};
 use crate::ui::chat::ChatShellView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self};
 use crate::ui::devices_view::DevicesView;
-use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::display_view::DisplayView;
+use crate::ui::hud_effects::HudBackdrop;
+use crate::ui::icons;
 use crate::ui::panel_primitives::{section_hint, HUD_RADIUS};
 use crate::ui::settings_view::SettingsView;
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
+use crate::ui::window_chrome::{self, CHROME_ROW_HEIGHT, TrafficLightActions, TrafficLightMouseStates};
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
@@ -110,6 +113,10 @@ pub struct AppShellView {
     hud_nodes: usize,
     tab_scroll: ClippedScrollStateHandle,
     show_onboarding: bool,
+    window_id: WindowId,
+    traffic_light_mouse_states: TrafficLightMouseStates,
+    #[cfg(windows)]
+    tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
 }
 
 impl AppShellView {
@@ -119,28 +126,31 @@ impl AppShellView {
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
         import_model: SharedCodexProviderImportModel,
         pending_deeplink: Option<String>,
+        #[cfg(windows)] tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
-        let coordinator_view = ctx.add_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
+        let coordinator_view =
+            ctx.add_typed_action_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
+        #[cfg(windows)]
+        crate::ui::windows_shell::register_main_shell_window(ctx.window_id(), &coordinator);
         let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
-        let sync = ctx.add_view(|ctx| SyncView::new(ctx, core.clone()));
-        let devices = ctx.add_view(|ctx| DevicesView::new(ctx, core.clone()));
+        let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
+        let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
         let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
-        let warp = ctx.add_view(|ctx| AgentPanelView::new(ctx, core.clone()));
-        let toolbox = ctx.add_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
-        let settings = ctx.add_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
+        let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
+        let toolbox =
+            ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
+        let settings =
+            ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
         let prefs = desktop_prefs::load(&core.data_dir());
         let mut tab = prefs
             .last_tab
             .as_deref()
             .and_then(AppTab::from_persist_id)
             .unwrap_or(AppTab::Chat);
-        if matches!(
-            tab,
-            AppTab::WDrive | AppTab::Sync | AppTab::Display
-        ) {
+        if matches!(tab, AppTab::WDrive | AppTab::Sync | AppTab::Display) {
             tab = AppTab::Devices;
         }
         if let Some(ref url) = pending_deeplink {
@@ -151,6 +161,7 @@ impl AppShellView {
             });
         }
         let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
+        let window_id = ctx.window_id();
         let view = Self {
             tab,
             hovered_tab: None,
@@ -172,11 +183,18 @@ impl AppShellView {
             hud_nodes: 1,
             tab_scroll: ClippedScrollStateHandle::new(),
             show_onboarding,
+            window_id,
+            traffic_light_mouse_states: TrafficLightMouseStates::default(),
+            #[cfg(windows)]
+            tray,
         };
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.start_deeplink_listener(ctx);
+        #[cfg(windows)]
+        view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
+        window_chrome::sync_window_button_visibility(ctx);
         view
     }
 
@@ -282,6 +300,48 @@ impl AppShellView {
         );
     }
 
+    #[cfg(windows)]
+    fn start_tray_poll(&self, ctx: &mut ViewContext<Self>) {
+        let tray = self.tray.clone();
+        let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
+            }
+        });
+        Self::poll_tray_once(ctx, tick_rx, tray);
+    }
+
+    #[cfg(windows)]
+    fn poll_tray_once(
+        ctx: &mut ViewContext<Self>,
+        tick_rx: async_channel::Receiver<()>,
+        tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
+    ) {
+        use wormhole_desktop_platform_windows::TrayAction;
+
+        let waiter = tick_rx.clone();
+        ctx.spawn(
+            async move {
+                let _ = waiter.recv().await;
+            },
+            move |_view, _, ctx| {
+                if let Some(action) = tray.try_recv() {
+                    match action {
+                        TrayAction::Show => {
+                            crate::ui::windows_shell::show_main_window_from_view(ctx);
+                        }
+                        TrayAction::Quit => {
+                            crate::ui::windows_shell::quit_desktop(ctx);
+                        }
+                    }
+                }
+                Self::poll_tray_once(ctx, tick_rx, tray);
+            },
+        );
+    }
+
     fn focus_warp_tab(&mut self, agent: PreferredAgent, ctx: &mut ViewContext<Self>) {
         let warp_handle = self.warp.clone();
         ctx.update_view(&warp_handle, |view, ctx| {
@@ -305,17 +365,6 @@ impl AppShellView {
             AppTab::Warp => "智能体",
             AppTab::Toolbox => "工具箱",
             AppTab::Settings => "设置",
-        }
-    }
-
-    fn tab_icon(tab: AppTab) -> &'static str {
-        match tab {
-            AppTab::Devices => "端",
-            AppTab::Chat => "聊",
-            AppTab::Warp => "智",
-            AppTab::Toolbox => "箱",
-            AppTab::Settings => "设",
-            _ => "",
         }
     }
 
@@ -420,15 +469,6 @@ impl AppShellView {
             .finish()
     }
 
-    fn tab_button_label(&self, tab: AppTab) -> String {
-        let expand = self.tab == tab || self.hovered_tab == Some(tab);
-        if expand {
-            format!("{} {}", Self::tab_icon(tab), Self::tab_label(tab))
-        } else {
-            Self::tab_icon(tab).to_string()
-        }
-    }
-
     fn tab_button(&self, tab: AppTab) -> Box<dyn Element> {
         let selected = self.tab == tab;
         let keyboard_focused = self.tab_bar_keyboard_focus && self.tab_focus == tab;
@@ -442,24 +482,18 @@ impl AppShellView {
         } else {
             ColorU::new(0, 0, 0, 0)
         };
-        let label = self.tab_button_label(tab);
+        let expand = self.tab == tab || self.hovered_tab == Some(tab);
+        let label = Self::tab_label(tab);
 
-        let mut label_container = Container::new(
-            ui_text::hud_title(label, self.mono)
-                .with_color(text_color)
-                .finish(),
-        )
+        let mut label_container = Container::new(icons::tab_button_content(
+            tab, expand, text_color, label, self.mono,
+        ))
         .with_vertical_padding(16.0)
-        .with_horizontal_padding(if selected || self.hovered_tab == Some(tab) {
-            16.0
-        } else {
-            12.0
-        })
+        .with_horizontal_padding(if expand { 16.0 } else { 12.0 })
         .with_background(bg);
         if selected {
-            label_container = label_container.with_border(
-                Border::bottom(2.0).with_border_fill(theme::accent_cool()),
-            );
+            label_container = label_container
+                .with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
         }
 
         let mut btn = Container::new(label_container.finish())
@@ -480,16 +514,13 @@ impl AppShellView {
                 DispatchEventResult::PropagateToParent
             })
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AppShellAction::SelectTab(
-                    tab,
-                    TabSelectSource::Mouse,
-                ));
+                ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
                 DispatchEventResult::StopPropagation
             })
             .finish()
     }
 
-    fn tab_bar(&self) -> Box<dyn Element> {
+    fn tab_bar(&self, app: &AppContext) -> Box<dyn Element> {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
@@ -509,22 +540,38 @@ impl AppShellView {
             Fill::None,
         )
         .finish();
-        Container::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_child(Shrinkable::new(1.0, scrollable_tabs).finish())
-                .with_child(self.hud_status_bar())
-                .with_child(window_chrome::caption_buttons(
-                    self.font,
-                    [
-                        ("−", AppShellAction::MinimizeWindow),
-                        ("□", AppShellAction::ToggleMaximizeWindow),
-                        ("×", AppShellAction::CloseWindow),
-                    ],
-                ))
-                .finish(),
-        )
+
+        let zoom_factor = 1.0;
+        let traffic_light_data = window_chrome::traffic_light_data(app, self.window_id);
+        let is_fullscreen = app
+            .windows()
+            .platform_window(self.window_id)
+            .map(|window| window.fullscreen_state() != warpui::platform::FullscreenState::Normal)
+            .unwrap_or(false);
+        let left_padding = window_chrome::tab_bar_left_padding(
+            traffic_light_data.as_ref(),
+            zoom_factor,
+            is_fullscreen,
+        );
+
+        let mut tab_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+
+        if left_padding > 0.0 {
+            tab_row.add_child(window_chrome::left_padding_spacer(left_padding));
+        }
+
+        tab_row.add_child(Shrinkable::new(1.0, scrollable_tabs).finish());
+        tab_row.add_child(self.hud_status_bar());
+
+        if let Some(data) = traffic_light_data.as_ref() {
+            if let Some(spacer) = window_chrome::traffic_light_spacer(data, zoom_factor) {
+                tab_row.add_child(spacer);
+            }
+        }
+
+        Container::new(tab_row.finish())
         .with_background(theme::panel_elevated())
         .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
         .with_vertical_padding(0.0)
@@ -541,10 +588,7 @@ impl AppShellView {
                     .finish(),
             )
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AppShellAction::SelectTab(
-                    tab,
-                    TabSelectSource::Mouse,
-                ));
+                ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
                 DispatchEventResult::StopPropagation
             })
             .finish(),
@@ -560,8 +604,7 @@ impl AppShellView {
         if !self.show_onboarding {
             return None;
         }
-        let mut col = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start);
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
         col.add_child(
             ui_text::title("快速开始", self.font)
                 .with_color(theme::text())
@@ -602,7 +645,7 @@ impl AppShellView {
         )
     }
 
-    fn body(&self) -> Box<dyn Element> {
+    fn body(&self, app: &AppContext) -> Box<dyn Element> {
         let content: Box<dyn Element> = match self.tab {
             AppTab::WDrive => ChildView::new(&self.w_drive).finish(),
             AppTab::Sync => ChildView::new(&self.sync).finish(),
@@ -615,20 +658,16 @@ impl AppShellView {
         };
         let mut column = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
-            .with_child(self.tab_bar());
+            .with_child(self.tab_bar(app));
         if let Some(banner) = self.onboarding_banner() {
-            column.add_child(
-                Container::new(banner)
-                    .with_uniform_padding(8.0)
-                    .finish(),
-            );
+            column.add_child(Container::new(banner).with_uniform_padding(8.0).finish());
         }
         column.add_child(
             Expanded::new(
                 1.0,
                 HudBackdrop::live(
                     Container::new(content)
-                        .with_background(theme::bg())
+                        .with_background(theme::canvas())
                         .finish(),
                 ),
             )
@@ -647,13 +686,13 @@ impl View for AppShellView {
         "AppShellView"
     }
 
-    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+    fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
-        let shell = Container::new(self.body())
+        let shell = Container::new(self.body(app))
             .with_background(theme::canvas())
             .with_uniform_padding(0.0)
             .finish();
-        EventHandler::new(shell)
+        let shell = EventHandler::new(shell)
             .with_always_handle()
             .on_keydown(move |ctx, _, keystroke| {
                 if let Some(tab) = Self::tab_from_keystroke(keystroke) {
@@ -672,7 +711,36 @@ impl View for AppShellView {
                 }
                 DispatchEventResult::PropagateToParent
             })
-            .finish()
+            .finish();
+
+        let mut stack = Stack::new();
+        stack.add_child(shell);
+
+        if window_chrome::traffic_light_data(app, self.window_id)
+            .is_some_and(|data| data.side == window_chrome::TrafficLightSide::Right)
+        {
+            stack.add_positioned_child(
+                window_chrome::render_traffic_lights(
+                    self.window_id,
+                    app,
+                    &self.traffic_light_mouse_states,
+                    TrafficLightActions {
+                        minimize: AppShellAction::MinimizeWindow,
+                        toggle_maximize: AppShellAction::ToggleMaximizeWindow,
+                        close: AppShellAction::CloseWindow,
+                    },
+                    self.font,
+                ),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0.0, 0.0),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopRight,
+                    ChildAnchor::TopRight,
+                ),
+            );
+        }
+
+        stack.finish()
     }
 
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
@@ -731,6 +799,9 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::CloseWindow => {
                 self.persist_last_tab();
+                #[cfg(windows)]
+                crate::ui::windows_shell::hide_main_window_from_view(ctx);
+                #[cfg(not(windows))]
                 ctx.close_window();
             }
         }
@@ -747,20 +818,17 @@ impl TypedActionView for AppShellView {
                 format!("切换到{}", Self::tab_label(*tab)),
                 WarpA11yRole::MenuItemRole,
             ),
-            AppShellAction::DismissOnboarding => AccessibilityContent::new_without_help(
-                "关闭快速开始引导",
-                WarpA11yRole::ButtonRole,
-            ),
-            AppShellAction::MinimizeWindow => AccessibilityContent::new_without_help(
-                "最小化窗口",
-                WarpA11yRole::ButtonRole,
-            ),
-            AppShellAction::ToggleMaximizeWindow => AccessibilityContent::new_without_help(
-                "切换最大化",
-                WarpA11yRole::ButtonRole,
-            ),
+            AppShellAction::DismissOnboarding => {
+                AccessibilityContent::new_without_help("关闭快速开始引导", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::MinimizeWindow => {
+                AccessibilityContent::new_without_help("最小化窗口", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::ToggleMaximizeWindow => {
+                AccessibilityContent::new_without_help("切换最大化", WarpA11yRole::ButtonRole)
+            }
             AppShellAction::CloseWindow => {
-                AccessibilityContent::new_without_help("关闭窗口", WarpA11yRole::ButtonRole)
+                AccessibilityContent::new_without_help("隐藏到系统托盘", WarpA11yRole::ButtonRole)
             }
         };
         ActionAccessibilityContent::Custom(content)

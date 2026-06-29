@@ -304,9 +304,11 @@ impl View for AgentProvidersView {
                 self.font,
             ),
         );
-        col.add_child(
-            status_line(self.llm_summary.clone(), self.font, StatusTone::Muted),
-        );
+        col.add_child(status_line(
+            self.llm_summary.clone(),
+            self.font,
+            StatusTone::Muted,
+        ));
 
         let mut toolbar = Flex::row();
         toolbar.add_child(self.action_button("刷新", AgentProvidersAction::Refresh));

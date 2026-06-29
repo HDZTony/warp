@@ -159,10 +159,7 @@ impl SyncView {
                         format!(
                             "{} {} → {:?}",
                             item.action,
-                            truncate_middle(
-                                item.source_path.as_deref().unwrap_or("—"),
-                                56,
-                            ),
+                            truncate_middle(item.source_path.as_deref().unwrap_or("—"), 56,),
                             item.status
                         )
                     })
@@ -403,9 +400,17 @@ impl View for SyncView {
         if self.loading {
             col.add_child(status_line("加载中…", self.font, StatusTone::Placeholder));
         } else if self.status_error {
-            col.add_child(status_line(self.status.clone(), self.font, StatusTone::Danger));
+            col.add_child(status_line(
+                self.status.clone(),
+                self.font,
+                StatusTone::Danger,
+            ));
         } else {
-            col.add_child(status_line(self.status.clone(), self.font, StatusTone::Neutral));
+            col.add_child(status_line(
+                self.status.clone(),
+                self.font,
+                StatusTone::Neutral,
+            ));
         }
 
         col.add_child(section_title("远程打开", self.font));
@@ -423,7 +428,10 @@ impl View for SyncView {
         }
 
         col.add_child(section_title("同步队列", self.font));
-        col.add_child(section_hint("最近 20 条队列项。失败项请在日志或设置中排查。", self.font));
+        col.add_child(section_hint(
+            "最近 20 条队列项。失败项请在日志或设置中排查。",
+            self.font,
+        ));
         if !self.loading && self.queue.is_empty() && !self.status_error {
             col.add_child(status_line(
                 "队列为空。文件变更将出现在此处。",

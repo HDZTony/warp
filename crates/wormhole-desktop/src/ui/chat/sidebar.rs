@@ -1,20 +1,21 @@
 use std::sync::{Arc, Mutex};
 
 use warpui::elements::{
-    Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, ParentElement,
+    Border, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, MainAxisSize,
+    ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{section_hint, section_title, status_line, StatusTone};
+use crate::ui::panel_primitives::{online_dot, section_hint, ui_title, SECTION_PADDING};
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::cluster_commands::cluster_status;
 use wormhole_desktop_core::chat_commands::{
     chat_config, chat_list_conversations, ChatConversationDto,
 };
+use wormhole_desktop_core::cluster_commands::cluster_status;
 
 #[derive(Debug, Clone)]
 pub enum ChatSidebarAction {
@@ -37,6 +38,7 @@ pub struct ChatSidebarView {
     core: CoreHandle,
     selection: ConversationSelection,
     font: FamilyId,
+    mono: FamilyId,
     terminals: Vec<TerminalRow>,
     conversations: Vec<ChatConversationDto>,
     status: String,
@@ -49,10 +51,12 @@ impl ChatSidebarView {
         selection: ConversationSelection,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let mut view = Self {
             core,
             selection,
             font,
+            mono,
             terminals: Vec::new(),
             conversations: Vec::new(),
             status: "加载终端…".into(),
@@ -112,33 +116,59 @@ impl ChatSidebarView {
     fn terminal_row(&self, terminal: &TerminalRow, selected: bool) -> Box<dyn Element> {
         let id = terminal.id.clone();
         let mut title_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
         title_row.add_child(
-            ui_text::body(terminal.title.clone(), self.font)
-                .with_color(theme::text())
+            ui_text::mono(terminal.title.clone(), self.mono)
+                .with_color(if selected {
+                    theme::text()
+                } else {
+                    theme::muted()
+                })
                 .finish(),
         );
-        let status_label = if terminal.online { "在线" } else { "离线" };
-        title_row.add_child(
-            Container::new(
-                ui_text::body(status_label, self.font)
-                    .with_color(if terminal.online {
-                        theme::success()
-                    } else {
-                        theme::muted()
-                    })
-                    .finish(),
-            )
-            .with_horizontal_margin(8.0)
-            .finish(),
-        );
+        if terminal.online {
+            title_row.add_child(
+                Container::new(
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(
+                            Container::new(online_dot())
+                                .with_horizontal_margin(6.0)
+                                .finish(),
+                        )
+                        .with_child(
+                            ui_text::hud_title("在线", self.font)
+                                .with_color(theme::muted())
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_horizontal_margin(6.0)
+                .finish(),
+            );
+        } else {
+            title_row.add_child(
+                Container::new(
+                    ui_text::hud_title("离线", self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_horizontal_margin(6.0)
+                .finish(),
+            );
+        }
 
         let mut col = Flex::column();
         col.add_child(title_row.finish());
         col.add_child(
-            ui_text::mono(terminal.subtitle.clone(), self.font)
-                .with_color(theme::muted())
-                .finish(),
+            Container::new(
+                ui_text::hud_title(terminal.subtitle.clone(), self.mono)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(3.0)
+            .finish(),
         );
 
         let row = EventHandler::new(col.finish())
@@ -149,12 +179,18 @@ impl ChatSidebarView {
             .finish();
 
         Container::new(row)
+            .with_padding_left(10.0)
+            .with_padding_right(10.0)
+            .with_padding_top(8.0)
+            .with_padding_bottom(8.0)
             .with_background(if selected {
-                theme::accent_bg(32)
+                theme::accent_cool_bg(32)
             } else {
-                theme::panel()
+                pathfinder_color::ColorU::transparent_black()
             })
-            .with_uniform_padding(10.0)
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(crate::ui::panel_primitives::HUD_RADIUS),
+            ))
             .finish()
     }
 }
@@ -171,7 +207,7 @@ impl View for ChatSidebarView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let selected = self.selection.lock().ok().and_then(|g| g.clone());
         let mut col = Flex::column();
-        col.add_child(section_title("终端", self.font));
+        col.add_child(ui_title("终端", self.font));
         let node_count = self.terminals.len();
         col.add_child(section_hint(
             format!("CLUSTER · {node_count} NODES · E2E"),
@@ -179,14 +215,13 @@ impl View for ChatSidebarView {
         ));
 
         if self.terminals.is_empty() {
-            col.add_child(status_line(
+            col.add_child(section_hint(
                 if self.status.is_empty() {
                     "暂无集群终端".to_string()
                 } else {
                     self.status.clone()
                 },
                 self.font,
-                StatusTone::Placeholder,
             ));
         } else {
             for terminal in &self.terminals {
@@ -196,8 +231,9 @@ impl View for ChatSidebarView {
         }
 
         Container::new(col.finish())
-            .with_uniform_padding(crate::ui::panel_primitives::SECTION_PADDING)
-            .with_background(theme::canvas())
+            .with_uniform_padding(SECTION_PADDING)
+            .with_background(theme::panel())
+            .with_border(Border::right(1.0).with_border_fill(theme::border()))
             .finish()
     }
 }

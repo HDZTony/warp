@@ -95,11 +95,7 @@ mod imp {
             );
         }
 
-        fn action_button(
-            &self,
-            label: &str,
-            action: WDriveSettingsAction,
-        ) -> Box<dyn Element> {
+        fn action_button(&self, label: &str, action: WDriveSettingsAction) -> Box<dyn Element> {
             let label = label.to_string();
             Container::new(
                 EventHandler::new(
@@ -162,7 +158,11 @@ mod imp {
             }
 
             if !self.status.is_empty() {
-                col.add_child(status_line(self.status.clone(), self.font, StatusTone::Danger));
+                col.add_child(status_line(
+                    self.status.clone(),
+                    self.font,
+                    StatusTone::Danger,
+                ));
             }
 
             let mut toolbar = Flex::row();

@@ -4,9 +4,7 @@ use std::time::Duration;
 use pathfinder_color::ColorU;
 use warpui::elements::{Container, Flex, MainAxisSize, ParentElement, Text};
 use warpui::fonts::FamilyId;
-use warpui::{
-    AppContext, Element, Entity, TypedActionView, View, ViewContext,
-};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::coordinator::{CoordinatorState, UiCommand};
 use crate::rdp_extras_ui::link_label;

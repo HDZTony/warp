@@ -7,13 +7,17 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
 
+use warpui::elements::CornerRadius;
 use warpui::elements::{
     AfterLayoutContext, AppContext, Element, EventContext, Fill, LayoutContext, LiveElement,
     PaintContext, Point, Radius, SizeConstraint,
 };
-use warpui::elements::{CornerRadius};
 use warpui::ClipBounds;
 
+use crate::ui::cluster_layout::{
+    card_height, cards_row_card_width, edge_points, node_anchors, CARD_GAP, CARD_MIN_WIDTH,
+    TOPO_PAD,
+};
 use crate::ui::theme;
 
 const GRID_SPACING: f32 = 24.0;
@@ -90,7 +94,11 @@ impl Element for HudBackdrop {
         ctx.scene
             .start_layer(ClipBounds::BoundedBy(RectF::new(origin, size)));
 
-        let grid_color = ColorU::new(222, 231, 247, 10);
+        ctx.scene
+            .draw_rect_without_hit_recording(RectF::new(origin, size))
+            .with_background(Fill::Solid(theme::canvas()));
+
+        let grid_color = ColorU::new(222, 231, 247, 6);
         let mut x = 0.0f32;
         while x <= size.x() {
             ctx.scene
@@ -169,17 +177,6 @@ impl ClusterTopology {
             size: None,
             origin: None,
         }
-    }
-
-    fn node_centers(&self, size: Vector2F) -> Vec<Vector2F> {
-        let count = self.node_count;
-        let y = size.y() * 0.38;
-        (0..count)
-            .map(|i| {
-                let x = (i as f32 + 0.5) / count as f32 * size.x();
-                vec2f(x, y)
-            })
-            .collect()
     }
 
     fn links(&self) -> Vec<LinkSpec> {
@@ -313,14 +310,16 @@ impl Element for ClusterTopology {
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
         let size = self.size.unwrap_or_else(|| vec2f(1.0, 1.0));
-        let centers = self.node_centers(size);
+        let anchors = node_anchors(self.node_count, size);
+        let card_w = cards_row_card_width(size.x(), self.node_count);
+        let card_h = card_height(card_w);
         let elapsed = self.started.elapsed().as_secs_f32();
 
         ctx.scene
             .start_layer(ClipBounds::BoundedBy(RectF::new(origin, size)));
         ctx.scene.set_active_layer_click_through();
 
-        if let Some(hub) = centers.get(self.hub_index) {
+        if let Some(hub) = anchors.get(self.hub_index) {
             ctx.scene
                 .draw_rect_without_hit_recording(RectF::new(
                     origin + *hub - vec2f(4.0, 4.0),
@@ -331,19 +330,20 @@ impl Element for ClusterTopology {
         }
 
         for (i, link) in self.links().into_iter().enumerate() {
-            let Some(from) = centers.get(link.from) else {
+            let Some(from) = anchors.get(link.from) else {
                 continue;
             };
-            let Some(to) = centers.get(link.to) else {
+            let Some(to) = anchors.get(link.to) else {
                 continue;
             };
+            let (start, end) = edge_points(*from, *to, card_w, card_h);
             let bow = 28.0 + (i as f32 % 2.0) * 12.0;
             let phase = (elapsed / 1.4 + i as f32 * 0.2).fract();
             self.draw_curve(
                 ctx,
                 origin,
-                *from,
-                *to,
+                start,
+                end,
                 bow,
                 Self::link_color(link.kind),
                 phase,
@@ -351,6 +351,135 @@ impl Element for ClusterTopology {
         }
 
         ctx.scene.stop_layer();
+        ctx.repaint_after(REPAINT_INTERVAL);
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _: &warpui::event::DispatchedEvent,
+        _: &mut EventContext,
+        _: &AppContext,
+    ) -> bool {
+        false
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+}
+
+const ENERGY_CYCLE: Duration = Duration::from_millis(2800);
+
+const DEVICE_ENERGY_THUMB_HEIGHT: f32 = 132.0;
+
+pub struct DeviceEnergyLines {
+    started: Instant,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl DeviceEnergyLines {
+    pub fn live() -> Box<dyn Element> {
+        Box::new(LiveElement::new(
+            Box::new(Self {
+                started: Instant::now(),
+                size: None,
+                origin: None,
+            }),
+            REPAINT_INTERVAL,
+        ))
+    }
+
+    fn line_phase(elapsed: Duration, delay_secs: f32, base_opacity: f32) -> (f32, f32) {
+        let t = elapsed.as_secs_f32() + delay_secs;
+        let progress = (t % ENERGY_CYCLE.as_secs_f32()) / ENERGY_CYCLE.as_secs_f32();
+        let x = -1.1 + progress * 2.2;
+        let fade = if progress < 0.15 {
+            progress / 0.15
+        } else if progress > 0.85 {
+            (1.0 - progress) / 0.15
+        } else {
+            0.9
+        };
+        (x, base_opacity * fade)
+    }
+
+    fn paint_line(
+        ctx: &mut PaintContext,
+        origin: Vector2F,
+        width: f32,
+        height: f32,
+        y_frac: f32,
+        x_frac: f32,
+        opacity: f32,
+    ) {
+        let line_w = width * 0.4;
+        let center_x = origin.x() + width * 0.5 + x_frac * width * 0.5;
+        let y = origin.y() + height * y_frac;
+        let segments = 8usize;
+        for i in 0..segments {
+            let t = i as f32 / segments as f32;
+            let edge = (t - 0.5).abs() * 2.0;
+            let alpha = ((1.0 - edge).max(0.0) * opacity * 255.0) as u8;
+            if alpha < 8 {
+                continue;
+            }
+            let seg_w = line_w / segments as f32;
+            let x = center_x - line_w * 0.5 + seg_w * i as f32;
+            let mut color = theme::accent_cool();
+            color.a = alpha;
+            ctx.scene
+                .draw_rect_without_hit_recording(RectF::new(vec2f(x, y), vec2f(seg_w + 0.5, 1.0)))
+                .with_background(Fill::Solid(color));
+        }
+    }
+}
+
+impl Element for DeviceEnergyLines {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let max = constraint.max;
+        let size = vec2f(
+            if max.x().is_finite() { max.x() } else { 0.0 },
+            if max.y().is_finite() {
+                max.y()
+            } else {
+                DEVICE_ENERGY_THUMB_HEIGHT
+            },
+        );
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, _: &mut AfterLayoutContext, _: &AppContext) {}
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
+        let size = self
+            .size
+            .unwrap_or_else(|| vec2f(1.0, DEVICE_ENERGY_THUMB_HEIGHT));
+        let elapsed = self.started.elapsed();
+        let specs = [(0.22, 0.0, 1.0), (0.48, -1.2, 0.6), (0.74, -2.1, 0.4)];
+        for (y_frac, delay, base_opacity) in specs {
+            let (x_frac, opacity) = Self::line_phase(elapsed, delay, base_opacity);
+            Self::paint_line(
+                ctx,
+                origin,
+                size.x(),
+                size.y(),
+                y_frac,
+                x_frac,
+                opacity * 0.35,
+            );
+        }
         ctx.repaint_after(REPAINT_INTERVAL);
     }
 
