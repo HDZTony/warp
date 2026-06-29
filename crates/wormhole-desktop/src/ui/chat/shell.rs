@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 
 use warpui::elements::{
     ChildView, ConstrainedBox, Container, Expanded, Flex, MainAxisSize, ParentElement,
-    Shrinkable,
 };
 use warpui::{AppContext, Element, Entity, View, ViewContext, ViewHandle};
 
@@ -10,6 +9,7 @@ use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::tab_content_fill;
 use crate::ui::theme;
 
 pub const SIDEBAR_WIDTH: f32 = 200.0;
@@ -52,33 +52,36 @@ impl View for ChatShellView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(
-                ConstrainedBox::new(ChildView::new(&self.sidebar).finish())
-                    .with_width(SIDEBAR_WIDTH)
-                    .finish(),
-            )
-            .with_child(
-                Shrinkable::new(
-                    1.0,
-                    Container::new(
-                        Flex::column()
-                            .with_main_axis_size(MainAxisSize::Max)
-                            .with_child(
-                                Expanded::new(1.0, ChildView::new(&self.thread).finish()).finish(),
-                            )
-                            .with_child(
-                                Container::new(ChildView::new(&self.compose).finish())
-                                    .finish(),
-                            )
-                            .finish(),
+        tab_content_fill(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(
+                    ConstrainedBox::new(ChildView::new(&self.sidebar).finish())
+                        .with_width(SIDEBAR_WIDTH)
+                        .finish(),
+                )
+                .with_child(
+                    Expanded::new(
+                        1.0,
+                        Container::new(
+                            Flex::column()
+                                .with_main_axis_size(MainAxisSize::Max)
+                                .with_child(
+                                    Expanded::new(1.0, ChildView::new(&self.thread).finish())
+                                        .finish(),
+                                )
+                                .with_child(
+                                    Container::new(ChildView::new(&self.compose).finish())
+                                        .finish(),
+                                )
+                                .finish(),
+                        )
+                        .with_background(theme::canvas())
+                        .finish(),
                     )
-                    .with_background(theme::canvas())
                     .finish(),
                 )
                 .finish(),
-            )
-            .finish()
+        )
     }
 }

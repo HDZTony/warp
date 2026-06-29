@@ -14,8 +14,8 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    section_hint, section_title, status_line, truncate_middle, StatusTone, HUD_RADIUS,
-    SECTION_PADDING,
+    section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
+    HUD_RADIUS, SECTION_PADDING,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -512,7 +512,7 @@ impl DevicesView {
         let label = Self::cluster_label(cluster);
         let mut trigger_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
+            .with_main_axis_size(MainAxisSize::Min);
         trigger_row.add_child(
             Shrinkable::new(
                 1.0,
@@ -598,8 +598,8 @@ impl DevicesView {
 
     fn cluster_toolbar(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
         let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_main_axis_size(MainAxisSize::Max);
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
         row.add_child(self.cluster_select(cluster));
         row.add_child(
             Container::new(
@@ -984,20 +984,37 @@ impl DevicesView {
     }
 
     fn grid_view(&self) -> Box<dyn Element> {
-        let mut col = Flex::column()
+        let mut header = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Max);
-        col.add_child(section_title("集群节点", self.mono));
+            .with_main_axis_size(MainAxisSize::Min);
+        header.add_child(section_title("集群节点", self.mono));
 
         if let Some(err) = &self.cluster_error {
-            col.add_child(section_hint("CLUSTER · OFFLINE · 无法读取集群", self.font));
-            col.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
+            header.add_child(section_hint("CLUSTER · OFFLINE · 无法读取集群", self.font));
+            header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
         } else if let Some(cluster) = &self.cluster {
-            col.add_child(
+            header.add_child(
                 Container::new(self.cluster_toolbar(cluster))
                     .with_vertical_margin(10.0)
                     .finish(),
             );
+        } else {
+            header.add_child(section_hint("CLUSTER · LOADING", self.font));
+            header.add_child(status_line("加载集群…", self.font, StatusTone::Placeholder));
+        }
+
+        let header_block = Container::new(header.finish())
+            .with_uniform_padding(SECTION_PADDING)
+            .with_padding_bottom(12.0)
+            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .finish();
+
+        let mut col = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max);
+        col.add_child(header_block);
+
+        if let Some(cluster) = &self.cluster {
             let local_id = cluster.local_node_id.clone();
             let mut nodes = cluster.nodes.clone();
             nodes.sort_by(|a, b| {
@@ -1014,27 +1031,42 @@ impl DevicesView {
             col.add_child(
                 Expanded::new(
                     1.0,
-                    ConstrainedBox::new(
-                        ClusterTopologyPanel::element(
-                            nodes,
-                            local_id,
-                            hub_index,
-                            self.mono,
-                        ),
+                    Container::new(
+                        ConstrainedBox::new(
+                            ClusterTopologyPanel::element(nodes, local_id, hub_index, self.mono),
+                        )
+                        .with_min_height(280.0)
+                        .finish(),
                     )
-                    .with_min_height(280.0)
+                    .with_background(theme::panel())
                     .finish(),
                 )
                 .finish(),
             );
         } else {
-            col.add_child(section_hint("CLUSTER · LOADING", self.font));
-            col.add_child(status_line("加载集群…", self.font, StatusTone::Placeholder));
+            col.add_child(
+                Expanded::new(
+                    1.0,
+                    Container::new(Flex::column().finish())
+                        .with_background(theme::panel())
+                        .finish(),
+                )
+                .finish(),
+            );
         }
 
-        Container::new(col.finish())
-            .with_background(theme::panel())
-            .with_uniform_padding(SECTION_PADDING)
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(
+                Expanded::new(
+                    1.0,
+                    Container::new(col.finish())
+                        .with_background(theme::panel())
+                        .finish(),
+                )
+                .finish(),
+            )
             .finish()
     }
 
@@ -1100,7 +1132,7 @@ impl DevicesView {
 
         let mut name_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
+            .with_main_axis_size(MainAxisSize::Min);
         name_row.add_child(
             Container::new(icons::share_file_icon(&entry.name, is_folder))
                 .with_horizontal_margin(4.0)
@@ -1118,7 +1150,7 @@ impl DevicesView {
 
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
+            .with_main_axis_size(MainAxisSize::Min);
         row.add_child(
             Shrinkable::new(
                 0.48,
@@ -1186,7 +1218,7 @@ impl DevicesView {
     }
 
     fn share_table_header(&self) -> Box<dyn Element> {
-        let mut row = Flex::row().with_main_axis_size(MainAxisSize::Max);
+        let mut row = Flex::row().with_main_axis_size(MainAxisSize::Min);
         for (label, weight) in [
             ("名称", 0.48),
             ("修改日期", 0.22),
@@ -1217,7 +1249,7 @@ impl DevicesView {
 
         let mut toolbar = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
+            .with_main_axis_size(MainAxisSize::Min);
         toolbar.add_child(
             EventHandler::new(
                 Container::new(
@@ -1249,7 +1281,7 @@ impl DevicesView {
             false,
         ));
         toolbar.add_child(
-            Shrinkable::new(
+            Expanded::new(
                 1.0,
                 Container::new(
                     ConstrainedBox::new(
@@ -1399,8 +1431,8 @@ impl DevicesView {
 
         let mut actions = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(Shrinkable::new(1.0, Flex::column().finish()).finish());
+            .with_main_axis_size(MainAxisSize::Min);
+        actions.add_child(Expanded::new(1.0, Flex::column().finish()).finish());
         actions.add_child(self.toolbar_button("取消", DevicesAction::CloseShareAddModal, false, 88.0));
         actions.add_child(
             Container::new(
@@ -1545,10 +1577,11 @@ impl View for DevicesView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        match self.mode {
+        let body = match self.mode {
             ViewMode::Grid => self.grid_shell(),
             ViewMode::Files => self.files_shell(),
-        }
+        };
+        tab_content_fill(body)
     }
 }
 

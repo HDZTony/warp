@@ -1,4 +1,7 @@
-use warpui::elements::{Border, ConstrainedBox, Container, CornerRadius, Flex, Radius};
+use warpui::elements::{
+    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded, Flex,
+    MainAxisSize, ParentElement, Radius, Stack,
+};
 use warpui::fonts::FamilyId;
 use warpui::Element;
 
@@ -32,6 +35,34 @@ pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let start: String = chars.iter().take(head).collect();
     let end: String = chars.iter().skip(char_count - tail).collect();
     format!("{start}…{end}")
+}
+
+/// Matches `.view { height: 100% }` in `desktop-current.html` — Tab root fills HudBackdrop.
+///
+/// Uses `Stack` + [`Empty`] so the area always adopts the parent's finite max constraint
+/// (Flex `MainAxisSize::Max` alone collapses when max height is unbounded).
+pub fn tab_content_fill(inner: Box<dyn Element>) -> Box<dyn Element> {
+    let mut stack = Stack::new();
+    stack.add_child(Empty::new().finish());
+    stack.add_child(
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(Expanded::new(1.0, inner).finish())
+            .finish(),
+    );
+    stack.finish()
+}
+
+/// Matches `.view-panel` — full-height panel background + `--panel-pad`.
+pub fn view_panel(inner: Box<dyn Element>) -> Box<dyn Element> {
+    tab_content_fill(
+        Container::new(inner)
+            .with_background(theme::panel())
+            .with_uniform_padding(SECTION_PADDING)
+            .with_border(Border::top(1.0).with_border_fill(theme::border()))
+            .finish(),
+    )
 }
 
 pub fn section_card(inner: Box<dyn Element>) -> Box<dyn Element> {

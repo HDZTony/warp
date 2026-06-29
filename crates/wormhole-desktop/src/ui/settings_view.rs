@@ -9,7 +9,7 @@ use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
-    section_card, section_hint, section_title, status_line, StatusTone,
+    section_card, section_hint, section_title, status_line, view_panel, StatusTone,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -202,11 +202,7 @@ impl View for SettingsView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(
-            ui_text::title("设置", self.font)
-                .with_color(theme::text())
-                .finish(),
-        );
+        col.add_child(section_title("设置", self.font));
         col.add_child(self.shared_path_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
@@ -214,10 +210,7 @@ impl View for SettingsView {
                 .finish(),
         );
 
-        Container::new(col.finish())
-            .with_background(theme::panel())
-            .with_uniform_padding(16.0)
-            .finish()
+        view_panel(col.finish())
     }
 }
 

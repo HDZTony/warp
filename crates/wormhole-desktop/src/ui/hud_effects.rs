@@ -64,13 +64,29 @@ impl Element for HudBackdrop {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let mut size = self.child.layout(constraint, ctx, app);
+        let child_size = self.child.layout(constraint, ctx, app);
         let max = constraint.max;
-        if size.x().is_infinite() {
-            size.set_x(if max.x().is_finite() { max.x() } else { 0.0 });
+        let mut size = Vector2F::new(
+            if max.x().is_finite() {
+                max.x()
+            } else if child_size.x().is_finite() {
+                child_size.x()
+            } else {
+                0.0
+            },
+            if max.y().is_finite() {
+                max.y()
+            } else if child_size.y().is_finite() {
+                child_size.y()
+            } else {
+                0.0
+            },
+        );
+        if size.x() < child_size.x() {
+            size.set_x(child_size.x());
         }
-        if size.y().is_infinite() {
-            size.set_y(if max.y().is_finite() { max.y() } else { 0.0 });
+        if size.y() < child_size.y() {
+            size.set_y(child_size.y());
         }
         self.size = Some(size);
         size

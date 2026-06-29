@@ -29,7 +29,7 @@ use wormhole_desktop_core::{
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::multiline_input;
-use crate::ui::panel_primitives::{agent_header_bg, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
+use crate::ui::panel_primitives::{agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -1596,40 +1596,43 @@ impl View for AgentPanelView {
             .with_background(theme::canvas())
             .finish();
 
-        EventHandler::new(panel)
-            .with_always_handle()
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(AgentPanelAction::DismissComposerMenus);
-                DispatchEventResult::PropagateToParent
-            })
-            .on_keydown({
-                let state = Arc::clone(&self.state);
-                let notify_tx = self.generation_notify_tx.clone();
-                move |ctx, _, keystroke| {
-                    if let Some(action) = Self::keystroke_action(&state, preferred_agent, keystroke)
-                    {
-                        ctx.dispatch_typed_action(action);
-                        return DispatchEventResult::StopPropagation;
-                    }
-                    let was_focused = state
-                        .lock()
-                        .map(|panel| panel.input_focused)
-                        .unwrap_or(false);
-                    if Self::handle_keystroke_panel(&state, keystroke, &notify_tx) {
-                        let now_focused = state
+        tab_content_fill(
+            EventHandler::new(panel)
+                .with_always_handle()
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(AgentPanelAction::DismissComposerMenus);
+                    DispatchEventResult::PropagateToParent
+                })
+                .on_keydown({
+                    let state = Arc::clone(&self.state);
+                    let notify_tx = self.generation_notify_tx.clone();
+                    move |ctx, _, keystroke| {
+                        if let Some(action) =
+                            Self::keystroke_action(&state, preferred_agent, keystroke)
+                        {
+                            ctx.dispatch_typed_action(action);
+                            return DispatchEventResult::StopPropagation;
+                        }
+                        let was_focused = state
                             .lock()
                             .map(|panel| panel.input_focused)
                             .unwrap_or(false);
-                        if now_focused && !was_focused {
-                            ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                        if Self::handle_keystroke_panel(&state, keystroke, &notify_tx) {
+                            let now_focused = state
+                                .lock()
+                                .map(|panel| panel.input_focused)
+                                .unwrap_or(false);
+                            if now_focused && !was_focused {
+                                ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                            }
+                            DispatchEventResult::StopPropagation
+                        } else {
+                            DispatchEventResult::PropagateToParent
                         }
-                        DispatchEventResult::StopPropagation
-                    } else {
-                        DispatchEventResult::PropagateToParent
                     }
-                }
-            })
-            .finish()
+                })
+                .finish(),
+        )
     }
 
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {

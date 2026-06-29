@@ -25,7 +25,7 @@ use crate::ui::devices_view::DevicesView;
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
-use crate::ui::panel_primitives::{section_hint, HUD_RADIUS};
+use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
 use crate::ui::settings_view::SettingsView;
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
@@ -665,11 +665,7 @@ impl AppShellView {
         column.add_child(
             Expanded::new(
                 1.0,
-                HudBackdrop::live(
-                    Container::new(content)
-                        .with_background(theme::canvas())
-                        .finish(),
-                ),
+                HudBackdrop::live(tab_content_fill(content)),
             )
             .finish(),
         );

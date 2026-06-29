@@ -1,12 +1,12 @@
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, MainAxisSize,
-    ParentElement, Radius, Shrinkable,
+    ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{section_title, HUD_RADIUS, SECTION_GAP};
+use crate::ui::panel_primitives::{section_title, view_panel, HUD_RADIUS, SECTION_GAP};
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -97,26 +97,22 @@ impl View for ToolboxView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut row = Flex::row().with_main_axis_size(MainAxisSize::Max);
+        let mut cards = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min);
         for entry in &self.tools {
-            row.add_child(
-                Shrinkable::new(
-                    1.0,
-                    Container::new(self.tool_card(*entry))
-                        .with_uniform_margin(SECTION_GAP / 2.0)
-                        .finish(),
-                )
-                .finish(),
+            cards.add_child(
+                Container::new(self.tool_card(*entry))
+                    .with_uniform_margin(SECTION_GAP / 2.0)
+                    .finish(),
             );
         }
 
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("系统模块", self.font));
-        col.add_child(row.finish());
+        col.add_child(cards.finish());
 
-        Container::new(col.finish())
-            .with_uniform_padding(8.0)
-            .finish()
+        view_panel(col.finish())
     }
 }
 

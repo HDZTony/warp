@@ -14,6 +14,8 @@ use warpui::fonts::FamilyId;
 use crate::ui::cluster_layout::{
     card_height, cards_row_card_width, BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD,
 };
+
+const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
 use crate::ui::icons;
@@ -89,8 +91,24 @@ impl ClusterTopologyPanel {
             );
         }
 
+        let card_h = card_height(card_w);
         let mut stack = Stack::new().with_event_dispatch_mode(EventDispatchMode::Waterfall);
         stack.add_child(ClusterTopology::new(node_count, self.hub_index).live());
+        if node_count <= 2 {
+            stack.add_child(
+                Align::new(
+                    Container::new(
+                        ui_text::cluster_status("节点连线 · E2E 加密", self.mono)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(card_h + TOPO_PAD + TOPO_HINT_TOP_MARGIN)
+                    .finish(),
+                )
+                .top_center()
+                .finish(),
+            );
+        }
         stack.add_child(
             Container::new(row.finish())
                 .with_uniform_padding(TOPO_PAD)
@@ -154,15 +172,14 @@ fn node_display_label(node: &ClusterNodeDto, is_local: bool) -> String {
 }
 
 fn share_files_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn Element> {
-    let border = if online {
-        theme::border_bright()
+    let (border, color, bg) = if online {
+        (theme::border_bright(), theme::text(), theme::panel())
     } else {
-        dim_color(theme::border_bright(), 0.3)
-    };
-    let color = if online {
-        theme::text()
-    } else {
-        dim_color(theme::muted(), 0.3)
+        (
+            dim_color(theme::border_bright(), 0.55),
+            theme::placeholder(),
+            theme::panel_elevated(),
+        )
     };
     let inner = Container::new(
         ConstrainedBox::new(
@@ -180,7 +197,7 @@ fn share_files_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn 
         .finish(),
     )
     .with_horizontal_padding(SHARE_BTN_PAD_X)
-    .with_background(theme::panel())
+    .with_background(bg)
     .with_border(Border::all(1.0).with_border_fill(border))
     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
     .finish();
