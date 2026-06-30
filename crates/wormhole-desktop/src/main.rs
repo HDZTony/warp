@@ -32,6 +32,7 @@ use ui::core_handle::CoreHandle;
 use warpui::platform::{AppBuilder, AppCallbacks};
 use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
+use wormhole_desktop_core::shutdown_desktop;
 
 #[derive(Debug, Parser)]
 #[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
@@ -78,10 +79,13 @@ fn bundled_resource_dir() -> Option<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    let env_filter = if std::env::var("RUST_LOG").is_ok() {
+        EnvFilter::from_default_env()
+    } else {
+        EnvFilter::new("wormhole_desktop=info,noq_proto=warn")
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("wormhole_desktop=info".parse()?),
-        )
+        .with_env_filter(env_filter)
         .init();
 
     let args = Args::parse();
@@ -233,5 +237,9 @@ fn main() -> Result<()> {
             },
         );
     });
+    let runtime = core.runtime();
+    if let Err(err) = core.block_on(shutdown_desktop(&runtime.state, &runtime.ctx)) {
+        tracing::warn!("desktop shutdown: {err:#}");
+    }
     Ok(())
 }

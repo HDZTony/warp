@@ -1,7 +1,7 @@
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Flex, MainAxisSize, ParentElement,
+    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -10,6 +10,8 @@ use crate::ui::icons;
 use crate::ui::panel_primitives::AGENT_THREAD_MAX_WIDTH;
 use crate::ui::theme;
 use crate::ui_text;
+
+const USER_BUBBLE_MAX_WIDTH: f32 = 520.0;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptLine {
@@ -20,11 +22,8 @@ pub struct TranscriptLine {
 
 #[derive(Debug, Clone, Default)]
 pub struct TranscriptViewModel {
-    pub user_prompt: Option<String>,
-    pub status_line: Option<String>,
-    pub assistant_body: Option<String>,
-    pub thinking: bool,
     pub lines: Vec<TranscriptLine>,
+    pub thinking: bool,
 }
 
 pub fn channel_color(channel: &str, level: &str) -> ColorU {
@@ -56,30 +55,34 @@ fn user_icon_badge() -> Box<dyn Element> {
 }
 
 fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
-    let bubble = Container::new(
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(user_icon_badge())
-            .with_child(
-                Container::new(
-                    ui_text::body(text.to_string(), font)
-                        .with_color(theme::text())
-                        .finish(),
+    let bubble = ConstrainedBox::new(
+        Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(user_icon_badge())
+                .with_child(
+                    Container::new(
+                        ui_text::body(text.to_string(), font)
+                            .with_color(theme::text())
+                            .finish(),
+                    )
+                    .with_horizontal_margin(10.0)
+                    .finish(),
                 )
-                .with_horizontal_margin(10.0)
                 .finish(),
-            )
-            .finish(),
+        )
+        .with_padding_left(16.0)
+        .with_padding_right(16.0)
+        .with_padding_top(12.0)
+        .with_padding_bottom(12.0)
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .with_corner_radius(warpui::elements::CornerRadius::with_all(
+            warpui::elements::Radius::Pixels(999.0),
+        ))
+        .finish(),
     )
-    .with_padding_left(16.0)
-    .with_padding_right(16.0)
-    .with_padding_top(12.0)
-    .with_padding_bottom(12.0)
-    .with_background(theme::panel_elevated())
-    .with_border(Border::all(1.0).with_border_fill(theme::border()))
-    .with_corner_radius(warpui::elements::CornerRadius::with_all(
-        warpui::elements::Radius::Pixels(999.0),
-    ))
+    .with_max_width(USER_BUBBLE_MAX_WIDTH)
     .finish();
 
     let copy_btn = Container::new(
@@ -95,99 +98,92 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
     .with_uniform_padding(4.0)
     .finish();
 
-    Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::End)
-        .with_child(bubble)
-        .with_child(
-            Container::new(copy_btn)
-                .with_margin_top(6.0)
-                .finish(),
-        )
+    Align::new(
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::End)
+            .with_child(bubble)
+            .with_child(
+                Container::new(copy_btn)
+                    .with_margin_top(6.0)
+                    .finish(),
+            )
+            .finish(),
+    )
+    .right()
+    .finish()
+}
+
+fn render_status_line(font: FamilyId, text: &str) -> Box<dyn Element> {
+    ui_text::body(text.to_string(), font)
+        .with_color(theme::muted())
         .finish()
 }
 
-fn render_assistant_demo(font: FamilyId, status: &str, body: &str, thinking: bool) -> Box<dyn Element> {
+fn render_assistant_body(font: FamilyId, mono: FamilyId, line: &TranscriptLine) -> Box<dyn Element> {
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_child(
-            ui_text::body(status.to_string(), font)
-                .with_color(theme::muted())
-                .finish(),
-        )
-        .with_child(
-            Container::new(
-                ConstrainedBox::new(Flex::row().finish())
-                    .with_height(1.0)
-                    .finish(),
-            )
-            .with_background(theme::border())
-            .with_margin_top(12.0)
-            .with_margin_bottom(16.0)
-            .finish(),
-        )
-        .with_child(
-            ui_text::body(body.to_string(), font)
-                .with_color(theme::text())
+        .with_main_axis_size(MainAxisSize::Min);
+    if line.level == "error" {
+        col.add_child(
+            ui_text::hud_title("ERROR", font)
+                .with_color(theme::danger())
                 .finish(),
         );
-    if thinking {
+    }
+    let use_mono = matches!(line.channel.as_str(), "stdout" | "stderr" | "assistant");
+    if use_mono {
         col.add_child(
-            Container::new(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        Container::new(
-                            ConstrainedBox::new(Flex::row().finish())
-                                .with_width(6.0)
-                                .with_height(6.0)
-                                .finish(),
-                        )
-                        .with_background(theme::accent_cool())
-                        .with_corner_radius(warpui::elements::CornerRadius::with_all(
-                            warpui::elements::Radius::Pixels(999.0),
-                        ))
-                        .finish(),
-                    )
-                    .with_child(
-                        Container::new(
-                            ui_text::body("思考中", font)
-                                .with_color(theme::muted())
-                                .finish(),
-                        )
-                        .with_horizontal_margin(6.0)
-                        .finish(),
-                    )
-                    .finish(),
-            )
-            .with_margin_top(16.0)
-            .finish(),
+            ui_text::mono(line.text.clone(), mono)
+                .with_color(channel_color(&line.channel, &line.level))
+                .finish(),
+        );
+    } else {
+        col.add_child(
+            ui_text::body(line.text.clone(), font)
+                .with_color(theme::text())
+                .finish(),
         );
     }
     col.finish()
 }
 
+fn render_thinking_indicator(font: FamilyId) -> Box<dyn Element> {
+    Container::new(
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Container::new(
+                    ConstrainedBox::new(Flex::row().finish())
+                        .with_width(6.0)
+                        .with_height(6.0)
+                        .finish(),
+                )
+                .with_background(theme::accent_cool())
+                .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                    warpui::elements::Radius::Pixels(999.0),
+                ))
+                .finish(),
+            )
+            .with_child(
+                Container::new(
+                    ui_text::body("思考中", font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_horizontal_margin(6.0)
+                .finish(),
+            )
+            .finish(),
+    )
+    .with_margin_top(16.0)
+    .finish()
+}
+
 fn render_live_line(line: &TranscriptLine, font: FamilyId, mono: FamilyId) -> Box<dyn Element> {
     match line.channel.as_str() {
         "user" => render_user_message(font, &line.text),
-        "assistant" | "stdout" | "stderr" | "status" => {
-            let mut col = Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Start)
-                .with_main_axis_size(MainAxisSize::Min);
-            if line.level == "error" {
-                col.add_child(
-                    ui_text::hud_title("ERROR", font)
-                        .with_color(theme::danger())
-                        .finish(),
-                );
-            }
-            col.add_child(
-                ui_text::mono(line.text.clone(), mono)
-                    .with_color(channel_color(&line.channel, &line.level))
-                    .finish(),
-            );
-            col.finish()
-        }
+        "status" => render_status_line(font, &line.text),
+        "assistant" | "stdout" | "stderr" => render_assistant_body(font, mono, line),
         _ => Container::new(
             ui_text::mono(
                 format!("[{}] {}", line.channel.to_uppercase(), line.text),
@@ -210,31 +206,15 @@ pub fn render_transcript(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min);
 
-    if let Some(prompt) = &model.user_prompt {
-        column.add_child(
-            Container::new(render_user_message(font, prompt))
-                .with_margin_bottom(28.0)
-                .finish(),
-        );
-        if let Some(status) = &model.status_line {
-            let body = model.assistant_body.as_deref().unwrap_or("");
-            column.add_child(render_assistant_demo(
-                font,
-                status,
-                body,
-                model.thinking,
-            ));
-        }
-    } else if model.lines.is_empty() {
-        column.add_child(
-            ui_text::body("输入后续修改或追问…", font)
-                .with_color(theme::muted())
-                .finish(),
-        );
+    if model.lines.is_empty() && !model.thinking {
+        column.add_child(Flex::row().finish());
     } else {
         for line in &model.lines {
             let bubble = render_live_line(line, font, mono);
             column.add_child(Container::new(bubble).with_vertical_margin(14.0).finish());
+        }
+        if model.thinking {
+            column.add_child(render_thinking_indicator(font));
         }
     }
 
@@ -259,15 +239,25 @@ mod tests {
     }
 
     #[test]
-    fn demo_transcript_has_user_and_status() {
+    fn live_transcript_renders_lines() {
         let model = TranscriptViewModel {
-            user_prompt: Some("hello".into()),
-            status_line: Some("已运行 1 秒".into()),
-            assistant_body: Some("body".into()),
-            thinking: true,
-            lines: Vec::new(),
+            lines: vec![TranscriptLine {
+                channel: "user".into(),
+                text: "hello".into(),
+                level: "info".into(),
+            }],
+            thinking: false,
         };
-        assert!(model.user_prompt.is_some());
+        assert_eq!(model.lines.len(), 1);
+        assert!(!model.thinking);
+    }
+
+    #[test]
+    fn thinking_flag_set_when_busy() {
+        let model = TranscriptViewModel {
+            lines: Vec::new(),
+            thinking: true,
+        };
         assert!(model.thinking);
     }
 

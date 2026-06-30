@@ -1,5 +1,8 @@
 //! Agent panel sidebar — Projects + Chats (`desktop-current.html`).
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use pathfinder_color::ColorU;
 use warpui::elements::Fill;
 use warpui::elements::{
@@ -20,6 +23,7 @@ use crate::ui::theme;
 use crate::ui_text;
 
 pub const SIDEBAR_WIDTH: f32 = 260.0;
+const ARCHIVE_FILE: &str = "agent-archived.json";
 
 #[derive(Debug, Clone)]
 pub struct AgentProject {
@@ -36,129 +40,26 @@ pub struct AgentSession {
     pub time: String,
     pub running: bool,
     pub prompt: String,
-    pub model: String,
-    pub body: String,
 }
 
-pub fn seed_projects() -> Vec<AgentProject> {
-    vec![
-        AgentProject {
-            id: "wormhole".into(),
-            label: "Wormhole 集群".into(),
-            time: "8m".into(),
-        },
-        AgentProject {
-            id: "codex-compare".into(),
-            label: "比较 Codex Project 和 Chat".into(),
-            time: "2d".into(),
-        },
-    ]
+pub fn load_archived_ids(data_dir: &Path) -> HashSet<String> {
+    let path = data_dir.join(ARCHIVE_FILE);
+    let raw = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return HashSet::new(),
+    };
+    serde_json::from_str::<Vec<String>>(&raw)
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_default()
 }
 
-pub fn seed_sessions() -> Vec<AgentSession> {
-    vec![
-        AgentSession {
-            id: "sync-share".into(),
-            label: "同步终端共享文件夹".into(),
-            project_id: "wormhole".into(),
-            time: "8m".into(),
-            running: true,
-            model: "GPT-5.5".into(),
-            prompt: "扫描三台终端的共享文件夹，把未同步的 Specs 文档全部拉取到本机。".into(),
-            body: "正在检查集群内三台终端的共享目录，并比对本地副本状态：\n\n\
-                   • Windows 11 — Documents/Specs 下 2 个文件待同步\n\
-                   • iOS 18 — Wormhole/ 已是最新，跳过\n\
-                   • iPadOS 18 — Shared from PC/ 发现 1 个新文件\n\n\
-                   接下来会依次写入本地保险库，并在终端 Tab 更新同步状态。"
-                .into(),
-        },
-        AgentSession {
-            id: "ipad-display".into(),
-            label: "配置 iPad 虚拟显示器".into(),
-            project_id: "wormhole".into(),
-            time: "32m".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "检查 iPad 接收端分辨率与 USB 配对状态，并给出推流参数建议。".into(),
-            body: "已读取 iPadOS 18 终端连接信息：\n\n\
-                   • USB 未直连，当前通过集群中继\n\
-                   • 推荐推流 2560×1600 · HEVC · 60fps\n\
-                   • 触控工具栏与全屏模式已就绪\n\n\
-                   可在终端 Tab 双击 iPad 查看 Display Cache 目录。"
-                .into(),
-        },
-        AgentSession {
-            id: "cluster-health".into(),
-            label: "集群节点健康检查".into(),
-            project_id: "wormhole".into(),
-            time: "1h".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "检查三台终端的在线状态、延迟与最后同步时间。".into(),
-            body: "集群成员 3 / 在线 3：\n\n\
-                   • 01KT339ZT7NH24ZVCCF5TRP68K — 本机 · 延迟 12ms\n\
-                   • 01KX8HM2P4NQ7W9R3F6YJ5T1D — USB 已配对 · 延迟 18ms\n\
-                   • 01KQ2M8V4N6P3R9S7T1W5Y0Z — 在线 · 延迟 24ms\n\n\
-                   无节点离线，Iroh 同步通道正常。"
-                .into(),
-        },
-        AgentSession {
-            id: "vault-cache".into(),
-            label: "清理保险库缓存".into(),
-            project_id: "wormhole".into(),
-            time: "1d".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "列出本地保险库中超过 30 天未访问的缓存文件，并生成可删除清单。".into(),
-            body: "扫描完成。发现 12 个缓存条目，合计约 840 MB：\n\n\
-                   • Display Cache — 6 项\n\
-                   • HEVC 转码临时文件 — 4 项\n\
-                   • DocTicket 预览缓存 — 2 项\n\n\
-                   删除前会保留共享文件夹中的活跃副本。"
-                .into(),
-        },
-        AgentSession {
-            id: "docticket".into(),
-            label: "DocTicket 导出说明".into(),
-            project_id: "wormhole".into(),
-            time: "1d".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "生成一份 DocTicket 分享给同事的步骤说明，包含权限与过期时间。".into(),
-            body: "DocTicket 通过 Iroh 保险库生成只读票据：\n\n\
-                   1. 在共享文件夹选中文件 → 复制 DocTicket\n\
-                   2. 票据默认 7 天有效，可限制只读\n\
-                   3. 对方粘贴票据即可拉取，无需账户\n\n\
-                   已写入 readme 草稿，可导出为 Markdown。"
-                .into(),
-        },
-        AgentSession {
-            id: "file-expenses".into(),
-            label: "File expenses".into(),
-            project_id: "codex-compare".into(),
-            time: "14m".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "整理项目目录下的 expense 相关文件，并生成摘要。".into(),
-            body: "已在比较 Codex Project 和 Chat 项目中扫描 expense 文件：\n\n\
-                   • receipts/ — 3 张图片\n\
-                   • expenses.csv — 12 行记录\n\n\
-                   可导出为 Markdown 摘要或复制到剪贴板。"
-                .into(),
-        },
-        AgentSession {
-            id: "hevc-tool".into(),
-            label: "HEVC 转码任务".into(),
-            project_id: "wormhole".into(),
-            time: "5d".into(),
-            running: false,
-            model: "GPT-5.5".into(),
-            prompt: "把 Projects/demo.hevc 转成可在 iPad 预览的片段。".into(),
-            body: "转码任务已排队。输入 1920×1080 · 8 Mbps，预计 2 分钟完成。\n\n\
-                   输出路径：Projects/exports/demo-preview.mp4"
-                .into(),
-        },
-    ]
+pub fn save_archived_ids(data_dir: &Path, ids: &HashSet<String>) {
+    let path = data_dir.join(ARCHIVE_FILE);
+    let mut list: Vec<&String> = ids.iter().collect();
+    list.sort();
+    if let Ok(raw) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(path, raw);
+    }
 }
 
 fn session_matches_query(session: &AgentSession, query: &str) -> bool {
@@ -225,10 +126,11 @@ fn row_item(
     time: String,
     active: bool,
     show_spinner: bool,
+    archived: bool,
     action: AgentPanelAction,
 ) -> Box<dyn Element> {
-    let fg = if active {
-        theme::text()
+    let fg = if archived {
+        theme::muted()
     } else {
         theme::text()
     };
@@ -283,6 +185,45 @@ fn row_item(
     .finish()
 }
 
+fn archive_toggle(font: FamilyId, count: usize, expanded: bool) -> Box<dyn Element> {
+    let chevron = if expanded { "▼" } else { "▶" };
+    let label = format!("{chevron} 已归档");
+    Container::new(
+        EventHandler::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    ui_text::body(label, font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_child(
+                    Container::new(
+                        ui_text::mono(count.to_string(), font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_uniform_padding(4.0)
+                    .with_background(theme::accent_cool_bg(24))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+                    .with_horizontal_margin(8.0)
+                    .finish(),
+                )
+                .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::ToggleArchiveSection);
+            DispatchEventResult::StopPropagation
+        })
+        .finish(),
+    )
+    .with_padding_left(10.0)
+    .with_padding_right(10.0)
+    .with_padding_top(8.0)
+    .with_padding_bottom(4.0)
+    .finish()
+}
+
 pub fn render_sidebar(
     font: FamilyId,
     scroll: ClippedScrollStateHandle,
@@ -292,6 +233,8 @@ pub fn render_sidebar(
     active_session_id: &str,
     search: &str,
     search_focused: bool,
+    archived_ids: &HashSet<String>,
+    archive_expanded: bool,
 ) -> Box<dyn Element> {
     let mut scroll_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
@@ -302,20 +245,30 @@ pub fn render_sidebar(
             .finish(),
     );
 
-    for project in projects {
-        let active = project.id == active_project_id;
+    if projects.is_empty() {
         scroll_col.add_child(
-            Container::new(row_item(
-                font,
-                project.label.clone(),
-                project.time.clone(),
-                active,
-                false,
-                AgentPanelAction::SelectProject(project.id.clone()),
-            ))
-            .with_horizontal_padding(2.0)
-            .finish(),
+            Container::new(section_hint("暂无项目，点击 + 新建", font))
+                .with_horizontal_padding(10.0)
+                .with_padding_bottom(4.0)
+                .finish(),
         );
+    } else {
+        for project in projects {
+            let active = project.id == active_project_id;
+            scroll_col.add_child(
+                Container::new(row_item(
+                    font,
+                    project.label.clone(),
+                    project.time.clone(),
+                    active,
+                    false,
+                    false,
+                    AgentPanelAction::SelectProject(project.id.clone()),
+                ))
+                .with_horizontal_padding(2.0)
+                .finish(),
+            );
+        }
     }
 
     scroll_col.add_child(
@@ -380,12 +333,27 @@ pub fn render_sidebar(
         .finish(),
     );
 
-    let filtered: Vec<_> = sessions
-        .iter()
-        .filter(|s| s.project_id == active_project_id && session_matches_query(s, search))
-        .collect();
+    let project_selected = !active_project_id.is_empty();
+    let active_sessions: Vec<_> = if project_selected {
+        sessions
+            .iter()
+            .filter(|s| {
+                s.project_id == active_project_id
+                    && !archived_ids.contains(&s.id)
+                    && session_matches_query(s, search)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-    if filtered.is_empty() {
+    if !project_selected {
+        scroll_col.add_child(
+            Container::new(section_hint("请先新建或选择项目", font))
+                .with_horizontal_padding(10.0)
+                .finish(),
+        );
+    } else if active_sessions.is_empty() {
         let empty = if search.trim().is_empty() {
             "此项目暂无会话"
         } else {
@@ -397,7 +365,7 @@ pub fn render_sidebar(
                 .finish(),
         );
     } else {
-        for session in filtered {
+        for session in active_sessions {
             let active = session.id == active_session_id;
             let show_spinner = session.running && active;
             scroll_col.add_child(
@@ -407,11 +375,51 @@ pub fn render_sidebar(
                     session.time.clone(),
                     active,
                     show_spinner,
+                    false,
                     AgentPanelAction::SelectSession(session.id.clone()),
                 ))
                 .with_horizontal_padding(2.0)
                 .finish(),
             );
+        }
+    }
+
+    let archived_sessions: Vec<_> = if project_selected {
+        sessions
+            .iter()
+            .filter(|s| s.project_id == active_project_id && archived_ids.contains(&s.id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    scroll_col.add_child(archive_toggle(font, archived_sessions.len(), archive_expanded));
+    if archive_expanded {
+        if archived_sessions.is_empty() {
+            scroll_col.add_child(
+                Container::new(section_hint("暂无归档会话", font))
+                    .with_horizontal_padding(10.0)
+                    .with_padding_top(4.0)
+                    .finish(),
+            );
+        } else {
+            for session in archived_sessions {
+                let active = session.id == active_session_id;
+                scroll_col.add_child(
+                    Container::new(row_item(
+                        font,
+                        session.label.clone(),
+                        session.time.clone(),
+                        active,
+                        false,
+                        true,
+                        AgentPanelAction::SelectSession(session.id.clone()),
+                    ))
+                    .with_horizontal_padding(2.0)
+                    .with_padding_top(2.0)
+                    .finish(),
+                );
+            }
         }
     }
 
@@ -446,4 +454,34 @@ pub fn render_sidebar(
     .with_background(agent_sidebar_bg())
     .with_border(Border::right(1.0).with_border_fill(theme::border()))
     .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_archived_ids, save_archived_ids, AgentSession};
+
+    #[test]
+    fn archived_ids_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wormhole-agent-archive-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut ids = std::collections::HashSet::new();
+        ids.insert("session-a".into());
+        save_archived_ids(&dir, &ids);
+        let loaded = load_archived_ids(&dir);
+        assert!(loaded.contains("session-a"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_session_has_no_body_field() {
+        let session = AgentSession {
+            id: "id".into(),
+            label: "label".into(),
+            project_id: "p".into(),
+            time: "now".into(),
+            running: false,
+            prompt: String::new(),
+        };
+        assert_eq!(session.label, "label");
+    }
 }

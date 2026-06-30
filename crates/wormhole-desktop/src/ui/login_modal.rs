@@ -319,6 +319,13 @@ impl LoginModalView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
             .finish(),
         )
+        .with_always_handle()
+        .on_keydown(|_, _, keystroke| {
+            if Self::consumes_shell_navigation(keystroke) {
+                return DispatchEventResult::StopPropagation;
+            }
+            DispatchEventResult::PropagateToParent
+        })
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish();
 
@@ -387,24 +394,19 @@ impl View for LoginModalView {
         if !self.open {
             return Flex::column().finish();
         }
-        let overlay = Container::new(
-            EventHandler::new(self.dialog())
-                .with_always_handle()
-                .on_keydown(|ctx, _, keystroke| {
-                    if Self::consumes_shell_navigation(keystroke) {
-                        return DispatchEventResult::StopPropagation;
-                    }
-                    DispatchEventResult::PropagateToParent
-                })
+        let scrim = Container::new(self.dialog())
+            .with_background(ColorU::new(8, 7, 11, 180))
+            .finish();
+        Expanded::new(
+            1.0,
+            EventHandler::new(scrim)
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(LoginModalAction::Close);
                     DispatchEventResult::StopPropagation
                 })
                 .finish(),
         )
-        .with_background(ColorU::new(8, 7, 11, 180))
-        .finish();
-        Expanded::new(1.0, overlay).finish()
+        .finish()
     }
 }
 
