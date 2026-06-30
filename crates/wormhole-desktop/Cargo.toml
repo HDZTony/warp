@@ -61,6 +61,7 @@ computer-use = { path = "../../../../crates/computer-use" }
 
 [target.'cfg(windows)'.dependencies]
 wormhole-desktop-platform-windows = { path = "../../../../crates/wormhole-desktop-platform-windows" }
+windows-version = "0.1"
 windows-sys = { version = "0.61", features = [
   "Win32_System_DataExchange",
   "Win32_System_Memory",

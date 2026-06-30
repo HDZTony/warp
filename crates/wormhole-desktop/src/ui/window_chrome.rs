@@ -191,8 +191,12 @@ pub struct WindowsSymbolFontState {
 #[cfg(windows)]
 impl WindowsSymbolFontState {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        let icon_font_family = Self::load_symbol_font("Segoe Fluent Icons", ctx)
-            .or_else(|| Self::load_symbol_font("Segoe MDL2 Assets", ctx));
+        let icon_font_family = if windows_version::OsVersion::current().build >= 22000 {
+            Self::load_symbol_font("Segoe Fluent Icons", ctx)
+                .or_else(|| Self::load_symbol_font("Segoe MDL2 Assets", ctx))
+        } else {
+            Self::load_symbol_font("Segoe MDL2 Assets", ctx)
+        };
         Self { icon_font_family }
     }
 

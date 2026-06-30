@@ -3,10 +3,10 @@ use pathfinder_geometry::vector::vec2f;
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
-    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Expanded, Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor,
-    ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
+    Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
+    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
+    Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -113,6 +113,7 @@ pub struct AppShellView {
     toolbox: ViewHandle<ToolboxView>,
     settings: ViewHandle<SettingsView>,
     login_modal: ViewHandle<LoginModalView>,
+    login_modal_open: bool,
     auth_authenticated: bool,
     auth_user_id: Option<String>,
     login_modal_open: bool,
@@ -162,6 +163,7 @@ impl AppShellView {
                 } => {
                     view.auth_authenticated = *authenticated;
                     view.auth_user_id = user_id.clone();
+                    view.login_modal_open = false;
                     let settings_handle = view.settings.clone();
                     ctx.update_view(&settings_handle, |settings, ctx| {
                         settings.refresh_account(ctx);
@@ -219,6 +221,7 @@ impl AppShellView {
             toolbox,
             settings,
             login_modal,
+            login_modal_open: false,
             auth_authenticated: false,
             auth_user_id: None,
             login_modal_open: false,
@@ -638,21 +641,30 @@ impl AppShellView {
             ColorU::transparent_black()
         };
 
-        let mut inner = Container::new(
-            Align::new(icons::tab_button_content(
-                tab, expand, text_color, label, self.mono,
-            ))
-            .finish(),
+        let content_height = icons::TAB_ICON_SIZE;
+        let bottom_border = 2.0;
+        let vertical_pad =
+            ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
+
+        let mut container = Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(icons::tab_button_content(
+                    tab, expand, text_color, label, self.mono,
+                ))
+                .finish(),
         )
+        .with_vertical_padding(vertical_pad)
         .with_horizontal_padding(if expand { 16.0 } else { 12.0 })
         .with_background(bg)
         .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
         .with_border(Border::right(1.0).with_border_fill(theme::border()));
         if keyboard_focused {
-            inner = inner.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+            container =
+                container.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
         }
-        let btn = ConstrainedBox::new(inner.finish()).with_height(CHROME_ROW_HEIGHT);
-        EventHandler::new(btn.finish())
+        EventHandler::new(container.finish())
             .on_mouse_in(
                 move |ctx, _, _| {
                     ctx.dispatch_typed_action(AppShellAction::SetTabHover(Some(tab)));
@@ -676,20 +688,20 @@ impl AppShellView {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         for tab in Self::visible_tabs() {
-            row.add_child(
-                ConstrainedBox::new(self.tab_button(tab))
-                    .with_height(CHROME_ROW_HEIGHT)
-                    .finish(),
-            );
+            row.add_child(self.tab_button(tab));
         }
-        let scrollable_tabs = ClippedScrollable::horizontal(
-            self.tab_scroll.clone(),
-            row.finish(),
-            ScrollbarWidth::None,
-            Fill::None,
-            Fill::None,
-            Fill::None,
+        let scrollable_tabs = ConstrainedBox::new(
+            ClippedScrollable::horizontal(
+                self.tab_scroll.clone(),
+                row.finish(),
+                ScrollbarWidth::None,
+                Fill::None,
+                Fill::None,
+                Fill::None,
+            )
+            .finish(),
         )
+        .with_height(CHROME_ROW_HEIGHT)
         .finish();
 
         let zoom_factor = 1.0;
@@ -722,11 +734,14 @@ impl AppShellView {
             }
         }
 
-        Container::new(tab_row.finish())
-        .with_background(theme::panel_elevated())
-        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-        .with_vertical_padding(0.0)
-        .with_horizontal_padding(4.0)
+        ConstrainedBox::new(
+            Container::new(tab_row.finish())
+                .with_background(theme::panel_elevated())
+                .with_border(Border::bottom(1.0).with_border_fill(theme::border_bright()))
+                .with_horizontal_padding(4.0)
+                .finish(),
+        )
+        .with_height(CHROME_ROW_HEIGHT)
         .finish()
     }
 
@@ -843,6 +858,9 @@ impl View for AppShellView {
         let shell = EventHandler::new(shell)
             .with_always_handle()
             .on_keydown(move |ctx, _, keystroke| {
+                if login_modal_open {
+                    return DispatchEventResult::PropagateToParent;
+                }
                 if let Some(tab) = Self::tab_from_keystroke(keystroke) {
                     ctx.dispatch_typed_action(AppShellAction::SelectTab(
                         tab,
@@ -956,10 +974,12 @@ impl TypedActionView for AppShellView {
                 ctx.close_window();
             }
             AppShellAction::OpenLogin => {
+                self.login_modal_open = true;
                 let login = self.login_modal.clone();
                 ctx.update_view(&login, |modal, ctx| {
                     modal.open(ctx);
                 });
+                ctx.notify();
             }
         }
     }

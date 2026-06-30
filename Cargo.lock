@@ -20165,6 +20165,7 @@ dependencies = [
  "warpui",
  "warpui_core",
  "windows-sys 0.61.2",
+ "windows-version",
  "winres",
  "wormhole-desktop-core",
  "wormhole-desktop-platform-windows",

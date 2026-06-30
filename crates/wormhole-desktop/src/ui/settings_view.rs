@@ -400,7 +400,7 @@ impl TypedActionView for SettingsView {
                                 });
                             }
                             Err(err) => {
-                                view.auth_status = format!("登录失败: {err}");
+                                view.auth_status = err;
                                 view.auth_status_tone = StatusTone::Danger;
                             }
                         }

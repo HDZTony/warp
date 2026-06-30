@@ -4,13 +4,14 @@ use warpui::elements::{
     EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
+use warpui::keymap::Keystroke;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{status_line, StatusTone};
 use crate::ui::text_field_input::{
-    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
-    TextFieldInput, TextFieldState,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -108,6 +109,44 @@ impl LoginModalView {
         sync_caret_blink(self, ctx);
     }
 
+    fn consumes_shell_navigation(keystroke: &Keystroke) -> bool {
+        if keystroke.alt || keystroke.meta {
+            return false;
+        }
+        if keystroke.ctrl {
+            return matches!(keystroke.key.as_str(), "1" | "2" | "3" | "4" | "5");
+        }
+        matches!(
+            keystroke.key.as_str(),
+            "left" | "right" | "home" | "end"
+        )
+    }
+
+    fn field_keydown(
+        ctx: &mut warpui::elements::EventContext,
+        keystroke: &Keystroke,
+        tab_action: LoginModalAction,
+    ) -> DispatchEventResult {
+        if Self::consumes_shell_navigation(keystroke) {
+            return DispatchEventResult::StopPropagation;
+        }
+        match keystroke.key.as_str() {
+            "tab" => {
+                ctx.dispatch_typed_action(tab_action);
+                DispatchEventResult::StopPropagation
+            }
+            "escape" => {
+                ctx.dispatch_typed_action(LoginModalAction::Close);
+                DispatchEventResult::StopPropagation
+            }
+            "enter" | "return" => {
+                ctx.dispatch_typed_action(LoginModalAction::Submit);
+                DispatchEventResult::StopPropagation
+            }
+            _ => DispatchEventResult::PropagateToParent,
+        }
+    }
+
     fn field_block(
         &self,
         label: &str,
@@ -116,6 +155,7 @@ impl LoginModalView {
         placeholder: &str,
         focused: bool,
         on_edit: LoginModalAction,
+        click_focus: LoginModalAction,
         tab_focus: LoginModalAction,
     ) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -135,28 +175,26 @@ impl LoginModalView {
         );
         let edit_action = on_edit.clone();
         let tab_action = tab_focus.clone();
+        let click_action = click_focus.clone();
         col.add_child(
             Container::new(
-                TextFieldInput::builder(field, move |ctx, action| {
-                    ctx.dispatch_typed_action(match &edit_action {
-                        LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
-                        LoginModalAction::PasswordEdit(_) => LoginModalAction::PasswordEdit(action),
-                        _ => LoginModalAction::EmailEdit(action),
-                    });
-                })
-                .focused(focused)
-                .on_keydown(move |ctx, keystroke| {
-                    if keystroke.key == "tab" {
-                        ctx.dispatch_typed_action(tab_action.clone());
-                        return DispatchEventResult::StopPropagation;
-                    }
-                    if keystroke.key == "escape" {
-                        ctx.dispatch_typed_action(LoginModalAction::Close);
-                        return DispatchEventResult::StopPropagation;
-                    }
-                    DispatchEventResult::PropagateToParent
-                })
-                .finish(),
+                wrap_text_field_focus_on_click(
+                    TextFieldInput::builder(field, move |ctx, action| {
+                        ctx.dispatch_typed_action(match &edit_action {
+                            LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
+                            LoginModalAction::PasswordEdit(_) => {
+                                LoginModalAction::PasswordEdit(action)
+                            }
+                            _ => LoginModalAction::EmailEdit(action),
+                        });
+                    })
+                    .focused(focused)
+                    .on_keydown(move |ctx, keystroke| {
+                        Self::field_keydown(ctx, keystroke, tab_action.clone())
+                    })
+                    .finish(),
+                    move |ctx| ctx.dispatch_typed_action(click_action.clone()),
+                ),
             )
             .with_uniform_padding(10.0)
             .with_vertical_margin(6.0)
@@ -229,6 +267,7 @@ impl LoginModalView {
             "name@example.com",
             self.email_focused,
             LoginModalAction::EmailEdit(TextFieldEditAction::TypedCharacters(String::new())),
+            LoginModalAction::FocusEmail,
             LoginModalAction::FocusPassword,
         ));
         col.add_child(self.field_block(
@@ -238,6 +277,7 @@ impl LoginModalView {
             "••••••••",
             self.password_focused,
             LoginModalAction::PasswordEdit(TextFieldEditAction::TypedCharacters(String::new())),
+            LoginModalAction::FocusPassword,
             LoginModalAction::FocusEmail,
         ));
 
@@ -282,6 +322,13 @@ impl LoginModalView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
             .finish(),
         )
+        .with_always_handle()
+        .on_keydown(|_, _, keystroke| {
+            if Self::consumes_shell_navigation(keystroke) {
+                return DispatchEventResult::StopPropagation;
+            }
+            DispatchEventResult::PropagateToParent
+        })
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish();
 
@@ -334,7 +381,7 @@ impl LoginModalView {
                         });
                     }
                     Err(err) => {
-                        view.status = format!("登录失败: {err}");
+                        view.status = err;
                         view.status_tone = StatusTone::Danger;
                     }
                 }
@@ -357,17 +404,19 @@ impl View for LoginModalView {
         if !self.open {
             return Flex::column().finish();
         }
-        let overlay = Container::new(
-            EventHandler::new(self.dialog())
+        let scrim = Container::new(self.dialog())
+            .with_background(ColorU::new(8, 7, 11, 180))
+            .finish();
+        Expanded::new(
+            1.0,
+            EventHandler::new(scrim)
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(LoginModalAction::Close);
                     DispatchEventResult::StopPropagation
                 })
                 .finish(),
         )
-        .with_background(ColorU::new(8, 7, 11, 180))
-        .finish();
-        Expanded::new(1.0, overlay).finish()
+        .finish()
     }
 }
 

@@ -13,8 +13,8 @@ use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::online_dot;
 use crate::ui::text_field_input::{
-    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
-    TextFieldInput, TextFieldState,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -30,6 +30,7 @@ pub enum ChatSidebarAction {
     Select(String),
     SearchEdit(TextFieldEditAction),
     FocusSearch,
+    ActivateSearch,
 }
 
 #[derive(Debug, Clone)]
@@ -304,7 +305,7 @@ impl ChatSidebarView {
             false,
             self.caret_blink.visible,
         );
-        TextFieldInput::builder(field, |ctx, action| {
+        let input = TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatSidebarAction::SearchEdit(action));
         })
         .focused(search_focused)
@@ -315,7 +316,10 @@ impl ChatSidebarView {
             }
             DispatchEventResult::PropagateToParent
         })
-        .finish()
+        .finish();
+        wrap_text_field_focus_on_click(input, |ctx| {
+            ctx.dispatch_typed_action(ChatSidebarAction::ActivateSearch);
+        })
     }
 }
 
@@ -364,14 +368,7 @@ impl View for ChatSidebarView {
         Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(
-                Container::new(
-                    EventHandler::new(self.search_box())
-                        .on_left_mouse_down(|ctx, _, _| {
-                            ctx.dispatch_typed_action(ChatSidebarAction::FocusSearch);
-                            DispatchEventResult::StopPropagation
-                        })
-                        .finish(),
-                )
+                Container::new(self.search_box())
                 .with_horizontal_padding(12.0)
                 .with_vertical_padding(10.0)
                 .with_background(theme::panel())
@@ -417,6 +414,13 @@ impl TypedActionView for ChatSidebarView {
                 self.search_focused = !self.search_focused;
                 sync_caret_blink(self, ctx);
                 ctx.notify();
+            }
+            ChatSidebarAction::ActivateSearch => {
+                if !self.search_focused {
+                    self.search_focused = true;
+                    sync_caret_blink(self, ctx);
+                    ctx.notify();
+                }
             }
             ChatSidebarAction::SearchEdit(edit) => {
                 self.search_field.apply(&mut self.search, edit);

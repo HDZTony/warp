@@ -18,8 +18,8 @@ pub const AGENT_ROW_RADIUS: f32 = 10.0;
 pub const AGENT_ICON_BTN_RADIUS: f32 = 7.0;
 /// `.agent-composer` max content width.
 pub const AGENT_THREAD_MAX_WIDTH: f32 = 720.0;
-/// `.agent-thread` bottom padding (composer overlay clearance).
-pub const AGENT_THREAD_BOTTOM_PAD: f32 = 120.0;
+/// `.agent-thread` bottom padding (composer is a flex sibling, not overlay).
+pub const AGENT_THREAD_BOTTOM_PAD: f32 = 24.0;
 
 pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
