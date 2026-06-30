@@ -25,7 +25,7 @@ use crate::ui::devices_view::DevicesView;
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
-use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
+use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
 use crate::ui::settings_view::SettingsView;
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
@@ -33,7 +33,10 @@ use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
 use crate::ui::window_chrome::{self, CHROME_ROW_HEIGHT, TrafficLightActions, TrafficLightMouseStates};
 use crate::ui_text;
-use wormhole_desktop_core::cluster_commands::cluster_status;
+use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
+use wormhole_desktop_core::cloud_auth_status;
+use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_fast};
+use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +92,7 @@ pub enum AppShellAction {
     MinimizeWindow,
     ToggleMaximizeWindow,
     CloseWindow,
+    OpenLogin,
 }
 
 pub struct AppShellView {
@@ -108,6 +112,9 @@ pub struct AppShellView {
     warp: ViewHandle<AgentPanelView>,
     toolbox: ViewHandle<ToolboxView>,
     settings: ViewHandle<SettingsView>,
+    login_modal: ViewHandle<LoginModalView>,
+    auth_authenticated: bool,
+    auth_user_id: Option<String>,
     font: FamilyId,
     mono: FamilyId,
     hud_nodes: usize,
@@ -144,6 +151,20 @@ impl AppShellView {
             ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
         let settings =
             ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
+        let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
+        ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
+            let LoginModalEvent::AuthChanged {
+                authenticated,
+                user_id,
+            } = event;
+            view.auth_authenticated = *authenticated;
+            view.auth_user_id = user_id.clone();
+            let settings_handle = view.settings.clone();
+            ctx.update_view(&settings_handle, |settings, ctx| {
+                settings.refresh_account(ctx);
+            });
+            ctx.notify();
+        });
         let prefs = desktop_prefs::load(&core.data_dir());
         let mut tab = prefs
             .last_tab
@@ -178,6 +199,9 @@ impl AppShellView {
             warp,
             toolbox,
             settings,
+            login_modal,
+            auth_authenticated: false,
+            auth_user_id: None,
             font,
             mono,
             hud_nodes: 1,
@@ -190,6 +214,7 @@ impl AppShellView {
         };
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
+        view.refresh_auth_status(ctx);
         view.start_deeplink_listener(ctx);
         #[cfg(windows)]
         view.start_tray_poll(ctx);
@@ -207,6 +232,21 @@ impl AppShellView {
 
     fn start_hud_poll(&self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
+        let core_for_gossip = self.core.clone();
+        ctx.spawn(
+            async move {
+                if wormhole_desktop_core::device_identity::is_device_ready(
+                    core_for_gossip.app_state(),
+                )
+                .await
+                    && !ClusterGossipCoordinator::global().is_gossip_ready()
+                {
+                    ClusterGossipCoordinator::global()
+                        .ensure_background(core_for_gossip.runtime().state.clone());
+                }
+            },
+            |_, _, _| {},
+        );
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -228,11 +268,12 @@ impl AppShellView {
             async move {
                 let _ = waiter.recv().await;
                 let state = core_for_task.runtime().state.clone();
-                cluster_status(&state).await
+                cluster_status_fast(&state).await
             },
-            move |view, output, ctx| {
+            move             |view, output, ctx| {
                 if let Ok(status) = output {
                     view.hud_nodes = status.nodes.len().max(1);
+                    view.auth_authenticated = !status.auth_required;
                     ctx.notify();
                 }
                 Self::poll_hud_once(ctx, tick_rx, core);
@@ -434,6 +475,65 @@ impl AppShellView {
         });
     }
 
+    fn refresh_auth_status(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                cloud_auth_status(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.auth_authenticated = status.authenticated;
+                    view.auth_user_id = status.user_id;
+                    ctx.notify();
+                }
+            },
+        );
+    }
+
+    fn hud_login_entry(&self) -> Box<dyn Element> {
+        if self.auth_authenticated {
+            let label = self
+                .auth_user_id
+                .as_deref()
+                .map(|id| {
+                    if id.len() > 10 {
+                        format!("{}…", &id[..8])
+                    } else {
+                        id.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "ACCOUNT".to_string());
+            return Container::new(
+                ui_text::hud_title(label, self.mono)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .with_horizontal_margin(8.0)
+            .finish();
+        }
+
+        Container::new(
+            EventHandler::new(
+                ui_text::hud_title("登录", self.mono)
+                    .with_color(theme::accent())
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(AppShellAction::OpenLogin);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_uniform_padding(6.0)
+        .with_horizontal_margin(4.0)
+        .with_background(theme::accent_bg(20))
+        .with_border(Border::all(1.0).with_border_fill(theme::accent()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+        .finish()
+    }
+
     fn hud_status_bar(&self) -> Box<dyn Element> {
         let nodes = format!("{}", self.hud_nodes);
         let metrics = Flex::row()
@@ -448,6 +548,7 @@ impl AppShellView {
                     .with_horizontal_margin(16.0)
                     .finish(),
             )
+            .with_child(self.hud_login_entry())
             .with_child(
                 Flex::row()
                     .with_child(
@@ -711,6 +812,7 @@ impl View for AppShellView {
 
         let mut stack = Stack::new();
         stack.add_child(shell);
+        stack.add_child(ChildView::new(&self.login_modal).finish());
 
         if window_chrome::traffic_light_data(app, self.window_id)
             .is_some_and(|data| data.side == window_chrome::TrafficLightSide::Right)
@@ -800,6 +902,12 @@ impl TypedActionView for AppShellView {
                 #[cfg(not(windows))]
                 ctx.close_window();
             }
+            AppShellAction::OpenLogin => {
+                let login = self.login_modal.clone();
+                ctx.update_view(&login, |modal, ctx| {
+                    modal.open(ctx);
+                });
+            }
         }
     }
 
@@ -825,6 +933,9 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::CloseWindow => {
                 AccessibilityContent::new_without_help("隐藏到系统托盘", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::OpenLogin => {
+                AccessibilityContent::new_without_help("打开登录", WarpA11yRole::ButtonRole)
             }
         };
         ActionAccessibilityContent::Custom(content)

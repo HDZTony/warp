@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::runtime::Runtime;
 use wormhole_desktop_core::DesktopRuntime;
+use wormhole_desktop_core::desktop_runtime_spawn;
 
 #[derive(Clone)]
 pub struct CoreHandle {
@@ -12,9 +13,11 @@ pub struct CoreHandle {
 
 impl CoreHandle {
     pub fn new(runtime: DesktopRuntime, tokio: Runtime) -> Self {
+        let tokio = Arc::new(tokio);
+        desktop_runtime_spawn::register_desktop_runtime(Arc::clone(&tokio));
         Self {
             runtime: Arc::new(runtime),
-            tokio: Arc::new(tokio),
+            tokio,
         }
     }
 

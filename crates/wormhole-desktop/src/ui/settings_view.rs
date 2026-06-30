@@ -13,12 +13,19 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::{
+    clear_cloud_auth_token, cloud_auth_status, supabase_password_login, SupabasePasswordLoginParams,
+};
+use wormhole_desktop_core::device_identity::device_bootstrap;
 use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
 
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
     SavePath(String),
     Refresh,
+    Login,
+    Logout,
+    RefreshAccount,
 }
 
 pub struct SettingsView {
@@ -29,6 +36,12 @@ pub struct SettingsView {
     status: String,
     status_tone: StatusTone,
     busy: bool,
+    auth_email: String,
+    auth_password: String,
+    auth_user_id: Option<String>,
+    auth_status: String,
+    auth_status_tone: StatusTone,
+    auth_busy: bool,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
 
@@ -50,10 +63,49 @@ impl SettingsView {
             status: String::new(),
             status_tone: StatusTone::Placeholder,
             busy: false,
+            auth_email: String::new(),
+            auth_password: String::new(),
+            auth_user_id: None,
+            auth_status: String::new(),
+            auth_status_tone: StatusTone::Placeholder,
+            auth_busy: false,
             agent_providers,
         };
         view.refresh(ctx);
+        view.refresh_account(ctx);
         view
+    }
+
+    pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
+        self.auth_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                cloud_auth_status(&state).await
+            },
+            |view, output, ctx| {
+                view.auth_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.auth_user_id = status.user_id;
+                        if status.authenticated {
+                            view.auth_status = "已登录".into();
+                            view.auth_status_tone = StatusTone::Success;
+                        } else {
+                            view.auth_status = "未登录 — P2P / 集群 / 聊天需先登录。".into();
+                            view.auth_status_tone = StatusTone::Placeholder;
+                        }
+                    }
+                    Err(err) => {
+                        view.auth_status = format!("读取登录状态失败: {err}");
+                        view.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     pub fn agent_providers_view(&self) -> &warpui::ViewHandle<AgentProvidersView> {
@@ -189,6 +241,70 @@ impl SettingsView {
         }
         section_card(col.finish())
     }
+
+    fn account_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("ACCOUNT · 账号", self.font));
+        col.add_child(section_hint(
+            "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一 iroh 节点。",
+            self.font,
+        ));
+        if let Some(user_id) = &self.auth_user_id {
+            col.add_child(
+                ui_text::mono(format!("user_id: {user_id}"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+        }
+        if !self.auth_status.is_empty() {
+            col.add_child(status_line(
+                self.auth_status.clone(),
+                self.font,
+                self.auth_status_tone,
+            ));
+        }
+        if self.auth_user_id.is_none() {
+            col.add_child(
+                ui_text::body(format!("邮箱: {}", self.auth_email), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            );
+            col.add_child(
+                Container::new(
+                    EventHandler::new(
+                        ui_text::body("点击登录（使用上方邮箱变量 — 开发占位）", self.font)
+                            .with_color(theme::accent_cool())
+                            .finish(),
+                    )
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(SettingsAction::Login);
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+                )
+                .with_vertical_margin(8.0)
+                .finish(),
+            );
+        } else {
+            col.add_child(
+                Container::new(
+                    EventHandler::new(
+                        ui_text::body("退出登录", self.font)
+                            .with_color(theme::accent_cool())
+                            .finish(),
+                    )
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(SettingsAction::Logout);
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+                )
+                .with_vertical_margin(8.0)
+                .finish(),
+            );
+        }
+        section_card(col.finish())
+    }
 }
 
 impl Entity for SettingsView {
@@ -203,6 +319,7 @@ impl View for SettingsView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("设置", self.font));
+        col.add_child(self.account_block());
         col.add_child(self.shared_path_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
@@ -220,6 +337,86 @@ impl TypedActionView for SettingsView {
     fn handle_action(&mut self, action: &SettingsAction, ctx: &mut ViewContext<Self>) {
         match action {
             SettingsAction::Refresh => self.refresh(ctx),
+            SettingsAction::RefreshAccount => self.refresh_account(ctx),
+            SettingsAction::Login => {
+                let email = std::env::var("WORMHOLE_DEV_LOGIN_EMAIL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or_else(|| self.auth_email.clone());
+                let password = std::env::var("WORMHOLE_DEV_LOGIN_PASSWORD")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| self.auth_password.clone());
+                if email.trim().is_empty() || password.is_empty() {
+                    self.auth_status =
+                        "请设置 WORMHOLE_DEV_LOGIN_EMAIL / WORMHOLE_DEV_LOGIN_PASSWORD 环境变量后登录。"
+                            .into();
+                    self.auth_status_tone = StatusTone::Danger;
+                    ctx.notify();
+                    return;
+                }
+                self.auth_busy = true;
+                self.auth_status = "正在登录…".into();
+                self.auth_status_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        supabase_password_login(
+                            &state,
+                            SupabasePasswordLoginParams {
+                                email,
+                                password,
+                            },
+                        )
+                        .await?;
+                        device_bootstrap(&state).await?;
+                        Ok::<(), String>(())
+                    },
+                    |view, output, ctx| {
+                        view.auth_busy = false;
+                        match output {
+                            Ok(()) => {
+                                view.auth_status = "登录并恢复设备身份成功。".into();
+                                view.auth_status_tone = StatusTone::Success;
+                                view.refresh_account(ctx);
+                            }
+                            Err(err) => {
+                                view.auth_status = format!("登录失败: {err}");
+                                view.auth_status_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::Logout => {
+                self.auth_busy = true;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        clear_cloud_auth_token(&state).await
+                    },
+                    |view, output, ctx| {
+                        view.auth_busy = false;
+                        match output {
+                            Ok(()) => {
+                                view.auth_user_id = None;
+                                view.auth_status = "已退出登录。".into();
+                                view.auth_status_tone = StatusTone::Placeholder;
+                            }
+                            Err(err) => {
+                                view.auth_status = format!("退出失败: {err}");
+                                view.auth_status_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
             SettingsAction::SavePath(path) => {
                 if path.trim().is_empty() {
                     return;

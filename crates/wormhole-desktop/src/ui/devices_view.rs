@@ -20,9 +20,11 @@ use crate::ui::panel_primitives::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    add_storage_volume, cluster_status, create_cluster_invite, join_cluster, list_share_directory,
-    switch_active_cluster, AddStorageVolumeParams, ClusterStatusDto, JoinClusterParams,
-    JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto, SwitchActiveClusterParams,
+    add_storage_volume, cluster_status, create_cluster_invite, delete_share_entry,
+    join_cluster, list_share_directory, open_share_entry, remote_open_share_entry,
+    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterStatusDto,
+    JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto,
+    SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::commands::vault_status;
 
@@ -40,6 +42,7 @@ pub struct DevicesView {
     mono: FamilyId,
     mode: ViewMode,
     cluster: Option<ClusterStatusDto>,
+    cluster_syncing: bool,
     cluster_error: Option<String>,
     browsing_node_id: Option<String>,
     browsing_label: String,
@@ -64,6 +67,10 @@ pub struct DevicesView {
     copy_invite_ack: bool,
     copy_invite_busy: bool,
     share_scroll: ClippedScrollStateHandle,
+    share_context_entry: Option<String>,
+    share_context_pos: Option<(f32, f32)>,
+    share_file_busy: bool,
+    last_file_click: Option<(String, std::time::Instant)>,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -80,6 +87,7 @@ impl DevicesView {
             mono,
             mode: ViewMode::Grid,
             cluster: None,
+            cluster_syncing: false,
             cluster_error: None,
             browsing_node_id: None,
             browsing_label: String::new(),
@@ -104,6 +112,10 @@ impl DevicesView {
             copy_invite_ack: false,
             copy_invite_busy: false,
             share_scroll: ClippedScrollStateHandle::new(),
+            share_context_entry: None,
+            share_context_pos: None,
+            share_file_busy: false,
+            last_file_click: None,
         };
         view.refresh_cluster(ctx);
         view
@@ -119,14 +131,27 @@ impl DevicesView {
             |view, output, ctx| {
                 match output {
                     Ok(status) => {
+                        view.cluster_syncing = status.syncing;
                         view.cluster = Some(status);
                         view.cluster_error = None;
                         if view.local_invite.is_none() && !view.invite_busy {
                             view.load_local_invite(ctx);
                         }
+                        if view.cluster_syncing {
+                            let core = view.core.clone();
+                            ctx.spawn(
+                                async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                },
+                                |view, _, ctx| {
+                                    view.refresh_cluster(ctx);
+                                },
+                            );
+                        }
                     }
                     Err(e) => {
                         view.cluster = None;
+                        view.cluster_syncing = false;
                         view.cluster_error = Some(e);
                     }
                 }
@@ -378,6 +403,133 @@ impl DevicesView {
         );
     }
 
+    fn close_share_context_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        self.share_context_entry = None;
+        self.share_context_pos = None;
+        ctx.notify();
+    }
+
+    fn share_file_context(&self) -> (String, String, String) {
+        let node_id = self.browsing_node_id.clone().unwrap_or_default();
+        let path = self.share_path_string();
+        (node_id, path, String::new())
+    }
+
+    fn run_share_file_action<F>(
+        &mut self,
+        entry_name: String,
+        busy_label: &str,
+        success_label: &str,
+        op: F,
+        ctx: &mut ViewContext<Self>,
+    ) where
+        F: FnOnce(
+                wormhole_desktop_core::state::AppState,
+                String,
+                String,
+                String,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+            > + Send
+            + 'static,
+    {
+        if self.share_file_busy {
+            return;
+        }
+        let (node_id, share_path, _) = self.share_file_context();
+        let name = entry_name.clone();
+        self.share_file_busy = true;
+        self.share_status = Some(busy_label.to_string());
+        self.close_share_context_menu(ctx);
+        ctx.notify();
+        let core = self.core.clone();
+        let success = success_label.to_string();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                op(state, node_id, share_path, name).await
+            },
+            move |view, output, ctx| {
+                view.share_file_busy = false;
+                match output {
+                    Ok(()) => {
+                        view.share_status = Some(format!("{success} · {entry_name}"));
+                        view.load_share_directory(ctx);
+                    }
+                    Err(e) => {
+                        view.share_status = Some(format!("失败 · {e}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn open_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        self.run_share_file_action(
+            entry_name.clone(),
+            "正在打开…",
+            "已打开",
+            |state, node_id, share_path, name| {
+                Box::pin(async move { open_share_entry(&state, &node_id, &share_path, &name).await })
+            },
+            ctx,
+        );
+    }
+
+    fn sync_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        self.run_share_file_action(
+            entry_name.clone(),
+            "正在同步…",
+            "已同步",
+            |state, node_id, share_path, name| {
+                Box::pin(async move { sync_share_entry(&state, &node_id, &share_path, &name).await })
+            },
+            ctx,
+        );
+    }
+
+    fn remote_open_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        self.run_share_file_action(
+            entry_name.clone(),
+            "正在远程打开…",
+            "已请求远程打开",
+            |state, node_id, share_path, name| {
+                Box::pin(async move {
+                    remote_open_share_entry(&state, &node_id, &share_path, &name).await
+                })
+            },
+            ctx,
+        );
+    }
+
+    fn delete_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        self.run_share_file_action(
+            entry_name.clone(),
+            "正在删除…",
+            "已删除",
+            |state, node_id, share_path, name| {
+                Box::pin(async move {
+                    delete_share_entry(&state, &node_id, &share_path, &name).await
+                })
+            },
+            ctx,
+        );
+    }
+
+    fn handle_share_file_click(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        let now = std::time::Instant::now();
+        if let Some((last_name, last_at)) = &self.last_file_click {
+            if last_name == &entry_name && last_at.elapsed() < Duration::from_millis(450) {
+                self.last_file_click = None;
+                self.open_share_file(entry_name, ctx);
+                return;
+            }
+        }
+        self.last_file_click = Some((entry_name, now));
+        ctx.notify();
+    }
+
     fn joined_cluster_label(entry: &JoinedClusterDto) -> String {
         format!(
             "{} · {}",
@@ -402,6 +554,9 @@ impl DevicesView {
     }
 
     fn cluster_status_text(&self, cluster: &ClusterStatusDto) -> String {
+        if self.cluster_syncing {
+            return "CLUSTER · SYNCING · 后台同步集群…".to_string();
+        }
         if let Some(flash) = &self.status_flash {
             return flash.clone();
         }
@@ -993,11 +1148,30 @@ impl DevicesView {
             header.add_child(section_hint("CLUSTER · OFFLINE · 无法读取集群", self.font));
             header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
         } else if let Some(cluster) = &self.cluster {
-            header.add_child(
-                Container::new(self.cluster_toolbar(cluster))
-                    .with_vertical_margin(10.0)
-                    .finish(),
-            );
+            if cluster.auth_required {
+                header.add_child(section_hint("ACCOUNT · 需要登录", self.font));
+                header.add_child(status_line(
+                    "请先在「设置 → 账号」登录，再使用集群与 P2P 功能。",
+                    self.font,
+                    StatusTone::Placeholder,
+                ));
+            } else if cluster.device_bootstrap_required {
+                header.add_child(section_hint("DEVICE · 正在恢复设备身份", self.font));
+                header.add_child(status_line(
+                    "登录成功，正在从云端恢复本机设备身份…",
+                    self.font,
+                    StatusTone::Placeholder,
+                ));
+            } else {
+                header.add_child(
+                    Container::new(self.cluster_toolbar(cluster))
+                        .with_vertical_margin(10.0)
+                        .finish(),
+                );
+                if self.cluster_syncing {
+                    header.add_child(section_hint("CLUSTER · SYNCING", self.font));
+                }
+            }
         } else {
             header.add_child(section_hint("CLUSTER · LOADING", self.font));
             header.add_child(status_line("加载集群…", self.font, StatusTone::Placeholder));
@@ -1015,6 +1189,28 @@ impl DevicesView {
         col.add_child(header_block);
 
         if let Some(cluster) = &self.cluster {
+            if cluster.auth_required || cluster.device_bootstrap_required {
+                col.add_child(
+                    Expanded::new(
+                        1.0,
+                        Container::new(
+                            ui_text::body(
+                                if cluster.auth_required {
+                                    "登录后可查看集群拓扑并加入家庭网络。"
+                                } else {
+                                    "设备身份恢复完成后将自动同步集群。"
+                                },
+                                self.font,
+                            )
+                            .with_color(theme::muted())
+                            .finish(),
+                        )
+                        .with_uniform_padding(SECTION_PADDING)
+                        .finish(),
+                    )
+                    .finish(),
+                );
+            } else {
             let local_id = cluster.local_node_id.clone();
             let mut nodes = cluster.nodes.clone();
             nodes.sort_by(|a, b| {
@@ -1043,6 +1239,7 @@ impl DevicesView {
                 )
                 .finish(),
             );
+            }
         } else {
             col.add_child(
                 Expanded::new(
@@ -1133,6 +1330,21 @@ impl DevicesView {
         let mut name_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
+        if !is_folder && !entry.local {
+            let sync_name = name.clone();
+            name_row.add_child(
+                EventHandler::new(
+                    Container::new(icons::share_sync_icon(self.share_file_busy))
+                        .with_horizontal_margin(4.0)
+                        .finish(),
+                )
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::ShareSyncFile(sync_name.clone()));
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            );
+        }
         name_row.add_child(
             Container::new(icons::share_file_icon(&entry.name, is_folder))
                 .with_horizontal_margin(4.0)
@@ -1213,7 +1425,22 @@ impl DevicesView {
                 })
                 .finish()
         } else {
-            inner
+            let click_name = name.clone();
+            let menu_name = name.clone();
+            EventHandler::new(inner)
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::ShareFileClick(click_name.clone()));
+                    DispatchEventResult::StopPropagation
+                })
+                .on_right_mouse_down(move |ctx, _, position| {
+                    ctx.dispatch_typed_action(DevicesAction::OpenShareContextMenu {
+                        name: menu_name.clone(),
+                        x: position.x(),
+                        y: position.y(),
+                    });
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
         }
     }
 
@@ -1488,14 +1715,120 @@ impl DevicesView {
             .finish()
     }
 
+    fn share_context_menu(&self) -> Box<dyn Element> {
+        let Some(name) = self.share_context_entry.clone() else {
+            return Flex::column().finish();
+        };
+        let Some((x, y)) = self.share_context_pos else {
+            return Flex::column().finish();
+        };
+        let entry = self
+            .share_entries
+            .iter()
+            .find(|entry| entry.name == name);
+        let is_local = entry.map(|entry| entry.local).unwrap_or(true);
+
+        let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        menu.add_child(
+            Container::new(
+                ui_text::body(name.clone(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .finish(),
+        );
+        menu.add_child(self.share_context_item("打开", DevicesAction::ShareOpenFile(name.clone()), false));
+        if !is_local {
+            menu.add_child(self.share_context_item(
+                "同步",
+                DevicesAction::ShareSyncFile(name.clone()),
+                false,
+            ));
+            menu.add_child(self.share_context_item(
+                "远程打开",
+                DevicesAction::ShareRemoteOpenFile(name.clone()),
+                false,
+            ));
+        }
+        menu.add_child(self.share_context_item(
+            "删除",
+            DevicesAction::ShareDeleteFile(name),
+            true,
+        ));
+
+        let panel = Container::new(
+            ConstrainedBox::new(menu.finish())
+                .with_width(180.0)
+                .finish(),
+        )
+        .with_background(theme::panel())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish();
+
+        EventHandler::new(
+            Container::new(panel)
+                .with_margin_left(x.max(8.0))
+                .with_margin_top(y.max(8.0))
+                .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish()
+    }
+
+    fn share_context_item(
+        &self,
+        label: &str,
+        action: DevicesAction,
+        danger: bool,
+    ) -> Box<dyn Element> {
+        let color = if danger {
+            theme::danger()
+        } else {
+            theme::text()
+        };
+        EventHandler::new(
+            Container::new(
+                ui_text::body(label.to_string(), self.font)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+    }
+
     fn files_shell(&self) -> Box<dyn Element> {
-        let view = self.files_view();
-        if !self.share_add_modal_open {
-            return view;
+        let has_overlay = self.share_add_modal_open || self.share_context_entry.is_some();
+        if !has_overlay {
+            return self.files_view();
         }
         let mut stack = Stack::new();
-        stack.add_child(view);
-        stack.add_child(self.share_add_modal());
+        stack.add_child(self.files_view());
+        if self.share_add_modal_open {
+            stack.add_child(self.share_add_modal());
+        }
+        if self.share_context_entry.is_some() {
+            let scrim = EventHandler::new(
+                Container::new(Flex::column().finish())
+                    .with_background(ColorU::new(8, 7, 11, 40))
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseShareContextMenu);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            stack.add_child(scrim);
+            stack.add_child(self.share_context_menu());
+        }
         stack.finish()
     }
 }
@@ -1620,6 +1953,19 @@ impl TypedActionView for DevicesView {
                     self.submit_share_add(ctx);
                 }
             }
+            DevicesAction::ShareOpenFile(name) => self.open_share_file(name.clone(), ctx),
+            DevicesAction::ShareSyncFile(name) => self.sync_share_file(name.clone(), ctx),
+            DevicesAction::ShareRemoteOpenFile(name) => {
+                self.remote_open_share_file(name.clone(), ctx);
+            }
+            DevicesAction::ShareDeleteFile(name) => self.delete_share_file(name.clone(), ctx),
+            DevicesAction::OpenShareContextMenu { name, x, y } => {
+                self.share_context_entry = Some(name.clone());
+                self.share_context_pos = Some((*x, *y));
+                ctx.notify();
+            }
+            DevicesAction::CloseShareContextMenu => self.close_share_context_menu(ctx),
+            DevicesAction::ShareFileClick(name) => self.handle_share_file_click(name.clone(), ctx),
         }
     }
 }

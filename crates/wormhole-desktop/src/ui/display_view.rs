@@ -3,6 +3,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::device_gate_view::{load_device_gate_status, wrap_with_device_gate, DeviceGateStatus};
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, StatusTone, SECTION_GAP,
 };
@@ -21,6 +22,7 @@ enum HostStatus {
 pub struct DisplayView {
     core: CoreHandle,
     font: FamilyId,
+    gate: DeviceGateStatus,
     platform: PlatformInfoDto,
     host: HostStatus,
 }
@@ -31,6 +33,7 @@ impl DisplayView {
         let mut view = Self {
             core,
             font,
+            gate: DeviceGateStatus::default(),
             platform: platform_info(),
             host: HostStatus::Loading,
         };
@@ -44,11 +47,16 @@ impl DisplayView {
         let core = self.core.clone();
         ctx.spawn(
             async move {
+                let state = core.runtime().state.clone();
+                let gate = load_device_gate_status(&state).await;
                 let ctx = core.runtime().ctx.clone();
-                display_status(&ctx.display_state).await
+                let host = display_status(&ctx.display_state).await;
+                (gate, host)
             },
             |view, output, ctx| {
-                view.host = match output {
+                let (gate, host) = output;
+                view.gate = gate;
+                view.host = match host {
                     Ok(status) => HostStatus::Ready(status),
                     Err(e) => HostStatus::Error(e),
                 };
@@ -162,18 +170,8 @@ impl DisplayView {
         }
         section_card(col.finish())
     }
-}
 
-impl Entity for DisplayView {
-    type Event = ();
-}
-
-impl View for DisplayView {
-    fn ui_name() -> &'static str {
-        "DisplayView"
-    }
-
-    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+    fn display_body(&self) -> Box<dyn Element> {
         let mut page = Flex::column();
         page.add_child(section_title("虚拟显示器", self.font));
         page.add_child(section_hint(
@@ -207,9 +205,24 @@ impl View for DisplayView {
     }
 }
 
+impl Entity for DisplayView {
+    type Event = ();
+}
+
+impl View for DisplayView {
+    fn ui_name() -> &'static str {
+        "DisplayView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        wrap_with_device_gate(self.font, "虚拟显示器", &self.gate, self.display_body())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::DisplayView;
+    use warpui::View;
 
     #[test]
     fn display_view_ui_name() {

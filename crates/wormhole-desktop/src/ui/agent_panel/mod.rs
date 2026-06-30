@@ -30,6 +30,7 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
+use crate::ui::text_field_input::{render_field_text, TextFieldEditAction, TextFieldInput, TextFieldState};
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -66,6 +67,7 @@ pub enum AgentPanelAction {
     FocusSidebarSearch,
     SidebarMore,
     Stop,
+    TextFieldEdit(TextFieldEditAction),
 }
 
 struct PanelState {
@@ -97,6 +99,7 @@ struct PanelState {
     access_menu_open: bool,
     model_menu_open: bool,
     session_running: bool,
+    field_state: TextFieldState,
 }
 
 pub struct AgentPanelView {
@@ -164,6 +167,7 @@ impl AgentPanelView {
                 access_menu_open: false,
                 model_menu_open: false,
                 session_running: true,
+                field_state: TextFieldState::new(),
             })),
             generation: Arc::new(Mutex::new(0)),
             event_poll_inflight: Arc::new(AtomicBool::new(false)),
@@ -438,19 +442,7 @@ impl AgentPanelView {
             return true;
         }
         if !panel.busy && !panel.input_focused {
-            let key = keystroke.key.as_str();
-            if key.len() == 1 && !keystroke.ctrl && !keystroke.meta && !keystroke.alt {
-                if let Some(ch) = key.chars().next() {
-                    if !ch.is_control() {
-                        panel.input_focused = true;
-                        panel.caret_blink = true;
-                        panel.draft.push(ch);
-                        drop(panel);
-                        let _ = notify_tx.try_send(());
-                        return true;
-                    }
-                }
-            }
+            return false;
         }
         if !panel.input_focused || panel.busy {
             return false;
@@ -459,25 +451,19 @@ impl AgentPanelView {
             "enter" | "return" => {
                 if keystroke.shift {
                     panel.draft.push('\n');
+                    panel.field_state.clear_marked();
                 } else if !panel.draft.trim().is_empty() {
                     panel.pending_send = true;
                 }
             }
-            "backspace" => {
-                panel.draft.pop();
-            }
             "escape" => {
                 panel.draft.clear();
+                panel.field_state.clear_marked();
                 panel.input_focused = false;
                 panel.caret_blink = false;
             }
-            key if key.len() == 1 => {
-                if let Some(ch) = key.chars().next() {
-                    if !keystroke.ctrl && !keystroke.meta {
-                        panel.draft.push(ch);
-                    }
-                }
-            }
+            "backspace" => return false,
+            key if key.len() == 1 => return false,
             _ => return false,
         }
         drop(panel);
@@ -1231,12 +1217,13 @@ impl AgentPanelView {
     fn agent_composer_input(
         &self,
         draft: &str,
+        marked: &str,
         input_focused: bool,
         caret_blink: bool,
         busy: bool,
         placeholder: &str,
     ) -> Box<dyn Element> {
-        let draft_empty = draft.is_empty();
+        let draft_empty = draft.is_empty() && marked.is_empty();
         let show_caret = input_focused && !busy;
         let caret = Container::new(
             ConstrainedBox::new(Flex::row().finish())
@@ -1252,32 +1239,30 @@ impl AgentPanelView {
         .with_horizontal_margin(1.0)
         .finish();
 
+        let field = render_field_text(draft, marked, placeholder, self.font, input_focused, busy);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-        if draft_empty && !input_focused {
-            row.add_child(
-                ui_text::body(placeholder.to_string(), self.font)
-                    .with_color(theme::placeholder())
-                    .finish(),
-            );
-        } else {
-            if !draft_empty {
-                row.add_child(
-                    ui_text::body(draft.to_string(), self.font)
-                        .with_color(theme::text())
-                        .finish(),
-                );
-            }
-            if show_caret {
-                row.add_child(caret);
-            }
+        row.add_child(field);
+        if show_caret && draft_empty {
+            row.add_child(caret);
+        } else if show_caret && !draft_empty {
+            row.add_child(caret);
         }
 
-        EventHandler::new(row.finish())
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
-                DispatchEventResult::StopPropagation
-            })
-            .finish()
+        TextFieldInput::builder(row.finish(), |ctx, action| {
+            ctx.dispatch_typed_action(AgentPanelAction::TextFieldEdit(action));
+        })
+        .focused(input_focused)
+        .disabled(busy)
+        .on_keydown(move |ctx, keystroke| {
+            if busy {
+                return DispatchEventResult::PropagateToParent;
+            }
+            match keystroke.key.as_str() {
+                "enter" | "return" | "escape" | "tab" => DispatchEventResult::PropagateToParent,
+                _ => DispatchEventResult::PropagateToParent,
+            }
+        })
+        .finish()
     }
 
     fn wrap_composer_with_popovers(
@@ -1432,6 +1417,7 @@ impl View for AgentPanelView {
         let _ = self.generation.lock().map(|g| *g).unwrap_or(0);
         let state = self.state.lock().expect("agent panel state");
         let draft = state.draft.clone();
+        let marked = state.field_state.marked_text.clone();
         let busy = state.busy;
         let _mode = state.mode;
         let input_focused = state.input_focused;
@@ -1483,13 +1469,21 @@ impl View for AgentPanelView {
                     Flex::column()
                         .with_child(
                             ConstrainedBox::new(
-                                Container::new(self.agent_composer_input(
-                                    &draft,
-                                    input_focused,
-                                    caret_blink,
-                                    busy,
-                                    placeholder,
-                                ))
+                                Container::new(
+                                    EventHandler::new(self.agent_composer_input(
+                                        &draft,
+                                        &marked,
+                                        input_focused,
+                                        caret_blink,
+                                        busy,
+                                        placeholder,
+                                    ))
+                                    .on_left_mouse_down(|ctx, _, _| {
+                                        ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                                        DispatchEventResult::StopPropagation
+                                    })
+                                    .finish(),
+                                )
                                 .with_padding_left(16.0)
                                 .with_padding_right(16.0)
                                 .with_padding_top(14.0)
@@ -1716,6 +1710,20 @@ impl TypedActionView for AgentPanelView {
                 }
                 ctx.notify();
             }
+            AgentPanelAction::TextFieldEdit(edit) => {
+                if let Ok(mut panel) = self.state.lock() {
+                    if !panel.busy {
+                        let edit = edit.clone();
+                        let mut draft = std::mem::take(&mut panel.draft);
+                        panel.field_state.apply(&mut draft, &edit);
+                        panel.draft = draft;
+                        panel.input_focused = true;
+                        panel.caret_blink = true;
+                    }
+                }
+                self.bump();
+                ctx.notify();
+            }
         }
     }
 
@@ -1784,6 +1792,9 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::Stop => {
                 AccessibilityContent::new_without_help("停止 Agent", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::TextFieldEdit(_) => {
+                AccessibilityContent::new_without_help("编辑 Agent 输入", WarpA11yRole::TextfieldRole)
             }
             AgentPanelAction::SetVisible(_) | AgentPanelAction::RefreshStatus => {
                 return ActionAccessibilityContent::Empty;

@@ -1,20 +1,18 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use warpui::elements::Fill;
 use warpui::elements::{
-    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex, MainAxisSize,
-    ParentElement, ScrollbarWidth,
+    Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex,
+    MainAxisSize, ParentElement, ScrollbarWidth,
 };
+use warpui::elements::Fill;
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
-use crate::ui::chat::bubble::ChatBubbleView;
+use crate::ui::chat::bubble::{format_message_time_pub, ChatBubbleView};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{ui_title, SECTION_PADDING};
-use crate::ui::theme;
 use wormhole_desktop_core::chat_commands::{
-    chat_list_messages, ChatMessageDto, ListChatMessagesParams,
+    chat_config, chat_list_messages, ChatMessageDto, ListChatMessagesParams,
 };
 
 pub struct ChatThreadView {
@@ -22,6 +20,7 @@ pub struct ChatThreadView {
     selection: ConversationSelection,
     font: FamilyId,
     loaded_for: Option<String>,
+    local_endpoint: Option<String>,
     messages: Vec<ChatMessageDto>,
     bubbles: Vec<warpui::ViewHandle<ChatBubbleView>>,
     hint_bubble: warpui::ViewHandle<ChatBubbleView>,
@@ -36,16 +35,14 @@ impl ChatThreadView {
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let hint_bubble = ctx.add_view(|ctx| {
-            ChatBubbleView::system_hint(
-                ctx,
-                "Vault ready · endpoint 已连接 · 等待消息…".into(),
-            )
+            ChatBubbleView::system_hint(ctx, "选择左侧终端开始聊天".into())
         });
         let view = Self {
             core,
             selection,
             font,
             loaded_for: None,
+            local_endpoint: None,
             messages: Vec::new(),
             bubbles: Vec::new(),
             hint_bubble,
@@ -78,15 +75,24 @@ impl ChatThreadView {
             ctx.spawn(
                 async move {
                     let runtime = core.runtime();
+                    let app = runtime.ctx.as_ref();
+                    let state = runtime.state.clone();
+                    let cfg = chat_config(app, &state).await;
                     let params = ListChatMessagesParams {
-                        conv_id,
+                        conv_id: conv_id.clone(),
                         limit: Some(50),
                         before: None,
                     };
-                    chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await
+                    let messages =
+                        chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await;
+                    (cfg, messages)
                 },
                 |view, output, ctx| {
-                    match output {
+                    let (cfg, messages) = output;
+                    if let Ok(c) = cfg {
+                        view.local_endpoint = Some(c.endpoint_id);
+                    }
+                    match messages {
                         Ok(messages) => {
                             view.messages = messages;
                             view.rebuild_bubbles(ctx);
@@ -108,18 +114,17 @@ impl ChatThreadView {
 
     fn rebuild_bubbles(&mut self, ctx: &mut ViewContext<Self>) {
         self.bubbles.clear();
+        let local = self.local_endpoint.as_deref();
         for msg in &self.messages {
             let body = msg.body.clone();
-            let author = msg.author_endpoint.clone();
-            self.bubbles
-                .push(ctx.add_view(move |ctx| ChatBubbleView::new(ctx, author, body)));
+            let outgoing = local
+                .map(|ep| ep == msg.author_endpoint.as_str())
+                .unwrap_or(false);
+            let timestamp = format_message_time_pub(msg.sent_at);
+            self.bubbles.push(ctx.add_view(move |ctx| {
+                ChatBubbleView::new(ctx, body, outgoing, timestamp)
+            }));
         }
-    }
-
-    fn thread_title(&self) -> String {
-        self.loaded_for
-            .clone()
-            .unwrap_or_else(|| "选择左侧终端".into())
     }
 }
 
@@ -133,39 +138,36 @@ impl View for ChatThreadView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut col = Flex::column()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_child(ui_title(self.thread_title(), self.font));
+        let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
         if self.messages.is_empty() {
             col.add_child(
-                Container::new(ChildView::new(&self.hint_bubble).finish())
-                    .with_margin_top(10.0)
-                    .finish(),
+                Container::new(
+                    Align::new(ChildView::new(&self.hint_bubble).finish())
+                        .top_center()
+                        .finish(),
+                )
+                .with_vertical_margin(48.0)
+                .finish(),
             );
         } else {
             for bubble in &self.bubbles {
                 col.add_child(
                     Container::new(ChildView::new(bubble).finish())
-                        .with_vertical_margin(5.0)
+                        .with_horizontal_padding(16.0)
+                        .with_vertical_margin(4.0)
                         .finish(),
                 );
             }
         }
 
-        Container::new(
-            ClippedScrollable::vertical(
-                self.scroll.clone(),
-                col.finish(),
-                ScrollbarWidth::Auto,
-                Fill::None,
-                Fill::None,
-                Fill::None,
-            )
-            .finish(),
+        ClippedScrollable::vertical(
+            self.scroll.clone(),
+            col.finish(),
+            ScrollbarWidth::Auto,
+            Fill::None,
+            Fill::None,
+            Fill::None,
         )
-        .with_uniform_padding(SECTION_PADDING)
-        .with_background(theme::canvas())
-        .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
         .finish()
     }
 }

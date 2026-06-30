@@ -18,6 +18,8 @@ pub const SHARE_NAV_BTN_SIZE: f32 = 28.0;
 pub const SHARE_NAV_ICON_SIZE: f32 = 14.0;
 pub const AGENT_ICON_SIZE: f32 = 15.0;
 pub const AGENT_COMPOSER_ICON_SIZE: f32 = 16.0;
+pub const CHAT_COMPOSE_ICON_SIZE: f32 = 20.0;
+pub const CHAT_COMPOSE_BTN: f32 = 40.0;
 pub const DEVICE_ICON_WIDTH: f32 = 56.0;
 pub const DEVICE_ICON_HEIGHT: f32 = 44.0;
 pub const DEVICE_THUMB_HEIGHT: f32 = 132.0;
@@ -74,6 +76,10 @@ pub fn agent_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
 
 pub fn agent_composer_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
     icon(path, AGENT_COMPOSER_ICON_SIZE, color)
+}
+
+pub fn chat_compose_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
+    icon(path, CHAT_COMPOSE_ICON_SIZE, color)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,6 +5,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::device_gate_view::{load_device_gate_status, wrap_with_device_gate, DeviceGateStatus};
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
 };
@@ -27,6 +28,7 @@ pub enum SyncAction {
 pub struct SyncView {
     core: CoreHandle,
     font: FamilyId,
+    gate: DeviceGateStatus,
     status: String,
     status_error: bool,
     queue: Vec<String>,
@@ -75,6 +77,7 @@ impl SyncView {
         let mut view = Self {
             core,
             font,
+            gate: DeviceGateStatus::default(),
             status: "加载同步状态…".into(),
             status_error: false,
             queue: Vec::new(),
@@ -95,6 +98,7 @@ impl SyncView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
+                let gate = load_device_gate_status(&state).await;
                 let status = sync_status(&state).await;
                 let queue = list_sync_queue(&state).await;
                 let files = search_sync_entries(
@@ -130,10 +134,11 @@ impl SyncView {
                         })
                         .collect::<Vec<_>>()
                 });
-                (status, queue, files, workers)
+                (gate, status, queue, files, workers)
             },
             |view, output, ctx| {
-                let (status, queue, files, workers) = output;
+                let (gate, status, queue, files, workers) = output;
+                view.gate = gate;
                 view.loading = false;
                 match status {
                     Ok(s) => {
@@ -382,18 +387,8 @@ impl SyncView {
             .with_border(Border::all(1.0).with_border_fill(theme::border()))
             .finish()
     }
-}
 
-impl Entity for SyncView {
-    type Event = ();
-}
-
-impl View for SyncView {
-    fn ui_name() -> &'static str {
-        "SyncView"
-    }
-
-    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+    fn sync_body(&self) -> Box<dyn Element> {
         let mut col = Flex::column();
         col.add_child(section_title("同步", self.font));
         col.add_child(self.action_button("刷新", SyncAction::Refresh, self.loading));
@@ -448,6 +443,20 @@ impl View for SyncView {
             }
         }
         section_card(col.finish())
+    }
+}
+
+impl Entity for SyncView {
+    type Event = ();
+}
+
+impl View for SyncView {
+    fn ui_name() -> &'static str {
+        "SyncView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        wrap_with_device_gate(self.font, "文件同步", &self.gate, self.sync_body())
     }
 }
 

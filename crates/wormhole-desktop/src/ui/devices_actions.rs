@@ -21,4 +21,15 @@ pub enum DevicesAction {
     CloseShareAddModal,
     BrowseShareAddPath,
     SubmitShareAdd,
+    ShareOpenFile(String),
+    ShareSyncFile(String),
+    ShareRemoteOpenFile(String),
+    ShareDeleteFile(String),
+    OpenShareContextMenu {
+        name: String,
+        x: f32,
+        y: f32,
+    },
+    CloseShareContextMenu,
+    ShareFileClick(String),
 }

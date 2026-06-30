@@ -42,6 +42,10 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("agent-chevron.svg"),
     bundled_icon!("agent-user.svg"),
     bundled_icon!("agent-copy.svg"),
+    bundled_icon!("chat-compose-attach.svg"),
+    bundled_icon!("chat-compose-emoji.svg"),
+    bundled_icon!("chat-compose-send.svg"),
+    bundled_icon!("chat-compose-mic.svg"),
 ];
 
 pub struct WormholeAssets;
