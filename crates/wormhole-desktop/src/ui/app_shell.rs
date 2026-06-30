@@ -113,6 +113,7 @@ pub struct AppShellView {
     toolbox: ViewHandle<ToolboxView>,
     settings: ViewHandle<SettingsView>,
     login_modal: ViewHandle<LoginModalView>,
+    login_modal_open: bool,
     auth_authenticated: bool,
     auth_user_id: Option<String>,
     font: FamilyId,
@@ -153,16 +154,23 @@ impl AppShellView {
             ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
-            let LoginModalEvent::AuthChanged {
-                authenticated,
-                user_id,
-            } = event;
-            view.auth_authenticated = *authenticated;
-            view.auth_user_id = user_id.clone();
-            let settings_handle = view.settings.clone();
-            ctx.update_view(&settings_handle, |settings, ctx| {
-                settings.refresh_account(ctx);
-            });
+            match event {
+                LoginModalEvent::AuthChanged {
+                    authenticated,
+                    user_id,
+                } => {
+                    view.auth_authenticated = *authenticated;
+                    view.auth_user_id = user_id.clone();
+                    view.login_modal_open = false;
+                    let settings_handle = view.settings.clone();
+                    ctx.update_view(&settings_handle, |settings, ctx| {
+                        settings.refresh_account(ctx);
+                    });
+                }
+                LoginModalEvent::Dismissed => {
+                    view.login_modal_open = false;
+                }
+            }
             ctx.notify();
         });
         let prefs = desktop_prefs::load(&core.data_dir());
@@ -200,6 +208,7 @@ impl AppShellView {
             toolbox,
             settings,
             login_modal,
+            login_modal_open: false,
             auth_authenticated: false,
             auth_user_id: None,
             font,
@@ -789,6 +798,7 @@ impl View for AppShellView {
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
+        let login_modal_open = self.login_modal_open;
         let shell = Container::new(self.body(app))
             .with_background(theme::canvas())
             .with_uniform_padding(0.0)
@@ -796,6 +806,9 @@ impl View for AppShellView {
         let shell = EventHandler::new(shell)
             .with_always_handle()
             .on_keydown(move |ctx, _, keystroke| {
+                if login_modal_open {
+                    return DispatchEventResult::PropagateToParent;
+                }
                 if let Some(tab) = Self::tab_from_keystroke(keystroke) {
                     ctx.dispatch_typed_action(AppShellAction::SelectTab(
                         tab,
@@ -907,10 +920,12 @@ impl TypedActionView for AppShellView {
                 ctx.close_window();
             }
             AppShellAction::OpenLogin => {
+                self.login_modal_open = true;
                 let login = self.login_modal.clone();
                 ctx.update_view(&login, |modal, ctx| {
                     modal.open(ctx);
                 });
+                ctx.notify();
             }
         }
     }

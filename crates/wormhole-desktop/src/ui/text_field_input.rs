@@ -8,8 +8,8 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
     AfterLayoutContext, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
-    DispatchEventResult, Element, EventContext, Flex, LayoutContext, PaintContext, ParentElement,
-    Point, SizeConstraint, ZIndex,
+    DispatchEventResult, Element, EventContext, EventHandler, Flex, LayoutContext, PaintContext,
+    ParentElement, Point, SizeConstraint, ZIndex,
 };
 use warpui::event::DispatchedEvent;
 use warpui::fonts::FamilyId;
@@ -297,6 +297,18 @@ pub fn render_field_text(
     col.finish()
 }
 
+pub fn wrap_text_field_focus_on_click(
+    input: Box<dyn Element>,
+    on_focus: impl Fn(&mut EventContext) + 'static,
+) -> Box<dyn Element> {
+    EventHandler::new(input)
+        .on_left_mouse_down(move |ctx, _, _| {
+            on_focus(ctx);
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
 pub fn compose_input_height(draft: &str, marked: &str) -> f32 {
     let mut measure = draft.to_string();
     if !marked.is_empty() {
@@ -452,7 +464,8 @@ impl Element for TextFieldInput {
                         (self.on_edit)(ctx, TextFieldEditAction::Backspace);
                         return true;
                     }
-                    "enter" | "return" | "escape" | "tab" => {
+                    "enter" | "return" | "escape" | "tab"
+                    | "left" | "right" | "home" | "end" => {
                         if let Some(cb) = &self.on_keydown {
                             return matches!(cb(ctx, keystroke), DispatchEventResult::StopPropagation);
                         }

@@ -383,7 +383,7 @@ impl TypedActionView for SettingsView {
                                 view.refresh_account(ctx);
                             }
                             Err(err) => {
-                                view.auth_status = format!("登录失败: {err}");
+                                view.auth_status = err;
                                 view.auth_status_tone = StatusTone::Danger;
                             }
                         }
