@@ -413,9 +413,6 @@ impl AgentPanelView {
                     panel.input_focused = !panel.input_focused;
                     panel.sidebar_search_focused = false;
                 }
-                if panel.input_focused {
-                    panel.sidebar_search_focused = false;
-                }
             }
             let _ = notify_tx.try_send(());
             return true;

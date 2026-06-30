@@ -3,10 +3,10 @@ use pathfinder_geometry::vector::vec2f;
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
-    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    Radius, ScrollbarWidth, Shrinkable, Stack,
+    Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
+    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Expanded, Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor,
+    ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -586,22 +586,26 @@ impl AppShellView {
         let expand = self.tab == tab || self.hovered_tab == Some(tab);
         let label = Self::tab_label(tab);
 
-        let mut label_container = Container::new(icons::tab_button_content(
-            tab, expand, text_color, label, self.mono,
-        ))
-        .with_vertical_padding(16.0)
-        .with_horizontal_padding(if expand { 16.0 } else { 12.0 })
-        .with_background(bg);
-        if selected {
-            label_container = label_container
-                .with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
-        }
+        let bottom_accent = if selected {
+            theme::accent_cool()
+        } else {
+            ColorU::transparent_black()
+        };
 
-        let mut btn = Container::new(label_container.finish())
-            .with_border(Border::all(1.0).with_border_fill(theme::border()));
+        let mut inner = Container::new(
+            Align::new(icons::tab_button_content(
+                tab, expand, text_color, label, self.mono,
+            ))
+            .finish(),
+        )
+        .with_horizontal_padding(if expand { 16.0 } else { 12.0 })
+        .with_background(bg)
+        .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
+        .with_border(Border::right(1.0).with_border_fill(theme::border()));
         if keyboard_focused {
-            btn = btn.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+            inner = inner.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
         }
+        let btn = ConstrainedBox::new(inner.finish()).with_height(CHROME_ROW_HEIGHT);
         EventHandler::new(btn.finish())
             .on_mouse_in(
                 move |ctx, _, _| {
@@ -623,7 +627,7 @@ impl AppShellView {
 
     fn tab_bar(&self, app: &AppContext) -> Box<dyn Element> {
         let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         for tab in Self::visible_tabs() {
             row.add_child(
@@ -656,7 +660,7 @@ impl AppShellView {
         );
 
         let mut tab_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Max);
 
         if left_padding > 0.0 {
