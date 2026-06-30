@@ -12,7 +12,10 @@ use crate::ui::chat::bubble::format_message_time_pub;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::online_dot;
-use crate::ui::text_field_input::{render_field_text, TextFieldEditAction, TextFieldInput, TextFieldState};
+use crate::ui::text_field_input::{
+    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
+    TextFieldInput, TextFieldState,
+};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
@@ -51,6 +54,7 @@ pub struct ChatSidebarView {
     search: String,
     search_field: TextFieldState,
     search_focused: bool,
+    caret_blink: CaretBlink,
     status: String,
     scroll: ClippedScrollStateHandle,
 }
@@ -70,6 +74,7 @@ impl ChatSidebarView {
             search: String::new(),
             search_field: TextFieldState::new(),
             search_focused: false,
+            caret_blink: CaretBlink::new(),
             status: String::new(),
             scroll: ClippedScrollStateHandle::new(),
         };
@@ -290,13 +295,14 @@ impl ChatSidebarView {
         let search_focused = self.search_focused;
         let draft = self.search.clone();
         let marked = self.search_field.marked_text.clone();
-        let field = render_field_text(
+        let field = render_field_with_caret(
             &draft,
             &marked,
             "搜索终端…",
             self.font,
             search_focused,
             false,
+            self.caret_blink.visible,
         );
         TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatSidebarAction::SearchEdit(action));
@@ -409,14 +415,25 @@ impl TypedActionView for ChatSidebarView {
             }
             ChatSidebarAction::FocusSearch => {
                 self.search_focused = !self.search_focused;
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ChatSidebarAction::SearchEdit(edit) => {
-                self.search_field
-                    .apply(&mut self.search, edit);
+                self.search_field.apply(&mut self.search, edit);
                 self.search_focused = true;
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
         }
+    }
+}
+
+impl CaretBlinkHost for ChatSidebarView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.search_focused
     }
 }

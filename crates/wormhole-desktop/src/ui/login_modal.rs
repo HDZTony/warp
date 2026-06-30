@@ -9,7 +9,8 @@ use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, Vie
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{status_line, StatusTone};
 use crate::ui::text_field_input::{
-    render_field_text, TextFieldEditAction, TextFieldInput, TextFieldState,
+    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
+    TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -47,6 +48,7 @@ pub struct LoginModalView {
     password_field: TextFieldState,
     email_focused: bool,
     password_focused: bool,
+    caret_blink: CaretBlink,
     busy: bool,
     status: String,
     status_tone: StatusTone,
@@ -64,6 +66,7 @@ impl LoginModalView {
             password_field: TextFieldState::new(),
             email_focused: true,
             password_focused: false,
+            caret_blink: CaretBlink::new(),
             busy: false,
             status: String::new(),
             status_tone: StatusTone::Placeholder,
@@ -79,13 +82,25 @@ impl LoginModalView {
         self.status.clear();
         self.email_focused = true;
         self.password_focused = false;
+        sync_caret_blink(self, ctx);
         ctx.notify();
     }
 
     pub fn close(&mut self, ctx: &mut ViewContext<Self>) {
         self.open = false;
         self.busy = false;
+        self.email_focused = false;
+        self.password_focused = false;
+        sync_caret_blink(self, ctx);
         ctx.notify();
+    }
+
+    fn any_field_focused(&self) -> bool {
+        self.email_focused || self.password_focused
+    }
+
+    fn sync_caret(&mut self, ctx: &mut ViewContext<Self>) {
+        sync_caret_blink(self, ctx);
     }
 
     fn field_block(
@@ -104,7 +119,15 @@ impl LoginModalView {
                 .with_color(theme::muted())
                 .finish(),
         );
-        let field = render_field_text(draft, marked, placeholder, self.font, focused, false);
+        let field = render_field_with_caret(
+            draft,
+            marked,
+            placeholder,
+            self.font,
+            focused,
+            false,
+            self.caret_blink.visible,
+        );
         let edit_action = on_edit.clone();
         let tab_action = tab_focus.clone();
         col.add_child(
@@ -347,21 +370,39 @@ impl TypedActionView for LoginModalView {
             LoginModalAction::FocusEmail => {
                 self.email_focused = true;
                 self.password_focused = false;
+                self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::FocusPassword => {
                 self.email_focused = false;
                 self.password_focused = true;
+                self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::EmailEdit(edit) => {
                 self.email_field.apply(&mut self.email, edit);
+                self.email_focused = true;
+                self.password_focused = false;
+                self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::PasswordEdit(edit) => {
                 self.password_field.apply(&mut self.password, edit);
+                self.email_focused = false;
+                self.password_focused = true;
+                self.sync_caret(ctx);
                 ctx.notify();
             }
         }
+    }
+}
+
+impl CaretBlinkHost for LoginModalView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.open && self.any_field_focused()
     }
 }

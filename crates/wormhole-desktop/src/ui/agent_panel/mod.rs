@@ -30,14 +30,16 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
-use crate::ui::text_field_input::{render_field_text, TextFieldEditAction, TextFieldInput, TextFieldState};
+use crate::ui::text_field_input::{
+    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
+    TextFieldInput, TextFieldState,
+};
 use crate::ui::theme;
 use crate::ui_text;
 
 const COMPOSER_BAR_LIFT: f32 = 44.0;
 const ACCESS_POPOVER_INSET_LEFT: f32 = 46.0;
 const MODEL_POPOVER_INSET_RIGHT: f32 = 48.0;
-const CARET_BLINK_MS: u64 = 530;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -83,7 +85,6 @@ struct PanelState {
     event_cursor: u64,
     polling_session: bool,
     input_focused: bool,
-    caret_blink: bool,
     pending_send: bool,
     projects: Vec<sidebar::AgentProject>,
     sidebar_sessions: Vec<sidebar::AgentSession>,
@@ -113,7 +114,7 @@ pub struct AgentPanelView {
     preferred_agent: PreferredAgent,
     access_mode: AgentAccessMode,
     sidebar_scroll: ClippedScrollStateHandle,
-    caret_blink_running: bool,
+    caret_blink: CaretBlink,
     generation_notify_tx: async_channel::Sender<()>,
     generation_notify_rx: async_channel::Receiver<()>,
 }
@@ -143,7 +144,6 @@ impl AgentPanelView {
                 event_cursor: 0,
                 polling_session: false,
                 input_focused: false,
-                caret_blink: true,
                 pending_send: false,
                 projects: sidebar::seed_projects(),
                 sidebar_sessions: sidebar::seed_sessions(),
@@ -175,7 +175,7 @@ impl AgentPanelView {
             preferred_agent,
             access_mode,
             sidebar_scroll: ClippedScrollStateHandle::default(),
-            caret_blink_running: false,
+            caret_blink: CaretBlink::new(),
             generation_notify_tx,
             generation_notify_rx,
         }
@@ -206,11 +206,12 @@ impl AgentPanelView {
             if let Ok(mut panel) = self.state.lock() {
                 panel.input_focused = true;
                 panel.sidebar_search_focused = false;
-                panel.caret_blink = true;
             }
             self.refresh_status(ctx);
             self.start_generation_listener(ctx);
-            self.start_caret_blink(ctx);
+            sync_caret_blink(self, ctx);
+        } else {
+            sync_caret_blink(self, ctx);
         }
         ctx.notify();
     }
@@ -349,6 +350,7 @@ impl AgentPanelView {
                     if should_send {
                         view.send_message(ctx);
                     } else {
+                        sync_caret_blink(view, ctx);
                         ctx.notify();
                     }
                     if view.visible {
@@ -412,7 +414,7 @@ impl AgentPanelView {
                     panel.sidebar_search_focused = false;
                 }
                 if panel.input_focused {
-                    panel.caret_blink = true;
+                    panel.sidebar_search_focused = false;
                 }
             }
             let _ = notify_tx.try_send(());
@@ -460,7 +462,6 @@ impl AgentPanelView {
                 panel.draft.clear();
                 panel.field_state.clear_marked();
                 panel.input_focused = false;
-                panel.caret_blink = false;
             }
             "backspace" => return false,
             key if key.len() == 1 => return false,
@@ -1173,47 +1174,6 @@ impl AgentPanelView {
             .finish()
     }
 
-    fn start_caret_blink(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.caret_blink_running {
-            return;
-        }
-        let focused = self
-            .state
-            .lock()
-            .map(|panel| panel.input_focused)
-            .unwrap_or(false);
-        if !focused {
-            return;
-        }
-        self.caret_blink_running = true;
-        ctx.spawn(
-            async move {
-                tokio::time::sleep(Duration::from_millis(CARET_BLINK_MS)).await;
-            },
-            move |view, _, ctx| {
-                let still_focused = view
-                    .state
-                    .lock()
-                    .map(|mut panel| {
-                        if panel.input_focused {
-                            panel.caret_blink = !panel.caret_blink;
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-                if !still_focused {
-                    view.caret_blink_running = false;
-                    return;
-                }
-                ctx.notify();
-                view.caret_blink_running = false;
-                view.start_caret_blink(ctx);
-            },
-        );
-    }
-
     fn agent_composer_input(
         &self,
         draft: &str,
@@ -1223,32 +1183,17 @@ impl AgentPanelView {
         busy: bool,
         placeholder: &str,
     ) -> Box<dyn Element> {
-        let draft_empty = draft.is_empty() && marked.is_empty();
-        let show_caret = input_focused && !busy;
-        let caret = Container::new(
-            ConstrainedBox::new(Flex::row().finish())
-                .with_width(2.0)
-                .with_height(18.0)
-                .finish(),
-        )
-        .with_background(if show_caret && caret_blink {
-            theme::accent_cool()
-        } else {
-            ColorU::transparent_black()
-        })
-        .with_horizontal_margin(1.0)
-        .finish();
+        let field = render_field_with_caret(
+            draft,
+            marked,
+            placeholder,
+            self.font,
+            input_focused,
+            busy,
+            caret_blink,
+        );
 
-        let field = render_field_text(draft, marked, placeholder, self.font, input_focused, busy);
-        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-        row.add_child(field);
-        if show_caret && draft_empty {
-            row.add_child(caret);
-        } else if show_caret && !draft_empty {
-            row.add_child(caret);
-        }
-
-        TextFieldInput::builder(row.finish(), |ctx, action| {
+        TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(AgentPanelAction::TextFieldEdit(action));
         })
         .focused(input_focused)
@@ -1421,7 +1366,7 @@ impl View for AgentPanelView {
         let busy = state.busy;
         let _mode = state.mode;
         let input_focused = state.input_focused;
-        let caret_blink = state.caret_blink;
+        let caret_blink = self.caret_blink.visible;
         let lines = Arc::clone(&state.lines);
         let demo_user_prompt = state.demo_user_prompt.clone();
         let demo_status_line = state.demo_status_line.clone();
@@ -1678,10 +1623,9 @@ impl TypedActionView for AgentPanelView {
                     if !panel.busy {
                         panel.input_focused = true;
                         panel.sidebar_search_focused = false;
-                        panel.caret_blink = true;
                     }
                 }
-                self.start_caret_blink(ctx);
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             AgentPanelAction::SelectProject(id) => self.select_project(id.clone(), ctx),
@@ -1693,6 +1637,7 @@ impl TypedActionView for AgentPanelView {
                     panel.sidebar_search_focused = true;
                     panel.input_focused = false;
                 }
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             AgentPanelAction::SidebarMore => {}
@@ -1718,9 +1663,9 @@ impl TypedActionView for AgentPanelView {
                         panel.field_state.apply(&mut draft, &edit);
                         panel.draft = draft;
                         panel.input_focused = true;
-                        panel.caret_blink = true;
                     }
                 }
+                sync_caret_blink(self, ctx);
                 self.bump();
                 ctx.notify();
             }
@@ -1801,5 +1746,18 @@ impl TypedActionView for AgentPanelView {
             }
         };
         ActionAccessibilityContent::Custom(content)
+    }
+}
+
+impl CaretBlinkHost for AgentPanelView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.state
+            .lock()
+            .map(|panel| panel.input_focused && !panel.busy)
+            .unwrap_or(false)
     }
 }

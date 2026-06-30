@@ -14,7 +14,8 @@ use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{status_line, StatusTone};
 use crate::ui::text_field_input::{
-    compose_input_height, render_field_text, TextFieldEditAction, TextFieldInput, TextFieldState,
+    compose_input_height, render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost,
+    TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use wormhole_desktop_core::chat_commands::{chat_send_message, SendChatMessageParams};
@@ -41,6 +42,7 @@ pub struct ChatComposeView {
     status: String,
     status_tone: StatusTone,
     input_focused: bool,
+    caret_blink: CaretBlink,
     sending: bool,
     sticker_open: bool,
     sticker_picker: warpui::ViewHandle<StickerPickerView>,
@@ -63,6 +65,7 @@ impl ChatComposeView {
             status: String::new(),
             status_tone: StatusTone::Neutral,
             input_focused: false,
+            caret_blink: CaretBlink::new(),
             sending: false,
             sticker_open: false,
             sticker_picker,
@@ -182,13 +185,14 @@ impl ChatComposeView {
         } else {
             "输入消息…"
         };
-        let field = render_field_text(
+        let field = render_field_with_caret(
             &draft,
             &marked,
             placeholder,
             self.font,
             self.input_focused,
             self.sending,
+            self.caret_blink.visible,
         );
         let input = TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatComposeAction::TextEdit(action));
@@ -376,12 +380,14 @@ impl TypedActionView for ChatComposeView {
             ChatComposeAction::FocusInput => {
                 if !self.sending {
                     self.input_focused = true;
+                    sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
             }
             ChatComposeAction::ToggleFocus => {
                 if !self.sending {
                     self.input_focused = !self.input_focused;
+                    sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
             }
@@ -394,6 +400,7 @@ impl TypedActionView for ChatComposeView {
                     self.draft.clear();
                     self.field_state.clear_marked();
                     self.input_focused = false;
+                    sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
             }
@@ -401,6 +408,7 @@ impl TypedActionView for ChatComposeView {
                 if !self.sending {
                     self.field_state.apply(&mut self.draft, edit);
                     self.input_focused = true;
+                    sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
             }
@@ -427,5 +435,15 @@ impl TypedActionView for ChatComposeView {
             }
         };
         ActionAccessibilityContent::Custom(content)
+    }
+}
+
+impl CaretBlinkHost for ChatComposeView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.input_focused && !self.sending
     }
 }

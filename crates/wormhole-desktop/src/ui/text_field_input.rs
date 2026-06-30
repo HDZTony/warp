@@ -2,16 +2,19 @@
 
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Duration;
 
+use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
-    AfterLayoutContext, AppContext, CrossAxisAlignment, DispatchEventResult, Element,
-    EventContext, Flex, LayoutContext, PaintContext, ParentElement, Point, SizeConstraint, ZIndex,
+    AfterLayoutContext, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
+    DispatchEventResult, Element, EventContext, Flex, LayoutContext, PaintContext, ParentElement,
+    Point, SizeConstraint, ZIndex,
 };
 use warpui::event::DispatchedEvent;
 use warpui::fonts::FamilyId;
 use warpui::keymap::Keystroke;
-use warpui::Event;
+use warpui::{Event, View, ViewContext};
 
 use crate::ui::clipboard::read_clipboard_text;
 use crate::ui::theme;
@@ -84,6 +87,120 @@ pub fn pop_char(draft: &mut String) {
     }
 }
 
+pub const CARET_BLINK_MS: u64 = 530;
+
+#[derive(Debug, Clone, Default)]
+pub struct CaretBlink {
+    pub visible: bool,
+    running: bool,
+}
+
+impl CaretBlink {
+    pub fn new() -> Self {
+        Self {
+            visible: true,
+            running: false,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.visible = true;
+    }
+
+    pub fn on_blur(&mut self) {
+        self.visible = true;
+        self.running = false;
+    }
+
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+
+    pub fn ensure_animating<V: CaretBlinkHost + 'static>(&mut self, ctx: &mut ViewContext<V>) {
+        if self.running {
+            return;
+        }
+        self.running = true;
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_millis(CARET_BLINK_MS)).await;
+            },
+            move |view, _, ctx| {
+                if view.caret_input_focused() {
+                    view.caret_blink().toggle();
+                    ctx.notify();
+                } else {
+                    view.caret_blink().on_blur();
+                    return;
+                }
+                view.caret_blink().running = false;
+                if view.caret_input_focused() {
+                    view.caret_blink().ensure_animating(ctx);
+                }
+            },
+        );
+    }
+}
+
+pub trait CaretBlinkHost: View {
+    fn caret_blink(&mut self) -> &mut CaretBlink;
+    fn caret_input_focused(&self) -> bool;
+}
+
+pub fn sync_caret_blink<V: CaretBlinkHost + 'static>(view: &mut V, ctx: &mut ViewContext<V>) {
+    let focused = view.caret_input_focused();
+    if focused {
+        view.caret_blink().reset();
+        view.caret_blink().ensure_animating(ctx);
+    } else {
+        view.caret_blink().on_blur();
+    }
+}
+
+pub fn should_show_placeholder(focused: bool, draft: &str, marked: &str) -> bool {
+    !focused && draft.is_empty() && marked.is_empty()
+}
+
+pub fn render_caret(show: bool, blink_on: bool) -> Box<dyn Element> {
+    Container::new(
+        ConstrainedBox::new(Flex::row().finish())
+            .with_width(2.0)
+            .with_height(18.0)
+            .finish(),
+    )
+    .with_background(if show && blink_on {
+        theme::accent_cool()
+    } else {
+        ColorU::transparent_black()
+    })
+    .with_horizontal_margin(1.0)
+    .finish()
+}
+
+pub fn render_field_with_caret(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    caret_blink: bool,
+) -> Box<dyn Element> {
+    let show_caret = focused && !disabled;
+    let draft_empty = draft.is_empty() && marked.is_empty();
+    let field = render_field_text(draft, marked, placeholder, font, focused, disabled);
+    let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+    if show_caret && draft_empty {
+        row.add_child(render_caret(true, caret_blink));
+    } else {
+        row.add_child(field);
+        if show_caret {
+            row.add_child(render_caret(true, caret_blink));
+        }
+    }
+    row.finish()
+}
+
 pub fn display_with_preedit(draft: &str, marked: &str, placeholder: &str) -> String {
     if !marked.is_empty() {
         if draft.is_empty() {
@@ -105,7 +222,7 @@ pub fn render_field_text(
     focused: bool,
     disabled: bool,
 ) -> Box<dyn Element> {
-    let show_placeholder = draft.is_empty() && marked.is_empty();
+    let show_placeholder = should_show_placeholder(focused, draft, marked);
     if show_placeholder {
         return ui_text::body(placeholder.to_string(), font)
             .with_color(theme::placeholder())
@@ -361,7 +478,9 @@ impl Element for TextFieldInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_with_preedit, pop_char, TextFieldEditAction, TextFieldState};
+    use super::{
+        display_with_preedit, pop_char, should_show_placeholder, TextFieldEditAction, TextFieldState,
+    };
 
     #[test]
     fn pop_char_removes_utf8_rune() {
@@ -397,5 +516,13 @@ mod tests {
         use super::compose_input_height;
         assert_eq!(compose_input_height("", ""), 36.0);
         assert!(compose_input_height("a\nb\nc", "") > 36.0);
+    }
+
+    #[test]
+    fn placeholder_hidden_while_focused() {
+        assert!(!should_show_placeholder(true, "", ""));
+        assert!(should_show_placeholder(false, "", ""));
+        assert!(!should_show_placeholder(true, "x", ""));
+        assert!(!should_show_placeholder(false, "", "preedit"));
     }
 }
