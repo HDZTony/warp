@@ -16,8 +16,15 @@ use crate::ui_text;
 use wormhole_desktop_core::{
     clear_cloud_auth_token, cloud_auth_status, supabase_password_login, SupabasePasswordLoginParams,
 };
-use wormhole_desktop_core::device_identity::device_bootstrap;
+use wormhole_desktop_core::device_identity::device_bootstrap_status;
 use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
+
+#[derive(Debug, Clone)]
+pub enum SettingsEvent {
+    AccountChanged {
+        authenticated: bool,
+    },
+}
 
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
@@ -308,7 +315,7 @@ impl SettingsView {
 }
 
 impl Entity for SettingsView {
-    type Event = ();
+    type Event = SettingsEvent;
 }
 
 impl View for SettingsView {
@@ -371,7 +378,14 @@ impl TypedActionView for SettingsView {
                             },
                         )
                         .await?;
-                        device_bootstrap(&state).await?;
+                        let bootstrap = device_bootstrap_status(&state).await;
+                        if !bootstrap.ready {
+                            return Err(
+                                bootstrap
+                                    .error
+                                    .unwrap_or_else(|| "设备身份恢复失败".into()),
+                            );
+                        }
                         Ok::<(), String>(())
                     },
                     |view, output, ctx| {
@@ -381,6 +395,9 @@ impl TypedActionView for SettingsView {
                                 view.auth_status = "登录并恢复设备身份成功。".into();
                                 view.auth_status_tone = StatusTone::Success;
                                 view.refresh_account(ctx);
+                                ctx.emit(SettingsEvent::AccountChanged {
+                                    authenticated: true,
+                                });
                             }
                             Err(err) => {
                                 view.auth_status = format!("登录失败: {err}");
@@ -407,6 +424,9 @@ impl TypedActionView for SettingsView {
                                 view.auth_user_id = None;
                                 view.auth_status = "已退出登录。".into();
                                 view.auth_status_tone = StatusTone::Placeholder;
+                                ctx.emit(SettingsEvent::AccountChanged {
+                                    authenticated: false,
+                                });
                             }
                             Err(err) => {
                                 view.auth_status = format!("退出失败: {err}");

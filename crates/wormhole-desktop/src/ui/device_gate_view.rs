@@ -1,21 +1,29 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use warpui::elements::{
     Align, Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::Element;
+use warpui::{Element, View, ViewContext};
 
+use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
     section_hint, status_line, tab_content_fill, StatusTone, SECTION_PADDING,
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{cluster_status_fast, ClusterStatusDto};
+use wormhole_desktop_core::device_identity::ensure_device_ready;
 use wormhole_desktop_core::state::AppState;
+
+pub const DEVICE_GATE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Default)]
 pub struct DeviceGateStatus {
     pub loaded: bool,
     pub auth_required: bool,
     pub device_bootstrap_required: bool,
+    pub error: Option<String>,
 }
 
 impl DeviceGateStatus {
@@ -24,23 +32,82 @@ impl DeviceGateStatus {
             loaded: true,
             auth_required: status.auth_required,
             device_bootstrap_required: status.device_bootstrap_required,
+            error: status.device_bootstrap_error.clone(),
         }
     }
 
     pub fn blocking(&self) -> bool {
         self.loaded && (self.auth_required || self.device_bootstrap_required)
     }
+
+    pub fn needs_poll(&self) -> bool {
+        self.device_bootstrap_required
+    }
 }
 
-pub async fn load_device_gate_status(state: &AppState) -> DeviceGateStatus {
+pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {
+    if state.cloud_auth.read().await.access_token.is_some() {
+        let _ = ensure_device_ready(state).await;
+    }
     match cluster_status_fast(state).await {
         Ok(status) => DeviceGateStatus::from_cluster(&status),
         Err(_) => DeviceGateStatus {
             loaded: true,
             auth_required: true,
             device_bootstrap_required: false,
+            error: None,
         },
     }
+}
+
+pub async fn load_device_gate_status(state: &AppState) -> DeviceGateStatus {
+    fetch_device_gate_status(state).await
+}
+
+type GateApply<V> = Arc<dyn Fn(&mut V, DeviceGateStatus) + Send + Sync>;
+
+pub fn load_device_gate<V>(core: CoreHandle, ctx: &mut ViewContext<V>, apply: GateApply<V>)
+where
+    V: View + 'static,
+{
+    let core_for_poll = core.clone();
+    ctx.spawn(
+        async move {
+            let state = core.runtime().state.clone();
+            fetch_device_gate_status(&state).await
+        },
+        move |view, gate, ctx| {
+            apply(view, gate.clone());
+            if gate.needs_poll() {
+                schedule_device_gate_poll(core_for_poll, ctx, apply.clone());
+            }
+            ctx.notify();
+        },
+    );
+}
+
+pub fn schedule_device_gate_poll<V>(
+    core: CoreHandle,
+    ctx: &mut ViewContext<V>,
+    apply: GateApply<V>,
+) where
+    V: View + 'static,
+{
+    let core_for_poll = core.clone();
+    ctx.spawn(
+        async move {
+            tokio::time::sleep(DEVICE_GATE_POLL_INTERVAL).await;
+            let state = core.runtime().state.clone();
+            fetch_device_gate_status(&state).await
+        },
+        move |view, gate, ctx| {
+            apply(view, gate.clone());
+            if gate.needs_poll() {
+                schedule_device_gate_poll(core_for_poll, ctx, apply.clone());
+            }
+            ctx.notify();
+        },
+    );
 }
 
 pub fn device_gate_screen(
@@ -63,11 +130,15 @@ pub fn device_gate_screen(
         ));
     } else if gate.device_bootstrap_required {
         col.add_child(section_hint("DEVICE · 正在恢复设备身份", font));
-        col.add_child(status_line(
-            "登录成功，正在从云端恢复本机设备身份…",
-            font,
-            StatusTone::Placeholder,
-        ));
+        if let Some(err) = &gate.error {
+            col.add_child(status_line(err.clone(), font, StatusTone::Danger));
+        } else {
+            col.add_child(status_line(
+                "登录成功，正在从云端恢复本机设备身份…",
+                font,
+                StatusTone::Placeholder,
+            ));
+        }
     }
 
     tab_content_fill(

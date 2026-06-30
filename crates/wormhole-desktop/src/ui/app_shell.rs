@@ -26,7 +26,7 @@ use crate::ui::display_view::DisplayView;
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
 use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
-use crate::ui::settings_view::SettingsView;
+use crate::ui::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
@@ -115,9 +115,11 @@ pub struct AppShellView {
     login_modal: ViewHandle<LoginModalView>,
     auth_authenticated: bool,
     auth_user_id: Option<String>,
+    login_modal_open: bool,
     font: FamilyId,
     mono: FamilyId,
     hud_nodes: usize,
+    device_ready: bool,
     tab_scroll: ClippedScrollStateHandle,
     show_onboarding: bool,
     window_id: WindowId,
@@ -153,16 +155,33 @@ impl AppShellView {
             ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
-            let LoginModalEvent::AuthChanged {
-                authenticated,
-                user_id,
-            } = event;
+            match event {
+                LoginModalEvent::AuthChanged {
+                    authenticated,
+                    user_id,
+                } => {
+                    view.auth_authenticated = *authenticated;
+                    view.auth_user_id = user_id.clone();
+                    let settings_handle = view.settings.clone();
+                    ctx.update_view(&settings_handle, |settings, ctx| {
+                        settings.refresh_account(ctx);
+                    });
+                    view.refresh_auth_gated_views(ctx);
+                }
+                LoginModalEvent::OpenChanged { open } => {
+                    view.login_modal_open = *open;
+                }
+            }
+            ctx.notify();
+        });
+        ctx.subscribe_to_view(&settings, |view, _, event, ctx| {
+            let SettingsEvent::AccountChanged { authenticated } = event;
             view.auth_authenticated = *authenticated;
-            view.auth_user_id = user_id.clone();
-            let settings_handle = view.settings.clone();
-            ctx.update_view(&settings_handle, |settings, ctx| {
-                settings.refresh_account(ctx);
-            });
+            if !authenticated {
+                view.auth_user_id = None;
+                view.device_ready = false;
+            }
+            view.refresh_auth_gated_views(ctx);
             ctx.notify();
         });
         let prefs = desktop_prefs::load(&core.data_dir());
@@ -202,9 +221,11 @@ impl AppShellView {
             login_modal,
             auth_authenticated: false,
             auth_user_id: None,
+            login_modal_open: false,
             font,
             mono,
             hud_nodes: 1,
+            device_ready: false,
             tab_scroll: ClippedScrollStateHandle::new(),
             show_onboarding,
             window_id,
@@ -270,10 +291,16 @@ impl AppShellView {
                 let state = core_for_task.runtime().state.clone();
                 cluster_status_fast(&state).await
             },
-            move             |view, output, ctx| {
+            move |view, output, ctx| {
                 if let Ok(status) = output {
                     view.hud_nodes = status.nodes.len().max(1);
                     view.auth_authenticated = !status.auth_required;
+                    let device_ready =
+                        !status.auth_required && !status.device_bootstrap_required;
+                    if device_ready && !view.device_ready {
+                        view.refresh_auth_gated_views(ctx);
+                    }
+                    view.device_ready = device_ready;
                     ctx.notify();
                 }
                 Self::poll_hud_once(ctx, tick_rx, core);
@@ -440,7 +467,7 @@ impl AppShellView {
         tabs[next]
     }
 
-    fn tab_from_arrow(keystroke: &Keystroke, current: AppTab) -> Option<AppTab> {
+    pub(crate) fn tab_from_arrow(keystroke: &Keystroke, current: AppTab) -> Option<AppTab> {
         if keystroke.ctrl || keystroke.meta || keystroke.alt {
             return None;
         }
@@ -465,6 +492,25 @@ impl AppShellView {
             "5" => Some(AppTab::Settings),
             _ => None,
         }
+    }
+
+    fn refresh_auth_gated_views(&self, ctx: &mut ViewContext<Self>) {
+        let devices = self.devices.clone();
+        ctx.update_view(&devices, |devices, ctx| {
+            devices.refresh_cluster(ctx);
+        });
+        let chat = self.chat.clone();
+        ctx.update_view(&chat, |chat, ctx| {
+            chat.poll_gate(ctx);
+        });
+        let sync = self.sync.clone();
+        ctx.update_view(&sync, |sync, ctx| {
+            sync.refresh(ctx);
+        });
+        let display = self.display.clone();
+        ctx.update_view(&display, |display, ctx| {
+            display.refresh(ctx);
+        });
     }
 
     fn persist_last_tab(&self) {
@@ -789,6 +835,7 @@ impl View for AppShellView {
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
+        let login_modal_open = self.login_modal_open;
         let shell = Container::new(self.body(app))
             .with_background(theme::canvas())
             .with_uniform_padding(0.0)
@@ -803,12 +850,14 @@ impl View for AppShellView {
                     ));
                     return DispatchEventResult::StopPropagation;
                 }
-                if let Some(tab) = Self::tab_from_arrow(keystroke, current_tab) {
-                    ctx.dispatch_typed_action(AppShellAction::SelectTab(
-                        tab,
-                        TabSelectSource::Keyboard,
-                    ));
-                    return DispatchEventResult::StopPropagation;
+                if !login_modal_open {
+                    if let Some(tab) = Self::tab_from_arrow(keystroke, current_tab) {
+                        ctx.dispatch_typed_action(AppShellAction::SelectTab(
+                            tab,
+                            TabSelectSource::Keyboard,
+                        ));
+                        return DispatchEventResult::StopPropagation;
+                    }
                 }
                 DispatchEventResult::PropagateToParent
             })
@@ -848,7 +897,7 @@ impl View for AppShellView {
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
         Some(AccessibilityContent::new(
             format!("Wormhole，当前标签：{}", Self::tab_label(self.tab)),
-            "Ctrl 加数字 1 到 5 切换标签。左右方向键切换相邻标签并显示键盘焦点环。Home 与 End 跳到首尾标签。",
+            "Ctrl 加数字 1 到 5 切换标签。非输入焦点时左右方向键切换相邻标签；文本框内方向键不切换标签。Home 与 End 跳到首尾标签。",
             WarpA11yRole::WindowRole,
         ))
     }
@@ -948,7 +997,15 @@ impl TypedActionView for AppShellView {
 
 #[cfg(test)]
 mod tests {
-    use super::AppTab;
+    use super::{AppShellView, AppTab};
+    use warpui_core::keymap::Keystroke;
+
+    fn key(key: &str) -> Keystroke {
+        Keystroke {
+            key: key.to_owned(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn tab_persist_id_roundtrip() {
@@ -966,5 +1023,32 @@ mod tests {
         assert_eq!(AppTab::from_persist_id("terminals"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("w_drive"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("agent"), Some(AppTab::Warp));
+    }
+
+    #[test]
+    fn tab_from_arrow_cycles_visible_tabs() {
+        assert_eq!(
+            AppShellView::tab_from_arrow(&key("right"), AppTab::Devices),
+            Some(AppTab::Chat)
+        );
+        assert_eq!(
+            AppShellView::tab_from_arrow(&key("left"), AppTab::Devices),
+            Some(AppTab::Settings)
+        );
+        assert_eq!(
+            AppShellView::tab_from_arrow(&key("home"), AppTab::Chat),
+            Some(AppTab::Devices)
+        );
+        assert_eq!(
+            AppShellView::tab_from_arrow(&key("end"), AppTab::Chat),
+            Some(AppTab::Settings)
+        );
+    }
+
+    #[test]
+    fn tab_from_arrow_ignores_modified_keys() {
+        let mut ks = key("right");
+        ks.ctrl = true;
+        assert_eq!(AppShellView::tab_from_arrow(&ks, AppTab::Devices), None);
     }
 }

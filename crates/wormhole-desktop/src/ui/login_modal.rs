@@ -14,7 +14,7 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::device_identity::device_bootstrap;
+use wormhole_desktop_core::device_identity::device_bootstrap_status;
 use wormhole_desktop_core::{
     cloud_auth_status, supabase_password_login, SupabasePasswordLoginParams,
 };
@@ -35,6 +35,9 @@ pub enum LoginModalEvent {
     AuthChanged {
         authenticated: bool,
         user_id: Option<String>,
+    },
+    OpenChanged {
+        open: bool,
     },
 }
 
@@ -83,6 +86,7 @@ impl LoginModalView {
         self.email_focused = true;
         self.password_focused = false;
         sync_caret_blink(self, ctx);
+        ctx.emit(LoginModalEvent::OpenChanged { open: true });
         ctx.notify();
     }
 
@@ -92,6 +96,7 @@ impl LoginModalView {
         self.email_focused = false;
         self.password_focused = false;
         sync_caret_blink(self, ctx);
+        ctx.emit(LoginModalEvent::OpenChanged { open: false });
         ctx.notify();
     }
 
@@ -307,15 +312,22 @@ impl LoginModalView {
                     SupabasePasswordLoginParams { email, password },
                 )
                 .await?;
-                device_bootstrap(&state).await?;
+                let bootstrap = device_bootstrap_status(&state).await;
+                if !bootstrap.ready {
+                    return Err(
+                        bootstrap
+                            .error
+                            .unwrap_or_else(|| "设备身份恢复失败".into()),
+                    );
+                }
                 cloud_auth_status(&state).await
             },
             |view, output, ctx| {
                 view.busy = false;
                 match output {
                     Ok(status) => {
-                        view.open = false;
                         view.status.clear();
+                        view.close(ctx);
                         ctx.emit(LoginModalEvent::AuthChanged {
                             authenticated: status.authenticated,
                             user_id: status.user_id,

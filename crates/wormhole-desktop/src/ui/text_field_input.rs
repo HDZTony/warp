@@ -452,6 +452,10 @@ impl Element for TextFieldInput {
                         (self.on_edit)(ctx, TextFieldEditAction::Backspace);
                         return true;
                     }
+                    "left" | "right" | "up" | "down" | "home" | "end" => {
+                        // Consume navigation keys while focused so shell tab arrows do not fire.
+                        return true;
+                    }
                     "enter" | "return" | "escape" | "tab" => {
                         if let Some(cb) = &self.on_keydown {
                             return matches!(cb(ctx, keystroke), DispatchEventResult::StopPropagation);

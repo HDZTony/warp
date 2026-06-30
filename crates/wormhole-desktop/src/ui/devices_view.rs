@@ -27,6 +27,7 @@ use wormhole_desktop_core::cluster_commands::{
     ShareEntryDto, SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::commands::vault_status;
+use wormhole_desktop_core::device_identity::ensure_device_ready;
 
 use std::time::Duration;
 
@@ -121,38 +122,89 @@ impl DevicesView {
         view
     }
 
-    fn refresh_cluster(&self, ctx: &mut ViewContext<Self>) {
+    pub fn refresh_cluster(&self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
+                if state.cloud_auth.read().await.access_token.is_some() {
+                    let _ = ensure_device_ready(&state).await;
+                }
                 cluster_status(&state).await
             },
             |view, output, ctx| {
                 match output {
                     Ok(status) => {
                         view.cluster_syncing = status.syncing;
-                        view.cluster = Some(status);
+                        view.cluster = Some(status.clone());
                         view.cluster_error = None;
                         if view.local_invite.is_none() && !view.invite_busy {
                             view.load_local_invite(ctx);
                         }
-                        if view.cluster_syncing {
-                            let core = view.core.clone();
-                            ctx.spawn(
-                                async move {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                },
-                                |view, _, ctx| {
-                                    view.refresh_cluster(ctx);
-                                },
-                            );
+                        if status.syncing {
+                            view.schedule_cluster_poll(ctx);
+                        } else if status.device_bootstrap_required {
+                            view.schedule_bootstrap_poll(ctx);
                         }
                     }
                     Err(e) => {
                         view.cluster = None;
                         view.cluster_syncing = false;
                         view.cluster_error = Some(e);
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_cluster_poll(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let state = core.runtime().state.clone();
+                if state.cloud_auth.read().await.access_token.is_some() {
+                    let _ = ensure_device_ready(&state).await;
+                }
+                cluster_status(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.cluster_syncing = status.syncing;
+                    view.cluster = Some(status.clone());
+                    view.cluster_error = None;
+                    if status.syncing {
+                        view.schedule_cluster_poll(ctx);
+                    } else if status.device_bootstrap_required {
+                        view.schedule_bootstrap_poll(ctx);
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_bootstrap_poll(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let state = core.runtime().state.clone();
+                let _ = ensure_device_ready(&state).await;
+                cluster_status(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.cluster_syncing = status.syncing;
+                    view.cluster = Some(status.clone());
+                    view.cluster_error = None;
+                    if status.device_bootstrap_required {
+                        view.schedule_bootstrap_poll(ctx);
+                    } else if status.syncing {
+                        view.schedule_cluster_poll(ctx);
+                    } else if view.local_invite.is_none() && !view.invite_busy {
+                        view.load_local_invite(ctx);
                     }
                 }
                 ctx.notify();
@@ -1164,11 +1216,22 @@ impl DevicesView {
                 ));
             } else if cluster.device_bootstrap_required {
                 header.add_child(section_hint("DEVICE · 正在恢复设备身份", self.font));
-                header.add_child(status_line(
-                    "登录成功，正在从云端恢复本机设备身份…",
-                    self.font,
-                    StatusTone::Placeholder,
-                ));
+                if let Some(err) = &cluster.device_bootstrap_error {
+                    header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
+                } else {
+                    header.add_child(status_line(
+                        "登录成功，正在从云端恢复本机设备身份…",
+                        self.font,
+                        StatusTone::Placeholder,
+                    ));
+                }
+                header.add_child(
+                    Container::new(
+                        self.toolbar_button("重试", DevicesAction::Refresh, false, 72.0),
+                    )
+                    .with_vertical_margin(8.0)
+                    .finish(),
+                );
             } else {
                 header.add_child(
                     Container::new(self.cluster_toolbar(cluster))
@@ -1204,6 +1267,8 @@ impl DevicesView {
                             ui_text::body(
                                 if cluster.auth_required {
                                     "登录后可查看集群拓扑并加入家庭网络。"
+                                } else if cluster.device_bootstrap_error.is_some() {
+                                    "设备身份恢复失败。请检查网络与控制面配置后点击「重试」，或在设置中退出并重新登录。"
                                 } else {
                                     "设备身份恢复完成后将自动同步集群。"
                                 },
