@@ -171,8 +171,15 @@ fn node_display_label(node: &ClusterNodeDto, is_local: bool) -> String {
     }
 }
 
-fn share_files_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn Element> {
-    let (border, color, bg) = if online {
+fn share_files_button(
+    node_id: String,
+    online: bool,
+    is_local: bool,
+    mono: FamilyId,
+) -> Box<dyn Element> {
+    // Local share folders are on disk; browsing does not require gossip online.
+    let clickable = online || is_local;
+    let (border, color, bg) = if clickable {
         (theme::border_bright(), theme::text(), theme::panel())
     } else {
         (
@@ -202,7 +209,7 @@ fn share_files_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn 
     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
     .finish();
 
-    if online {
+    if clickable {
         EventHandler::new(inner)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::OpenNode(node_id.clone()));
@@ -247,7 +254,7 @@ fn node_card(
     body.add_child(status_line(status_text, mono, status_tone));
     body.add_child(
         Align::new(
-            Container::new(share_files_button(node_id, node.online, mono))
+            Container::new(share_files_button(node_id, node.online, is_local, mono))
                 .with_vertical_margin(8.0)
                 .finish(),
         )
