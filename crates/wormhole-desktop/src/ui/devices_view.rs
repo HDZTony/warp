@@ -23,8 +23,8 @@ use wormhole_desktop_core::cluster_commands::{
     add_storage_volume, cluster_status, create_cluster_invite, delete_share_entry,
     join_cluster, list_share_directory, open_share_entry, remote_open_share_entry,
     switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterStatusDto,
-    JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto,
-    SwitchActiveClusterParams,
+    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams,
+    ShareEntryDto, SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::commands::vault_status;
 
@@ -988,17 +988,24 @@ impl DevicesView {
             |view, output, ctx| {
                 view.invite_busy = false;
                 match output {
-                    Ok(status) => {
-                        view.cluster = Some(status);
+                    Ok(result) => {
+                        view.cluster = Some(result.status);
                         view.cluster_error = None;
                         view.join_modal_open = false;
                         view.join_invite_draft.clear();
                         view.join_feedback = None;
                         view.local_invite = None;
-                        view.status_flash = Some(format!(
-                            "已加入集群 · {}",
-                            DevicesView::cluster_label(&view.cluster.as_ref().unwrap())
-                        ));
+                        view.status_flash = Some(match result.outcome {
+                            JoinClusterOutcome::Joined => format!(
+                                "已加入集群 · {}",
+                                DevicesView::cluster_label(&view.cluster.as_ref().unwrap())
+                            ),
+                            JoinClusterOutcome::AlreadyActive => "您已在该集群中".to_string(),
+                            JoinClusterOutcome::SwitchedActive => format!(
+                                "已切换到集群 · {}",
+                                DevicesView::cluster_label(&view.cluster.as_ref().unwrap())
+                            ),
+                        });
                         ctx.spawn(
                             async move {
                                 tokio::time::sleep(Duration::from_millis(2600)).await;
