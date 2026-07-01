@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use composer_menus::{access_label, model_label};
 use pathfinder_color::ColorU;
 use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
-use composer_menus::{access_label, model_label};
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
     CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, MainAxisSize,
@@ -31,7 +31,9 @@ use wormhole_desktop_core::{
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::multiline_input;
-use crate::ui::panel_primitives::{agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH};
+use crate::ui::panel_primitives::{
+    agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH,
+};
 use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
     TextFieldInput, TextFieldState,
@@ -259,10 +261,8 @@ impl AgentPanelView {
                     let project_id = panel.active_project_id.clone();
                     for dto in dtos {
                         let id = dto.id.clone();
-                        if let Some(existing) = panel
-                            .sidebar_sessions
-                            .iter_mut()
-                            .find(|s| s.id == id)
+                        if let Some(existing) =
+                            panel.sidebar_sessions.iter_mut().find(|s| s.id == id)
                         {
                             existing.running = dto.status == "running";
                             existing.time = Self::format_relative_time(dto.started_at);
@@ -283,14 +283,17 @@ impl AgentPanelView {
         );
     }
 
-    fn load_session_transcript(&mut self, session_id: String, running: bool, ctx: &mut ViewContext<Self>) {
+    fn load_session_transcript(
+        &mut self,
+        session_id: String,
+        running: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let shared = Arc::clone(&self.state);
         let core = self.core.clone();
         let session_id_for_poll = session_id.clone();
         ctx.spawn(
-            async move {
-                agent_read_local_session_events(session_id, 0, core.app_state()).await
-            },
+            async move { agent_read_local_session_events(session_id, 0, core.app_state()).await },
             move |view, output, ctx| {
                 if let Ok(page) = output {
                     let mut panel = shared.lock().expect("agent panel state");
@@ -434,10 +437,8 @@ impl AgentPanelView {
                             panel.status = format!("任务{}", page.status);
                             if !panel.active_sidebar_session_id.is_empty() {
                                 let id = panel.active_sidebar_session_id.clone();
-                                if let Some(session) = panel
-                                    .sidebar_sessions
-                                    .iter_mut()
-                                    .find(|s| s.id == id)
+                                if let Some(session) =
+                                    panel.sidebar_sessions.iter_mut().find(|s| s.id == id)
                                 {
                                     session.running = false;
                                 }
@@ -743,7 +744,8 @@ impl AgentPanelView {
         let data_dir = self.core.data_dir();
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let _ = core.block_on(async { warp_embed_prefs::set_access_mode(&data_dir, mode).await });
+            let _ =
+                core.block_on(async { warp_embed_prefs::set_access_mode(&data_dir, mode).await });
         });
         ctx.notify();
     }
@@ -1333,6 +1335,7 @@ impl AgentPanelView {
         })
         .focused(input_focused)
         .disabled(busy)
+        .ime_preedit(!marked.is_empty())
         .on_keydown(move |ctx, keystroke| {
             if busy {
                 return DispatchEventResult::PropagateToParent;
@@ -1418,13 +1421,10 @@ impl AgentPanelView {
         ))
         .finish();
         let mut btn = Container::new(
-            ConstrainedBox::new(
-                Align::new(stop_icon)
-                    .finish(),
-            )
-            .with_width(32.0)
-            .with_height(32.0)
-            .finish(),
+            ConstrainedBox::new(Align::new(stop_icon).finish())
+                .with_width(32.0)
+                .with_height(32.0)
+                .finish(),
         )
         .with_background(bg)
         .with_corner_radius(warpui::elements::CornerRadius::with_all(
@@ -1783,7 +1783,8 @@ impl TypedActionView for AgentPanelView {
                     panel.polling_session = false;
                     if !panel.active_sidebar_session_id.is_empty() {
                         let id = panel.active_sidebar_session_id.clone();
-                        if let Some(session) = panel.sidebar_sessions.iter_mut().find(|s| s.id == id)
+                        if let Some(session) =
+                            panel.sidebar_sessions.iter_mut().find(|s| s.id == id)
                         {
                             session.running = false;
                         }
@@ -1883,9 +1884,10 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::ToggleArchiveSection => {
                 AccessibilityContent::new_without_help("展开归档会话", WarpA11yRole::ButtonRole)
             }
-            AgentPanelAction::TextFieldEdit(_) => {
-                AccessibilityContent::new_without_help("编辑 Agent 输入", WarpA11yRole::TextfieldRole)
-            }
+            AgentPanelAction::TextFieldEdit(_) => AccessibilityContent::new_without_help(
+                "编辑 Agent 输入",
+                WarpA11yRole::TextfieldRole,
+            ),
             AgentPanelAction::SetVisible(_) | AgentPanelAction::RefreshStatus => {
                 return ActionAccessibilityContent::Empty;
             }

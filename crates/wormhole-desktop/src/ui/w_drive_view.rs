@@ -5,7 +5,9 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::{load_device_gate_status, wrap_with_device_gate, DeviceGateStatus};
+use crate::ui::device_gate_view::{
+    fetch_device_gate_status, wrap_with_device_gate, DeviceGateStatus, DEVICE_GATE_POLL_INTERVAL,
+};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::commands::{list_files, vault_status};
@@ -32,26 +34,45 @@ impl WDriveView {
         view
     }
 
+    fn schedule_gate_then_refresh(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(DEVICE_GATE_POLL_INTERVAL).await;
+                let state = core.runtime().state.clone();
+                fetch_device_gate_status(&state).await
+            },
+            |view, gate, ctx| {
+                view.gate = gate.clone();
+                if gate.needs_poll() {
+                    view.schedule_gate_then_refresh(ctx);
+                } else {
+                    view.refresh(ctx);
+                }
+                ctx.notify();
+            },
+        );
+    }
+
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
                 let state = runtime.state.clone();
-                let gate = load_device_gate_status(&state).await;
+                let gate = fetch_device_gate_status(&state).await;
                 let status = vault_status(&state).await;
                 let files = list_files(&state).await;
                 (gate, status, files)
             },
             |view, output, ctx| {
                 let (gate, status, files) = output;
-                view.gate = gate;
+                view.gate = gate.clone();
+                if gate.needs_poll() {
+                    view.schedule_gate_then_refresh(ctx);
+                }
                 view.status = match status {
-                    Ok(s) => format!(
-                        "Vault ready={} endpoint={}",
-                        s.ready,
-                        s.endpoint_id.as_deref().unwrap_or("—")
-                    ),
+                    Ok(s) => format!("Vault ready={}", s.ready),
                     Err(e) => format!("Vault 错误: {e}"),
                 };
                 view.files = files

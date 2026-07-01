@@ -1,7 +1,8 @@
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize, ParentElement, Radius,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize,
+    ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::keymap::Keystroke;
@@ -35,9 +36,11 @@ pub enum LoginModalAction {
 pub enum LoginModalEvent {
     AuthChanged {
         authenticated: bool,
-        user_id: Option<String>,
+        device_id: Option<String>,
     },
-    Dismissed,
+    OpenChanged {
+        open: bool,
+    },
 }
 
 pub struct LoginModalView {
@@ -85,6 +88,7 @@ impl LoginModalView {
         self.email_focused = true;
         self.password_focused = false;
         sync_caret_blink(self, ctx);
+        ctx.emit(LoginModalEvent::OpenChanged { open: true });
         ctx.notify();
     }
 
@@ -94,7 +98,7 @@ impl LoginModalView {
         self.email_focused = false;
         self.password_focused = false;
         sync_caret_blink(self, ctx);
-        ctx.emit(LoginModalEvent::Dismissed);
+        ctx.emit(LoginModalEvent::OpenChanged { open: false });
         ctx.notify();
     }
 
@@ -113,10 +117,7 @@ impl LoginModalView {
         if keystroke.ctrl {
             return matches!(keystroke.key.as_str(), "1" | "2" | "3" | "4" | "5");
         }
-        matches!(
-            keystroke.key.as_str(),
-            "left" | "right" | "home" | "end"
-        )
+        matches!(keystroke.key.as_str(), "left" | "right" | "home" | "end")
     }
 
     fn field_keydown(
@@ -174,25 +175,22 @@ impl LoginModalView {
         let tab_action = tab_focus.clone();
         let click_action = click_focus.clone();
         col.add_child(
-            Container::new(
-                wrap_text_field_focus_on_click(
-                    TextFieldInput::builder(field, move |ctx, action| {
-                        ctx.dispatch_typed_action(match &edit_action {
-                            LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
-                            LoginModalAction::PasswordEdit(_) => {
-                                LoginModalAction::PasswordEdit(action)
-                            }
-                            _ => LoginModalAction::EmailEdit(action),
-                        });
-                    })
-                    .focused(focused)
-                    .on_keydown(move |ctx, keystroke| {
-                        Self::field_keydown(ctx, keystroke, tab_action.clone())
-                    })
-                    .finish(),
-                    move |ctx| ctx.dispatch_typed_action(click_action.clone()),
-                ),
-            )
+            Container::new(wrap_text_field_focus_on_click(
+                TextFieldInput::builder(field, move |ctx, action| {
+                    ctx.dispatch_typed_action(match &edit_action {
+                        LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
+                        LoginModalAction::PasswordEdit(_) => LoginModalAction::PasswordEdit(action),
+                        _ => LoginModalAction::EmailEdit(action),
+                    });
+                })
+                .focused(focused)
+                .ime_preedit(!marked.is_empty())
+                .on_keydown(move |ctx, keystroke| {
+                    Self::field_keydown(ctx, keystroke, tab_action.clone())
+                })
+                .finish(),
+                move |ctx| ctx.dispatch_typed_action(click_action.clone()),
+            ))
             .with_uniform_padding(10.0)
             .with_vertical_margin(6.0)
             .with_background(theme::canvas())
@@ -203,7 +201,12 @@ impl LoginModalView {
         col.finish()
     }
 
-    fn action_button(&self, label: &str, action: LoginModalAction, primary: bool) -> Box<dyn Element> {
+    fn action_button(
+        &self,
+        label: &str,
+        action: LoginModalAction,
+        primary: bool,
+    ) -> Box<dyn Element> {
         let text_color = if primary {
             theme::accent()
         } else {
@@ -308,16 +311,12 @@ impl LoginModalView {
         );
 
         let panel = EventHandler::new(
-            Container::new(
-                ConstrainedBox::new(col.finish())
-                    .with_width(400.0)
-                    .finish(),
-            )
-            .with_uniform_padding(24.0)
-            .with_background(theme::panel())
-            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
-            .finish(),
+            Container::new(ConstrainedBox::new(col.finish()).with_width(400.0).finish())
+                .with_uniform_padding(24.0)
+                .with_background(theme::panel())
+                .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                .finish(),
         )
         .with_always_handle()
         .on_keydown(|_, _, keystroke| {
@@ -351,23 +350,25 @@ impl LoginModalView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                supabase_password_login(
-                    &state,
-                    SupabasePasswordLoginParams { email, password },
-                )
-                .await?;
-                device_bootstrap(&state).await?;
+                supabase_password_login(&state, SupabasePasswordLoginParams { email, password })
+                    .await?;
+                let bootstrap = device_bootstrap(&state)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if !bootstrap.ready {
+                    return Err(bootstrap.error.unwrap_or_else(|| "设备身份恢复失败".into()));
+                }
                 cloud_auth_status(&state).await
             },
             |view, output, ctx| {
                 view.busy = false;
                 match output {
                     Ok(status) => {
-                        view.open = false;
                         view.status.clear();
+                        view.close(ctx);
                         ctx.emit(LoginModalEvent::AuthChanged {
                             authenticated: status.authenticated,
-                            user_id: status.user_id,
+                            device_id: status.device_id,
                         });
                     }
                     Err(err) => {

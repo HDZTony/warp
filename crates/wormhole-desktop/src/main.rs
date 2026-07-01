@@ -84,9 +84,7 @@ fn main() -> Result<()> {
     } else {
         EnvFilter::new("wormhole_desktop=info,noq_proto=warn")
     };
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let args = Args::parse();
     let mut data_dir = args.data_dir.unwrap_or_else(default_data_dir);

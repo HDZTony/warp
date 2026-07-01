@@ -11,7 +11,8 @@ use crate::ui::chat::header::{ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::{load_device_gate_status, wrap_with_device_gate, DeviceGateStatus};
+
+use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
 use crate::ui::panel_primitives::tab_content_fill;
 use crate::ui::theme;
 
@@ -56,15 +57,13 @@ impl ChatShellView {
         view
     }
 
-    fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
+    pub fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
-        ctx.spawn(
-            async move { load_device_gate_status(&core.runtime().state).await },
-            |view, gate, ctx| {
+        let apply: Arc<dyn Fn(&mut Self, DeviceGateStatus) + Send + Sync> =
+            Arc::new(|view, gate| {
                 view.gate = gate;
-                ctx.notify();
-            },
-        );
+            });
+        load_device_gate(core, ctx, apply);
     }
 }
 

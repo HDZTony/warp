@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Flex, MainAxisSize,
-    ParentElement,
+    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
@@ -93,8 +92,8 @@ impl ChatHeaderView {
                             "离线".into()
                         };
                     } else {
-                        view.title = selected;
-                        view.status = "endpoint".into();
+                        view.title = "未知设备".into();
+                        view.status = "会话信息同步中".into();
                         view.online = false;
                     }
                 }
@@ -104,7 +103,11 @@ impl ChatHeaderView {
     }
 
     fn avatar_initials(title: &str) -> String {
-        let compact: String = title.chars().filter(|c| !c.is_whitespace()).take(2).collect();
+        let compact: String = title
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(2)
+            .collect();
         if compact.is_empty() {
             "WH".to_string()
         } else {
@@ -176,15 +179,13 @@ impl View for ChatHeaderView {
             Container::new(
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(
-                        if self.online {
-                            Container::new(online_dot())
-                                .with_horizontal_margin(4.0)
-                                .finish()
-                        } else {
-                            Flex::row().finish()
-                        },
-                    )
+                    .with_child(if self.online {
+                        Container::new(online_dot())
+                            .with_horizontal_margin(4.0)
+                            .finish()
+                    } else {
+                        Flex::row().finish()
+                    })
                     .with_child(
                         ui_text::body(self.status.clone(), self.font)
                             .with_color(status_color)

@@ -1,6 +1,7 @@
 #[derive(Debug, Clone)]
 pub enum DevicesAction {
     Refresh,
+    RetryDeviceBootstrap,
     OpenNode(String),
     BackToGrid,
     OpenJoinModal,

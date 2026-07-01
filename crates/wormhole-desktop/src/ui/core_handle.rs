@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use tokio::runtime::Runtime;
-use wormhole_desktop_core::DesktopRuntime;
 use wormhole_desktop_core::desktop_runtime_spawn;
+use wormhole_desktop_core::DesktopRuntime;
 
 #[derive(Clone)]
 pub struct CoreHandle {

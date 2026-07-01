@@ -16,8 +16,8 @@ use warpui::Element;
 use super::AgentPanelAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    agent_row_active_bg, agent_sidebar_bg, agent_sidebar_label, section_hint, AGENT_ICON_BTN_RADIUS,
-    AGENT_ROW_RADIUS, SECTION_PADDING,
+    agent_row_active_bg, agent_sidebar_bg, agent_sidebar_label, section_hint,
+    AGENT_ICON_BTN_RADIUS, AGENT_ROW_RADIUS, SECTION_PADDING,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -85,7 +85,9 @@ fn icon_button(action: AgentPanelAction, icon_path: &'static str) -> Box<dyn Ele
         .with_height(26.0)
         .finish(),
     )
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ICON_BTN_RADIUS)))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+        AGENT_ICON_BTN_RADIUS,
+    )))
     .finish()
 }
 
@@ -93,9 +95,7 @@ fn section_head(font: FamilyId, label: &str, new_action: AgentPanelAction) -> Bo
     Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Max)
-        .with_child(
-            Shrinkable::new(1.0, agent_sidebar_label(label.to_string(), font)).finish(),
-        )
+        .with_child(Shrinkable::new(1.0, agent_sidebar_label(label.to_string(), font)).finish())
         .with_child(
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -151,22 +151,12 @@ fn row_item(
         row.add_child(chat_spinner());
     }
     row.add_child(
-        Shrinkable::new(
-            1.0,
-            ui_text::body(label, font)
-                .with_color(fg)
-                .finish(),
-        )
-        .finish(),
+        Shrinkable::new(1.0, ui_text::body(label, font).with_color(fg).finish()).finish(),
     );
     row.add_child(
-        Container::new(
-            ui_text::mono(time, font)
-                .with_color(time_color)
-                .finish(),
-        )
-        .with_horizontal_margin(6.0)
-        .finish(),
+        Container::new(ui_text::mono(time, font).with_color(time_color).finish())
+            .with_horizontal_margin(6.0)
+            .finish(),
     );
     Container::new(
         EventHandler::new(row.finish())
@@ -393,7 +383,11 @@ pub fn render_sidebar(
         Vec::new()
     };
 
-    scroll_col.add_child(archive_toggle(font, archived_sessions.len(), archive_expanded));
+    scroll_col.add_child(archive_toggle(
+        font,
+        archived_sessions.len(),
+        archive_expanded,
+    ));
     if archive_expanded {
         if archived_sessions.is_empty() {
             scroll_col.add_child(
@@ -462,7 +456,8 @@ mod tests {
 
     #[test]
     fn archived_ids_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("wormhole-agent-archive-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wormhole-agent-archive-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let mut ids = std::collections::HashSet::new();
         ids.insert("session-a".into());

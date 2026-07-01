@@ -13,11 +13,14 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::{
-    clear_cloud_auth_token, cloud_auth_status, supabase_password_login, SupabasePasswordLoginParams,
-};
-use wormhole_desktop_core::device_identity::device_bootstrap;
 use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
+use wormhole_desktop_core::{clear_cloud_auth_token, cloud_auth_status};
+
+#[derive(Debug, Clone)]
+pub enum SettingsEvent {
+    AccountChanged { authenticated: bool },
+    OpenLogin,
+}
 
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
@@ -36,12 +39,11 @@ pub struct SettingsView {
     status: String,
     status_tone: StatusTone,
     busy: bool,
-    auth_email: String,
-    auth_password: String,
     auth_user_id: Option<String>,
     auth_status: String,
     auth_status_tone: StatusTone,
     auth_busy: bool,
+    auth_device_id: Option<String>,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
 
@@ -52,9 +54,8 @@ impl SettingsView {
         import_model: SharedCodexProviderImportModel,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let agent_providers = ctx.add_typed_action_view(|ctx| {
-            AgentProvidersView::new(ctx, core.clone(), import_model)
-        });
+        let agent_providers = ctx
+            .add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
         let mut view = Self {
             core,
             font,
@@ -63,12 +64,11 @@ impl SettingsView {
             status: String::new(),
             status_tone: StatusTone::Placeholder,
             busy: false,
-            auth_email: String::new(),
-            auth_password: String::new(),
             auth_user_id: None,
             auth_status: String::new(),
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
+            auth_device_id: None,
             agent_providers,
         };
         view.refresh(ctx);
@@ -90,9 +90,13 @@ impl SettingsView {
                 match output {
                     Ok(status) => {
                         view.auth_user_id = status.user_id;
-                        if status.authenticated {
+                        view.auth_device_id = status.device_id;
+                        if status.authenticated && view.auth_device_id.is_some() {
                             view.auth_status = "已登录".into();
                             view.auth_status_tone = StatusTone::Success;
+                        } else if status.authenticated {
+                            view.auth_status = "已登录，正在恢复设备身份…".into();
+                            view.auth_status_tone = StatusTone::Placeholder;
                         } else {
                             view.auth_status = "未登录 — P2P / 集群 / 聊天需先登录。".into();
                             view.auth_status_tone = StatusTone::Placeholder;
@@ -246,12 +250,12 @@ impl SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("ACCOUNT · 账号", self.font));
         col.add_child(section_hint(
-            "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一 iroh 节点。",
+            "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一设备。",
             self.font,
         ));
-        if let Some(user_id) = &self.auth_user_id {
+        if let Some(device_id) = &self.auth_device_id {
             col.add_child(
-                ui_text::mono(format!("user_id: {user_id}"), self.font)
+                ui_text::mono(format!("设备 ID: {device_id}"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             );
@@ -265,14 +269,9 @@ impl SettingsView {
         }
         if self.auth_user_id.is_none() {
             col.add_child(
-                ui_text::body(format!("邮箱: {}", self.auth_email), self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            );
-            col.add_child(
                 Container::new(
                     EventHandler::new(
-                        ui_text::body("点击登录（使用上方邮箱变量 — 开发占位）", self.font)
+                        ui_text::body("登录 Wormhole", self.font)
                             .with_color(theme::accent_cool())
                             .finish(),
                     )
@@ -282,7 +281,11 @@ impl SettingsView {
                     })
                     .finish(),
                 )
+                .with_uniform_padding(10.0)
                 .with_vertical_margin(8.0)
+                .with_background(theme::accent_bg(24))
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
                 .finish(),
             );
         } else {
@@ -308,7 +311,7 @@ impl SettingsView {
 }
 
 impl Entity for SettingsView {
-    type Event = ();
+    type Event = SettingsEvent;
 }
 
 impl View for SettingsView {
@@ -339,57 +342,7 @@ impl TypedActionView for SettingsView {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::Login => {
-                let email = std::env::var("WORMHOLE_DEV_LOGIN_EMAIL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or_else(|| self.auth_email.clone());
-                let password = std::env::var("WORMHOLE_DEV_LOGIN_PASSWORD")
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| self.auth_password.clone());
-                if email.trim().is_empty() || password.is_empty() {
-                    self.auth_status =
-                        "请设置 WORMHOLE_DEV_LOGIN_EMAIL / WORMHOLE_DEV_LOGIN_PASSWORD 环境变量后登录。"
-                            .into();
-                    self.auth_status_tone = StatusTone::Danger;
-                    ctx.notify();
-                    return;
-                }
-                self.auth_busy = true;
-                self.auth_status = "正在登录…".into();
-                self.auth_status_tone = StatusTone::Placeholder;
-                ctx.notify();
-                let core = self.core.clone();
-                ctx.spawn(
-                    async move {
-                        let state = core.runtime().state.clone();
-                        supabase_password_login(
-                            &state,
-                            SupabasePasswordLoginParams {
-                                email,
-                                password,
-                            },
-                        )
-                        .await?;
-                        device_bootstrap(&state).await?;
-                        Ok::<(), String>(())
-                    },
-                    |view, output, ctx| {
-                        view.auth_busy = false;
-                        match output {
-                            Ok(()) => {
-                                view.auth_status = "登录并恢复设备身份成功。".into();
-                                view.auth_status_tone = StatusTone::Success;
-                                view.refresh_account(ctx);
-                            }
-                            Err(err) => {
-                                view.auth_status = err;
-                                view.auth_status_tone = StatusTone::Danger;
-                            }
-                        }
-                        ctx.notify();
-                    },
-                );
+                ctx.emit(SettingsEvent::OpenLogin);
             }
             SettingsAction::Logout => {
                 self.auth_busy = true;
@@ -405,8 +358,12 @@ impl TypedActionView for SettingsView {
                         match output {
                             Ok(()) => {
                                 view.auth_user_id = None;
+                                view.auth_device_id = None;
                                 view.auth_status = "已退出登录。".into();
                                 view.auth_status_tone = StatusTone::Placeholder;
+                                ctx.emit(SettingsEvent::AccountChanged {
+                                    authenticated: false,
+                                });
                             }
                             Err(err) => {
                                 view.auth_status = format!("退出失败: {err}");

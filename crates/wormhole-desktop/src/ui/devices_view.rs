@@ -11,6 +11,7 @@ use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use crate::ui::clipboard::{read_clipboard_text, write_clipboard_text};
 use crate::ui::cluster_topology_panel::ClusterTopologyPanel;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
@@ -20,15 +21,14 @@ use crate::ui::panel_primitives::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    add_storage_volume, cluster_status, create_cluster_invite, delete_share_entry,
-    join_cluster, list_share_directory, open_share_entry, remote_open_share_entry,
-    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterStatusDto,
-    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams,
-    ShareEntryDto, SwitchActiveClusterParams,
+    add_storage_volume, create_cluster_invite, delete_share_entry, join_cluster,
+    list_share_directory, open_share_entry, remote_open_share_entry, switch_active_cluster,
+    sync_share_entry, AddStorageVolumeParams, ClusterStatusDto, JoinClusterOutcome,
+    JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto,
+    SwitchActiveClusterParams,
 };
-use wormhole_desktop_core::commands::vault_status;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
@@ -52,7 +52,6 @@ pub struct DevicesView {
     share_history_back: Vec<Vec<String>>,
     share_history_forward: Vec<Vec<String>>,
     share_status: Option<String>,
-    share_endpoint: Option<String>,
     share_add_modal_open: bool,
     share_add_path: String,
     share_add_feedback: Option<(StatusTone, String)>,
@@ -71,11 +70,14 @@ pub struct DevicesView {
     share_context_pos: Option<(f32, f32)>,
     share_file_busy: bool,
     last_file_click: Option<(String, std::time::Instant)>,
+    bootstrap_busy: bool,
+    bootstrap_pending_since: Option<Instant>,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
 const TOOLBAR_BTN_PAD_X: f32 = 18.0;
 const CLUSTER_SELECT_MIN_WIDTH: f32 = 240.0;
+const BOOTSTRAP_PENDING_HINT_AFTER: Duration = Duration::from_secs(35);
 
 impl DevicesView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
@@ -97,7 +99,6 @@ impl DevicesView {
             share_history_back: Vec::new(),
             share_history_forward: Vec::new(),
             share_status: None,
-            share_endpoint: None,
             share_add_modal_open: false,
             share_add_path: String::new(),
             share_add_feedback: None,
@@ -116,43 +117,135 @@ impl DevicesView {
             share_context_pos: None,
             share_file_busy: false,
             last_file_click: None,
+            bootstrap_busy: false,
+            bootstrap_pending_since: None,
         };
         view.refresh_cluster(ctx);
         view
     }
 
-    fn refresh_cluster(&self, ctx: &mut ViewContext<Self>) {
+    fn note_bootstrap_pending(&mut self, status: &ClusterStatusDto) {
+        if status.device_bootstrap_required && status.device_bootstrap_error.is_none() {
+            if self.bootstrap_pending_since.is_none() {
+                self.bootstrap_pending_since = Some(Instant::now());
+            }
+        } else {
+            self.bootstrap_pending_since = None;
+        }
+    }
+
+    fn bootstrap_pending_slow(&self, cluster: &ClusterStatusDto) -> bool {
+        cluster.device_bootstrap_required
+            && cluster.device_bootstrap_error.is_none()
+            && self
+                .bootstrap_pending_since
+                .is_some_and(|started| started.elapsed() >= BOOTSTRAP_PENDING_HINT_AFTER)
+    }
+
+    fn apply_cluster_status(&mut self, status: ClusterStatusDto, ctx: &mut ViewContext<Self>) {
+        self.note_bootstrap_pending(&status);
+        self.cluster_syncing = status.syncing;
+        self.cluster = Some(status.clone());
+        self.cluster_error = None;
+        if self.local_invite.is_none() && !self.invite_busy {
+            self.load_local_invite(ctx);
+        }
+        if status.syncing {
+            self.schedule_cluster_poll(ctx);
+        } else if status.auth_required || status.device_bootstrap_required {
+            self.schedule_bootstrap_poll(ctx);
+        }
+    }
+
+    pub fn refresh_cluster(&self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                cluster_status(&state).await
+                fetch_cluster_for_ui(&state).await
             },
             |view, output, ctx| {
                 match output {
-                    Ok(status) => {
-                        view.cluster_syncing = status.syncing;
-                        view.cluster = Some(status);
-                        view.cluster_error = None;
-                        if view.local_invite.is_none() && !view.invite_busy {
-                            view.load_local_invite(ctx);
-                        }
-                        if view.cluster_syncing {
-                            let core = view.core.clone();
-                            ctx.spawn(
-                                async move {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                },
-                                |view, _, ctx| {
-                                    view.refresh_cluster(ctx);
-                                },
-                            );
-                        }
-                    }
+                    Ok(status) => view.apply_cluster_status(status, ctx),
                     Err(e) => {
                         view.cluster = None;
                         view.cluster_syncing = false;
                         view.cluster_error = Some(e);
+                        view.bootstrap_pending_since = None;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    pub fn retry_device_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.bootstrap_busy {
+            return;
+        }
+        self.bootstrap_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let _bootstrap =
+                    wormhole_desktop_core::device_identity::device_bootstrap(&state).await;
+                fetch_cluster_for_ui(&state).await
+            },
+            |view, output, ctx| {
+                view.bootstrap_busy = false;
+                match output {
+                    Ok(status) => view.apply_cluster_status(status, ctx),
+                    Err(e) => {
+                        view.cluster = None;
+                        view.cluster_syncing = false;
+                        view.cluster_error = Some(e);
+                        view.bootstrap_pending_since = None;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_cluster_poll(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let state = core.runtime().state.clone();
+                fetch_cluster_for_ui(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.apply_cluster_status(status, ctx);
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_bootstrap_poll(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let state = core.runtime().state.clone();
+                fetch_cluster_for_ui(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.note_bootstrap_pending(&status);
+                    view.cluster_syncing = status.syncing;
+                    view.cluster = Some(status.clone());
+                    view.cluster_error = None;
+                    if status.auth_required || status.device_bootstrap_required {
+                        view.schedule_bootstrap_poll(ctx);
+                    } else if status.syncing {
+                        view.schedule_cluster_poll(ctx);
+                    } else if view.local_invite.is_none() && !view.invite_busy {
+                        view.load_local_invite(ctx);
                     }
                 }
                 ctx.notify();
@@ -177,11 +270,7 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                list_share_directory(
-                    &state,
-                    ListShareDirectoryParams { node_id, path },
-                )
-                .await
+                list_share_directory(&state, ListShareDirectoryParams { node_id, path }).await
             },
             |view, output, ctx| {
                 match output {
@@ -193,22 +282,6 @@ impl DevicesView {
                         view.share_entries.clear();
                         view.share_error = Some(e);
                     }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
-    fn load_share_endpoint(&self, ctx: &mut ViewContext<Self>) {
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                vault_status(&state).await
-            },
-            |view, output, ctx| {
-                if let Ok(status) = output {
-                    view.share_endpoint = status.endpoint_id;
                 }
                 ctx.notify();
             },
@@ -250,7 +323,6 @@ impl DevicesView {
         self.share_add_modal_open = false;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
-        self.load_share_endpoint(ctx);
         ctx.notify();
     }
 
@@ -264,12 +336,16 @@ impl DevicesView {
         self.share_history_back.clear();
         self.share_history_forward.clear();
         self.share_status = None;
-        self.share_endpoint = None;
         self.share_add_modal_open = false;
         ctx.notify();
     }
 
-    fn navigate_share_to(&mut self, volume_id: Option<String>, name: String, ctx: &mut ViewContext<Self>) {
+    fn navigate_share_to(
+        &mut self,
+        volume_id: Option<String>,
+        name: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let mut next = self.share_path.clone();
         if let Some(id) = volume_id {
             next = vec![id];
@@ -316,9 +392,7 @@ impl DevicesView {
 
     fn browsing_local(&self) -> bool {
         self.cluster.as_ref().is_some_and(|cluster| {
-            self.browsing_node_id
-                .as_deref()
-                == Some(cluster.local_node_id.as_str())
+            self.browsing_node_id.as_deref() == Some(cluster.local_node_id.as_str())
         })
     }
 
@@ -471,7 +545,9 @@ impl DevicesView {
             "正在打开…",
             "已打开",
             |state, node_id, share_path, name| {
-                Box::pin(async move { open_share_entry(&state, &node_id, &share_path, &name).await })
+                Box::pin(
+                    async move { open_share_entry(&state, &node_id, &share_path, &name).await },
+                )
             },
             ctx,
         );
@@ -483,7 +559,9 @@ impl DevicesView {
             "正在同步…",
             "已同步",
             |state, node_id, share_path, name| {
-                Box::pin(async move { sync_share_entry(&state, &node_id, &share_path, &name).await })
+                Box::pin(
+                    async move { sync_share_entry(&state, &node_id, &share_path, &name).await },
+                )
             },
             ctx,
         );
@@ -509,9 +587,9 @@ impl DevicesView {
             "正在删除…",
             "已删除",
             |state, node_id, share_path, name| {
-                Box::pin(async move {
-                    delete_share_entry(&state, &node_id, &share_path, &name).await
-                })
+                Box::pin(
+                    async move { delete_share_entry(&state, &node_id, &share_path, &name).await },
+                )
             },
             ctx,
         );
@@ -573,8 +651,15 @@ impl DevicesView {
         action: DevicesAction,
         warm: bool,
         min_width: f32,
+        enabled: bool,
     ) -> Box<dyn Element> {
-        let (border, bg, color) = if warm {
+        let (border, bg, color) = if !enabled {
+            (
+                dim_color(theme::border_bright(), 0.35),
+                theme::panel(),
+                dim_color(theme::text(), 0.35),
+            )
+        } else if warm {
             (
                 theme::accent_cool(),
                 theme::accent_cool_bg(40),
@@ -604,12 +689,16 @@ impl DevicesView {
         .with_border(Border::all(1.0).with_border_fill(border))
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish();
-        EventHandler::new(inner)
-            .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(action.clone());
-                DispatchEventResult::StopPropagation
-            })
-            .finish()
+        if enabled {
+            EventHandler::new(inner)
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            inner
+        }
     }
 
     fn reset_share_scroll(&self) {
@@ -757,14 +846,13 @@ impl DevicesView {
             .with_main_axis_size(MainAxisSize::Min);
         row.add_child(self.cluster_select(cluster));
         row.add_child(
-            Container::new(
-                self.toolbar_button(
-                    self.copy_invite_label(),
-                    DevicesAction::CopyInvite,
-                    self.copy_invite_ack,
-                    136.0,
-                ),
-            )
+            Container::new(self.toolbar_button(
+                self.copy_invite_label(),
+                DevicesAction::CopyInvite,
+                self.copy_invite_ack,
+                136.0,
+                !self.copy_invite_busy,
+            ))
             .with_horizontal_margin(10.0)
             .finish(),
         );
@@ -773,6 +861,7 @@ impl DevicesView {
             DevicesAction::OpenJoinModal,
             true,
             128.0,
+            true,
         ));
         row.add_child(
             Shrinkable::new(
@@ -922,10 +1011,7 @@ impl DevicesView {
 
     fn select_cluster(&mut self, cluster_id: String, ctx: &mut ViewContext<Self>) {
         self.cluster_picker_open = false;
-        let already_active = self
-            .cluster
-            .as_ref()
-            .and_then(|c| c.cluster_id.as_deref())
+        let already_active = self.cluster.as_ref().and_then(|c| c.cluster_id.as_deref())
             == Some(cluster_id.as_str());
         if already_active {
             ctx.notify();
@@ -1077,6 +1163,7 @@ impl DevicesView {
                                 DevicesAction::PasteJoinInvite,
                                 false,
                                 0.0,
+                                true,
                             ),
                         )
                         .finish(),
@@ -1091,7 +1178,13 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(self.toolbar_button("取消", DevicesAction::CloseJoinModal, false, 72.0));
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseJoinModal,
+            false,
+            72.0,
+            true,
+        ));
         actions.add_child(
             Container::new(Flex::column().finish())
                 .with_horizontal_margin(8.0)
@@ -1106,6 +1199,7 @@ impl DevicesView {
             DevicesAction::SubmitJoin,
             true,
             80.0,
+            !self.invite_busy,
         ));
         dialog.add_child(
             Container::new(actions.finish())
@@ -1158,17 +1252,43 @@ impl DevicesView {
             if cluster.auth_required {
                 header.add_child(section_hint("ACCOUNT · 需要登录", self.font));
                 header.add_child(status_line(
-                    "请先在「设置 → 账号」登录，再使用集群与 P2P 功能。",
+                    "请登录 Wormhole 账号以使用集群与 P2P 功能。",
                     self.font,
                     StatusTone::Placeholder,
                 ));
             } else if cluster.device_bootstrap_required {
                 header.add_child(section_hint("DEVICE · 正在恢复设备身份", self.font));
-                header.add_child(status_line(
-                    "登录成功，正在从云端恢复本机设备身份…",
-                    self.font,
-                    StatusTone::Placeholder,
-                ));
+                if let Some(err) = &cluster.device_bootstrap_error {
+                    header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
+                } else {
+                    header.add_child(status_line(
+                        "登录成功，正在从云端恢复本机设备身份…",
+                        self.font,
+                        StatusTone::Placeholder,
+                    ));
+                    if self.bootstrap_pending_slow(cluster) {
+                        header.add_child(status_line(
+                            "仍在等待控制面响应。请点击「重试」；若持续失败请查看终端日志。",
+                            self.font,
+                            StatusTone::Placeholder,
+                        ));
+                    }
+                }
+                header.add_child(
+                    Container::new(self.toolbar_button(
+                        if self.bootstrap_busy {
+                            "重试中…"
+                        } else {
+                            "重试"
+                        },
+                        DevicesAction::RetryDeviceBootstrap,
+                        false,
+                        88.0,
+                        !self.bootstrap_busy,
+                    ))
+                    .with_vertical_margin(8.0)
+                    .finish(),
+                );
             } else {
                 header.add_child(
                     Container::new(self.cluster_toolbar(cluster))
@@ -1204,6 +1324,10 @@ impl DevicesView {
                             ui_text::body(
                                 if cluster.auth_required {
                                     "登录后可查看集群拓扑并加入家庭网络。"
+                                } else if cluster.device_bootstrap_error.is_some() {
+                                    "设备身份恢复失败。请检查网络与控制面配置后点击「重试」，或在设置中退出并重新登录。"
+                                } else if self.bootstrap_pending_slow(cluster) {
+                                    "控制面响应较慢。点击「重试」将重新发起设备身份恢复；也可在终端查看 bootstrap 日志。"
                                 } else {
                                     "设备身份恢复完成后将自动同步集群。"
                                 },
@@ -1218,34 +1342,34 @@ impl DevicesView {
                     .finish(),
                 );
             } else {
-            let local_id = cluster.local_node_id.clone();
-            let mut nodes = cluster.nodes.clone();
-            nodes.sort_by(|a, b| {
-                let a_local = a.node_id == local_id;
-                let b_local = b.node_id == local_id;
-                b_local
-                    .cmp(&a_local)
-                    .then_with(|| a.hostname.cmp(&b.hostname))
-            });
-            let hub_index = nodes
-                .iter()
-                .position(|n| n.node_id == local_id)
-                .unwrap_or(0);
-            col.add_child(
-                Expanded::new(
-                    1.0,
-                    Container::new(
-                        ConstrainedBox::new(
-                            ClusterTopologyPanel::element(nodes, local_id, hub_index, self.mono),
+                let local_id = cluster.local_node_id.clone();
+                let mut nodes = cluster.nodes.clone();
+                nodes.sort_by(|a, b| {
+                    let a_local = a.node_id == local_id;
+                    let b_local = b.node_id == local_id;
+                    b_local
+                        .cmp(&a_local)
+                        .then_with(|| a.hostname.cmp(&b.hostname))
+                });
+                let hub_index = nodes
+                    .iter()
+                    .position(|n| n.node_id == local_id)
+                    .unwrap_or(0);
+                col.add_child(
+                    Expanded::new(
+                        1.0,
+                        Container::new(
+                            ConstrainedBox::new(ClusterTopologyPanel::element(
+                                nodes, local_id, hub_index, self.mono,
+                            ))
+                            .with_min_height(280.0)
+                            .finish(),
                         )
-                        .with_min_height(280.0)
+                        .with_background(theme::panel())
                         .finish(),
                     )
-                    .with_background(theme::panel())
                     .finish(),
-                )
-                .finish(),
-            );
+                );
             }
         } else {
             col.add_child(
@@ -1289,16 +1413,11 @@ impl DevicesView {
         if let Some(msg) = &self.share_status {
             return msg.clone();
         }
-        let endpoint = self
-            .share_endpoint
-            .as_deref()
-            .map(|id| truncate_middle(id, 20))
-            .unwrap_or_else(|| "—".to_string());
         let count = self.share_entries.len();
         if let Some(err) = &self.share_error {
-            return format!("VAULT · endpoint={endpoint} · {err}");
+            return format!("VAULT · {err}");
         }
-        format!("VAULT · endpoint={endpoint} · {count} 项")
+        format!("VAULT · {count} 项")
     }
 
     fn share_address_label(&self) -> String {
@@ -1314,11 +1433,7 @@ impl DevicesView {
                 .unwrap_or_else(|| self.share_path[0].clone());
             format!("{device} · {root_name}")
         } else {
-            format!(
-                "{}\\{}",
-                device,
-                self.share_path[1..].join("\\")
-            )
+            format!("{}\\{}", device, self.share_path[1..].join("\\"))
         }
     }
 
@@ -1373,7 +1488,9 @@ impl DevicesView {
         row.add_child(
             Shrinkable::new(
                 0.48,
-                Container::new(name_row.finish()).with_uniform_padding(8.0).finish(),
+                Container::new(name_row.finish())
+                    .with_uniform_padding(8.0)
+                    .finish(),
             )
             .finish(),
         );
@@ -1536,14 +1653,13 @@ impl DevicesView {
         );
         if self.browsing_local() && self.share_path.is_empty() {
             toolbar.add_child(
-                Container::new(
-                    self.toolbar_button(
-                        "+ 共享文件夹",
-                        DevicesAction::OpenShareAddModal,
-                        true,
-                        128.0,
-                    ),
-                )
+                Container::new(self.toolbar_button(
+                    "+ 共享文件夹",
+                    DevicesAction::OpenShareAddModal,
+                    true,
+                    128.0,
+                    true,
+                ))
                 .with_horizontal_margin(8.0)
                 .finish(),
             );
@@ -1656,9 +1772,13 @@ impl DevicesView {
             .finish(),
         );
         dialog.add_child(
-            Container::new(
-                self.toolbar_button("浏览…", DevicesAction::BrowseShareAddPath, false, 88.0),
-            )
+            Container::new(self.toolbar_button(
+                "浏览…",
+                DevicesAction::BrowseShareAddPath,
+                false,
+                88.0,
+                true,
+            ))
             .with_vertical_margin(6.0)
             .finish(),
         );
@@ -1667,20 +1787,25 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         actions.add_child(Expanded::new(1.0, Flex::column().finish()).finish());
-        actions.add_child(self.toolbar_button("取消", DevicesAction::CloseShareAddModal, false, 88.0));
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseShareAddModal,
+            false,
+            88.0,
+            true,
+        ));
         actions.add_child(
-            Container::new(
-                self.toolbar_button(
-                    if self.share_add_busy {
-                        "添加中…"
-                    } else {
-                        "添加"
-                    },
-                    DevicesAction::SubmitShareAdd,
-                    true,
-                    88.0,
-                ),
-            )
+            Container::new(self.toolbar_button(
+                if self.share_add_busy {
+                    "添加中…"
+                } else {
+                    "添加"
+                },
+                DevicesAction::SubmitShareAdd,
+                true,
+                88.0,
+                !self.share_add_busy,
+            ))
             .with_horizontal_margin(8.0)
             .finish(),
         );
@@ -1729,10 +1854,7 @@ impl DevicesView {
         let Some((x, y)) = self.share_context_pos else {
             return Flex::column().finish();
         };
-        let entry = self
-            .share_entries
-            .iter()
-            .find(|entry| entry.name == name);
+        let entry = self.share_entries.iter().find(|entry| entry.name == name);
         let is_local = entry.map(|entry| entry.local).unwrap_or(true);
 
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -1746,7 +1868,11 @@ impl DevicesView {
             .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
             .finish(),
         );
-        menu.add_child(self.share_context_item("打开", DevicesAction::ShareOpenFile(name.clone()), false));
+        menu.add_child(self.share_context_item(
+            "打开",
+            DevicesAction::ShareOpenFile(name.clone()),
+            false,
+        ));
         if !is_local {
             menu.add_child(self.share_context_item(
                 "同步",
@@ -1759,11 +1885,7 @@ impl DevicesView {
                 false,
             ));
         }
-        menu.add_child(self.share_context_item(
-            "删除",
-            DevicesAction::ShareDeleteFile(name),
-            true,
-        ));
+        menu.add_child(self.share_context_item("删除", DevicesAction::ShareDeleteFile(name), true));
 
         let panel = Container::new(
             ConstrainedBox::new(menu.finish())
@@ -1931,6 +2053,7 @@ impl TypedActionView for DevicesView {
     fn handle_action(&mut self, action: &DevicesAction, ctx: &mut ViewContext<Self>) {
         match action {
             DevicesAction::Refresh => self.refresh_cluster(ctx),
+            DevicesAction::RetryDeviceBootstrap => self.retry_device_bootstrap(ctx),
             DevicesAction::OpenNode(node_id) => self.open_node(node_id.clone(), ctx),
             DevicesAction::BackToGrid => self.back_to_grid(ctx),
             DevicesAction::OpenJoinModal => self.open_join_modal(ctx),

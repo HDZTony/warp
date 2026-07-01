@@ -5,7 +5,9 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::{load_device_gate_status, wrap_with_device_gate, DeviceGateStatus};
+use crate::ui::device_gate_view::{
+    fetch_device_gate_status, wrap_with_device_gate, DeviceGateStatus, DEVICE_GATE_POLL_INTERVAL,
+};
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
 };
@@ -91,14 +93,34 @@ impl SyncView {
         view
     }
 
-    fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+    fn schedule_gate_then_refresh(&self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(DEVICE_GATE_POLL_INTERVAL).await;
+                let state = core.runtime().state.clone();
+                fetch_device_gate_status(&state).await
+            },
+            |view, gate, ctx| {
+                view.gate = gate.clone();
+                if gate.needs_poll() {
+                    view.schedule_gate_then_refresh(ctx);
+                } else {
+                    view.refresh(ctx);
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    pub fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         self.loading = true;
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let gate = load_device_gate_status(&state).await;
+                let gate = fetch_device_gate_status(&state).await;
                 let status = sync_status(&state).await;
                 let queue = list_sync_queue(&state).await;
                 let files = search_sync_entries(
@@ -138,7 +160,10 @@ impl SyncView {
             },
             |view, output, ctx| {
                 let (gate, status, queue, files, workers) = output;
-                view.gate = gate;
+                view.gate = gate.clone();
+                if gate.needs_poll() {
+                    view.schedule_gate_then_refresh(ctx);
+                }
                 view.loading = false;
                 match status {
                     Ok(s) => {
