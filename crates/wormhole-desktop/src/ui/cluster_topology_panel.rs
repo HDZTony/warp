@@ -5,9 +5,9 @@ use pathfinder_geometry::vector::Vector2F;
 
 use warpui::elements::{
     AfterLayoutContext, Align, AppContext, Border, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DispatchEventResult, Element, EventContext, EventDispatchMode, EventHandler,
-    Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext, ParentElement, Point, Radius, Stack,
-    SizeConstraint,
+    CrossAxisAlignment, DispatchEventResult, Element, EventContext, EventDispatchMode,
+    EventHandler, Flex, LayoutContext, MainAxisAlignment, MainAxisSize, PaintContext,
+    ParentElement, Point, Radius, SizeConstraint, Stack,
 };
 use warpui::fonts::FamilyId;
 
@@ -82,11 +82,7 @@ impl ClusterTopologyPanel {
             let is_local = node.node_id == self.local_node_id;
             row.add_child(
                 Container::new(node_card(node, is_local, card_w, self.mono))
-                    .with_horizontal_margin(if idx + 1 < node_count {
-                        CARD_GAP
-                    } else {
-                        0.0
-                    })
+                    .with_horizontal_margin(if idx + 1 < node_count { CARD_GAP } else { 0.0 })
                     .finish(),
             );
         }

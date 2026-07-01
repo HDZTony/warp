@@ -104,7 +104,11 @@ pub fn device_icon(kind: DeviceIconKind, color: ColorU) -> Box<dyn Element> {
     device_icon_scaled(kind, color, CARD_MIN_WIDTH)
 }
 
-pub fn device_icon_scaled(kind: DeviceIconKind, color: ColorU, card_width: f32) -> Box<dyn Element> {
+pub fn device_icon_scaled(
+    kind: DeviceIconKind,
+    color: ColorU,
+    card_width: f32,
+) -> Box<dyn Element> {
     let thumb_height = card_width * 0.75;
     let inner_w = (card_width - 24.0).max(1.0);
     let inner_h = (thumb_height - 24.0 - 40.0).max(1.0);

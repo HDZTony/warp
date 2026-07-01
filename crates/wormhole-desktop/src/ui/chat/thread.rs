@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use warpui::elements::{
-    Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex,
-    MainAxisSize, ParentElement, ScrollbarWidth,
-};
 use warpui::elements::Fill;
+use warpui::elements::{
+    Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Flex, MainAxisSize,
+    ParentElement, ScrollbarWidth,
+};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
@@ -34,9 +34,8 @@ impl ChatThreadView {
         selection: ConversationSelection,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let hint_bubble = ctx.add_view(|ctx| {
-            ChatBubbleView::system_hint(ctx, "选择左侧终端开始聊天".into())
-        });
+        let hint_bubble =
+            ctx.add_view(|ctx| ChatBubbleView::system_hint(ctx, "选择左侧终端开始聊天".into()));
         let view = Self {
             core,
             selection,
@@ -121,9 +120,8 @@ impl ChatThreadView {
                 .map(|ep| ep == msg.author_endpoint.as_str())
                 .unwrap_or(false);
             let timestamp = format_message_time_pub(msg.sent_at);
-            self.bubbles.push(ctx.add_view(move |ctx| {
-                ChatBubbleView::new(ctx, body, outgoing, timestamp)
-            }));
+            self.bubbles
+                .push(ctx.add_view(move |ctx| ChatBubbleView::new(ctx, body, outgoing, timestamp)));
         }
     }
 }

@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use warpui::elements::{
-    Align, Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement,
-};
+use warpui::elements::{Align, Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement};
 use warpui::fonts::FamilyId;
 use warpui::{Element, View, ViewContext};
 
@@ -12,8 +10,11 @@ use crate::ui::panel_primitives::{
     section_hint, status_line, tab_content_fill, StatusTone, SECTION_PADDING,
 };
 use crate::ui::theme;
-use wormhole_desktop_core::cluster_commands::{cluster_status_fast, ClusterStatusDto};
-use wormhole_desktop_core::device_identity::ensure_device_ready;
+use wormhole_desktop_core::cluster_commands::{
+    cluster_status, cluster_status_fast, ClusterStatusDto,
+};
+use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
+use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
 use wormhole_desktop_core::state::AppState;
 
 pub const DEVICE_GATE_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -40,15 +41,47 @@ impl DeviceGateStatus {
         self.loaded && (self.auth_required || self.device_bootstrap_required)
     }
 
+    /// Keep polling while login or device bootstrap is still pending (e.g. `auth.json`
+    /// restore on startup races the first UI fetch).
     pub fn needs_poll(&self) -> bool {
-        self.device_bootstrap_required
+        self.auth_required || self.device_bootstrap_required
     }
 }
 
-pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {
-    if state.cloud_auth.read().await.access_token.is_some() {
-        let _ = ensure_device_ready(state).await;
+/// Start device bootstrap in the background without blocking UI status fetches.
+pub async fn kick_device_bootstrap(state: &AppState) {
+    if state.skip_device_gate || is_device_ready(state).await {
+        return;
     }
+    if state.cloud_auth.read().await.access_token.is_none() {
+        return;
+    }
+    let bg = state.clone();
+    tokio::spawn(async move {
+        if let Err(err) = ensure_device_ready(&bg).await {
+            tracing::warn!("background device bootstrap: {err}");
+        }
+    });
+}
+
+/// Cluster status for terminal / gate views: read local snapshot immediately;
+/// gossip mesh joins asynchronously via [`ClusterGossipCoordinator`].
+pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, String> {
+    kick_device_bootstrap(state).await;
+    if !is_device_ready(state).await {
+        return cluster_status(state).await;
+    }
+    let coordinator = ClusterGossipCoordinator::global();
+    coordinator.ensure_background(state.clone());
+    let mut status = cluster_status_fast(state).await?;
+    if !coordinator.is_gossip_ready() {
+        status.syncing = true;
+    }
+    Ok(status)
+}
+
+pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {
+    kick_device_bootstrap(state).await;
     match cluster_status_fast(state).await {
         Ok(status) => DeviceGateStatus::from_cluster(&status),
         Err(_) => DeviceGateStatus {
@@ -86,11 +119,8 @@ where
     );
 }
 
-pub fn schedule_device_gate_poll<V>(
-    core: CoreHandle,
-    ctx: &mut ViewContext<V>,
-    apply: GateApply<V>,
-) where
+pub fn schedule_device_gate_poll<V>(core: CoreHandle, ctx: &mut ViewContext<V>, apply: GateApply<V>)
+where
     V: View + 'static,
 {
     let core_for_poll = core.clone();
@@ -124,7 +154,7 @@ pub fn device_gate_screen(
     } else if gate.auth_required {
         col.add_child(section_hint("ACCOUNT · 需要登录", font));
         col.add_child(status_line(
-            format!("请先在顶栏点击「登录」，再使用{feature}。"),
+            format!("请登录以使用{feature}。"),
             font,
             StatusTone::Placeholder,
         ));
@@ -159,5 +189,37 @@ pub fn wrap_with_device_gate(
         device_gate_screen(font, feature, gate)
     } else {
         content
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn needs_poll_while_login_or_bootstrap_pending() {
+        let waiting_login = DeviceGateStatus {
+            loaded: true,
+            auth_required: true,
+            device_bootstrap_required: false,
+            error: None,
+        };
+        assert!(waiting_login.needs_poll());
+
+        let waiting_bootstrap = DeviceGateStatus {
+            loaded: true,
+            auth_required: false,
+            device_bootstrap_required: true,
+            error: None,
+        };
+        assert!(waiting_bootstrap.needs_poll());
+
+        let ready = DeviceGateStatus {
+            loaded: true,
+            auth_required: false,
+            device_bootstrap_required: false,
+            error: None,
+        };
+        assert!(!ready.needs_poll());
     }
 }

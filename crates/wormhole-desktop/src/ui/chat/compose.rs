@@ -128,16 +128,16 @@ impl ChatComposeView {
         action: ChatComposeAction,
     ) -> Box<dyn Element> {
         Container::new(
-            EventHandler::new(
-                Align::new(icons::chat_compose_icon(icon_path, color)).finish(),
-            )
-            .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(action.clone());
-                DispatchEventResult::StopPropagation
-            })
-            .finish(),
+            EventHandler::new(Align::new(icons::chat_compose_icon(icon_path, color)).finish())
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
         )
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(CHAT_COMPOSE_BTN / 2.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+            CHAT_COMPOSE_BTN / 2.0,
+        )))
         .finish()
     }
 
@@ -158,16 +158,16 @@ impl ChatComposeView {
             )
         };
         let mut btn = Container::new(
-            EventHandler::new(
-                Align::new(icons::chat_compose_icon(icon_path, fg)).finish(),
-            )
-            .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(action.clone());
-                DispatchEventResult::StopPropagation
-            })
-            .finish(),
+            EventHandler::new(Align::new(icons::chat_compose_icon(icon_path, fg)).finish())
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
         )
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(CHAT_COMPOSE_BTN / 2.0)));
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+            CHAT_COMPOSE_BTN / 2.0,
+        )));
         if has_text {
             btn = btn.with_background(bg);
         }
@@ -199,6 +199,7 @@ impl ChatComposeView {
         })
         .focused(self.input_focused)
         .disabled(self.sending)
+        .ime_preedit(!marked.is_empty())
         .on_keydown({
             let sending = self.sending;
             move |ctx, keystroke| {
@@ -274,8 +275,7 @@ impl View for ChatComposeView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let draft_empty = self.draft.trim().is_empty();
-        let input_height =
-            compose_input_height(&self.draft, &self.field_state.marked_text);
+        let input_height = compose_input_height(&self.draft, &self.field_state.marked_text);
 
         let attach_btn = ConstrainedBox::new(Self::plain_compose_btn(
             "chat-compose-attach.svg",

@@ -117,8 +117,11 @@ impl ChatSidebarView {
             let title = conv
                 .title
                 .or(conv.peer_display_name.clone())
-                .unwrap_or_else(|| conv.peer_endpoint.clone());
-            let preview = conv.peer_endpoint.clone();
+                .unwrap_or_else(|| "未知设备".to_string());
+            let preview = conv
+                .peer_display_name
+                .clone()
+                .unwrap_or_else(|| "等待消息…".to_string());
             let time = conv
                 .last_message_at
                 .map(format_message_time_pub)
@@ -171,7 +174,11 @@ impl ChatSidebarView {
     }
 
     fn avatar_initials(title: &str) -> String {
-        let compact: String = title.chars().filter(|c| !c.is_whitespace()).take(2).collect();
+        let compact: String = title
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(2)
+            .collect();
         if compact.is_empty() {
             "WH".into()
         } else {
@@ -309,6 +316,7 @@ impl ChatSidebarView {
             ctx.dispatch_typed_action(ChatSidebarAction::SearchEdit(action));
         })
         .focused(search_focused)
+        .ime_preedit(!marked.is_empty())
         .on_keydown(move |ctx, keystroke| {
             if keystroke.key == "tab" || keystroke.key == "escape" {
                 ctx.dispatch_typed_action(ChatSidebarAction::FocusSearch);
@@ -369,10 +377,10 @@ impl View for ChatSidebarView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(
                 Container::new(self.search_box())
-                .with_horizontal_padding(12.0)
-                .with_vertical_padding(10.0)
-                .with_background(theme::panel())
-                .finish(),
+                    .with_horizontal_padding(12.0)
+                    .with_vertical_padding(10.0)
+                    .with_background(theme::panel())
+                    .finish(),
             )
             .with_child(
                 Expanded::new(

@@ -29,6 +29,10 @@ pub enum TextFieldEditAction {
     },
     ClearMarkedText,
     Backspace,
+    Delete,
+    ClearAll,
+    /// Ends [`TextFieldState::suppress_ime_replay`] after the user presses a typing key.
+    EndImeSuppress,
     InsertNewline,
     Paste(String),
 }
@@ -37,6 +41,8 @@ pub enum TextFieldEditAction {
 pub struct TextFieldState {
     pub marked_text: String,
     pub marked_range: Range<usize>,
+    /// After [`TextFieldEditAction::ClearAll`], drop stale IME preedit/commits until the user types again.
+    suppress_ime_replay: bool,
 }
 
 impl TextFieldState {
@@ -52,6 +58,9 @@ impl TextFieldState {
     pub fn apply(&mut self, draft: &mut String, action: &TextFieldEditAction) {
         match action {
             TextFieldEditAction::TypedCharacters(chars) => {
+                if self.suppress_ime_replay {
+                    return;
+                }
                 self.clear_marked();
                 draft.push_str(chars);
             }
@@ -59,19 +68,52 @@ impl TextFieldState {
                 marked_text,
                 selected_range,
             } => {
+                if is_spurious_replacement_text(marked_text) {
+                    self.clear_marked();
+                    return;
+                }
+                if self.suppress_ime_replay {
+                    if marked_text.is_empty() {
+                        self.suppress_ime_replay = false;
+                    }
+                    return;
+                }
                 self.marked_text = marked_text.clone();
                 self.marked_range = selected_range.clone();
             }
-            TextFieldEditAction::ClearMarkedText => self.clear_marked(),
-            TextFieldEditAction::Backspace => {
+            TextFieldEditAction::ClearMarkedText => {
                 self.clear_marked();
-                pop_char(draft);
+                self.suppress_ime_replay = false;
+            }
+            TextFieldEditAction::EndImeSuppress => {
+                self.suppress_ime_replay = false;
+            }
+            TextFieldEditAction::Backspace => {
+                if !self.marked_text.is_empty() {
+                    pop_char(&mut self.marked_text);
+                    sync_marked_range(self);
+                } else {
+                    pop_char(draft);
+                }
+            }
+            TextFieldEditAction::Delete => {
+                if !self.marked_text.is_empty() {
+                    self.marked_text = self.marked_text.chars().skip(1).collect();
+                    sync_marked_range(self);
+                }
+            }
+            TextFieldEditAction::ClearAll => {
+                self.clear_marked();
+                draft.clear();
+                self.suppress_ime_replay = true;
             }
             TextFieldEditAction::InsertNewline => {
+                self.suppress_ime_replay = false;
                 self.clear_marked();
                 draft.push('\n');
             }
             TextFieldEditAction::Paste(text) => {
+                self.suppress_ime_replay = false;
                 self.clear_marked();
                 draft.push_str(text);
             }
@@ -85,6 +127,53 @@ pub fn pop_char(draft: &mut String) {
             draft.pop();
         }
     }
+}
+
+fn sync_marked_range(state: &mut TextFieldState) {
+    if state.marked_text.is_empty() {
+        state.marked_range = 0..0;
+        return;
+    }
+    let len = state.marked_text.chars().count();
+    state.marked_range = 0..len;
+}
+
+fn sanitized_typed_characters(chars: &str, ime_preedit: bool) -> Option<String> {
+    if ime_preedit && is_spurious_replacement_text(chars) {
+        return None;
+    }
+
+    let sanitized: String = chars.chars().filter(|ch| !ch.is_control()).collect();
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
+}
+
+fn is_spurious_replacement_text(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|ch| ch == '\u{FFFD}')
+}
+
+fn is_user_typing_keystroke(keystroke: &Keystroke) -> bool {
+    if keystroke.ctrl || keystroke.meta || keystroke.alt {
+        return false;
+    }
+    !matches!(
+        keystroke.key.as_str(),
+        "backspace"
+            | "delete"
+            | "enter"
+            | "return"
+            | "escape"
+            | "tab"
+            | "left"
+            | "right"
+            | "up"
+            | "down"
+            | "home"
+            | "end"
+    )
 }
 
 pub const CARET_BLINK_MS: u64 = 530;
@@ -330,6 +419,8 @@ pub struct TextFieldInput {
     child: Box<dyn Element>,
     focused: bool,
     disabled: bool,
+    /// When true, Backspace/Delete are left to the platform IME (SetMarkedText updates).
+    ime_preedit: bool,
     always_handle: bool,
     on_edit: EditCallback,
     on_keydown: Option<KeydownCallback>,
@@ -347,6 +438,7 @@ impl TextFieldInput {
             child,
             focused: false,
             disabled: false,
+            ime_preedit: false,
             always_handle: true,
             on_edit: Rc::new(on_edit),
             on_keydown: None,
@@ -363,6 +455,11 @@ impl TextFieldInput {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn ime_preedit(mut self, active: bool) -> Self {
+        self.ime_preedit = active;
         self
     }
 
@@ -422,7 +519,10 @@ impl Element for TextFieldInput {
 
         match event.at_z_index(z_index, ctx) {
             Some(Event::TypedCharacters { chars }) if !chars.is_empty() => {
-                (self.on_edit)(ctx, TextFieldEditAction::TypedCharacters(chars.clone()));
+                let Some(chars) = sanitized_typed_characters(chars, self.ime_preedit) else {
+                    return true;
+                };
+                (self.on_edit)(ctx, TextFieldEditAction::TypedCharacters(chars));
                 return true;
             }
             Some(Event::SetMarkedText {
@@ -442,13 +542,24 @@ impl Element for TextFieldInput {
                 (self.on_edit)(ctx, TextFieldEditAction::ClearMarkedText);
                 return true;
             }
-            Some(Event::KeyDown { keystroke, .. }) => {
+            Some(Event::KeyDown {
+                keystroke,
+                is_composing,
+                ..
+            }) => {
+                if *is_composing {
+                    return false;
+                }
                 if keystroke.ctrl || keystroke.meta {
                     if keystroke.key.eq_ignore_ascii_case("v") {
                         if let Some(text) = read_clipboard_text() {
                             (self.on_edit)(ctx, TextFieldEditAction::Paste(text));
                             return true;
                         }
+                    }
+                    if keystroke.key.eq_ignore_ascii_case("backspace") {
+                        (self.on_edit)(ctx, TextFieldEditAction::ClearAll);
+                        return true;
                     }
                     return if let Some(cb) = &self.on_keydown {
                         matches!(cb(ctx, keystroke), DispatchEventResult::StopPropagation)
@@ -459,9 +570,21 @@ impl Element for TextFieldInput {
                 if keystroke.alt {
                     return false;
                 }
+                if is_user_typing_keystroke(keystroke) {
+                    (self.on_edit)(ctx, TextFieldEditAction::EndImeSuppress);
+                    return false;
+                }
                 match keystroke.key.as_str() {
-                    "backspace" => {
-                        (self.on_edit)(ctx, TextFieldEditAction::Backspace);
+                    "backspace" | "delete" => {
+                        if self.ime_preedit {
+                            return false;
+                        }
+                        let action = if keystroke.key == "delete" {
+                            TextFieldEditAction::Delete
+                        } else {
+                            TextFieldEditAction::Backspace
+                        };
+                        (self.on_edit)(ctx, action);
                         return true;
                     }
                     "left" | "right" | "up" | "down" | "home" | "end" => {
@@ -470,7 +593,10 @@ impl Element for TextFieldInput {
                     }
                     "enter" | "return" | "escape" | "tab" => {
                         if let Some(cb) = &self.on_keydown {
-                            return matches!(cb(ctx, keystroke), DispatchEventResult::StopPropagation);
+                            return matches!(
+                                cb(ctx, keystroke),
+                                DispatchEventResult::StopPropagation
+                            );
                         }
                         return false;
                     }
@@ -495,7 +621,8 @@ impl Element for TextFieldInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_with_preedit, pop_char, should_show_placeholder, TextFieldEditAction, TextFieldState,
+        display_with_preedit, pop_char, sanitized_typed_characters, should_show_placeholder,
+        TextFieldEditAction, TextFieldState,
     };
 
     #[test]
@@ -511,12 +638,18 @@ mod tests {
     fn ime_commit_appends_to_draft() {
         let mut draft = String::new();
         let mut state = TextFieldState::new();
-        state.apply(&mut draft, &TextFieldEditAction::SetMarkedText {
-            marked_text: "ni".into(),
-            selected_range: 0..2,
-        });
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::SetMarkedText {
+                marked_text: "ni".into(),
+                selected_range: 0..2,
+            },
+        );
         assert_eq!(state.marked_text, "ni");
-        state.apply(&mut draft, &TextFieldEditAction::TypedCharacters("你".into()));
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::TypedCharacters("你".into()),
+        );
         assert_eq!(draft, "你");
         assert!(state.marked_text.is_empty());
     }
@@ -540,5 +673,79 @@ mod tests {
         assert!(should_show_placeholder(false, "", ""));
         assert!(!should_show_placeholder(true, "x", ""));
         assert!(!should_show_placeholder(false, "", "preedit"));
+    }
+
+    #[test]
+    fn backspace_shrinks_preedit_without_touching_draft() {
+        let mut draft = "committed".to_string();
+        let mut state = TextFieldState::new();
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::SetMarkedText {
+                marked_text: "nihao".into(),
+                selected_range: 0..5,
+            },
+        );
+        state.apply(&mut draft, &TextFieldEditAction::Backspace);
+        assert_eq!(draft, "committed");
+        assert_eq!(state.marked_text, "niha");
+    }
+
+    #[test]
+    fn backspace_control_text_is_not_inserted() {
+        assert_eq!(sanitized_typed_characters("\u{8}", false), None);
+        assert_eq!(sanitized_typed_characters("\u{7f}", false), None);
+        assert_eq!(
+            sanitized_typed_characters("a\u{8}b", false),
+            Some("ab".to_string())
+        );
+    }
+
+    #[test]
+    fn replacement_preedit_replay_is_ignored() {
+        assert_eq!(sanitized_typed_characters("\u{FFFD}", true), None);
+
+        let mut draft = "user@example.com".to_string();
+        let mut state = TextFieldState::new();
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::SetMarkedText {
+                marked_text: "\u{FFFD}".into(),
+                selected_range: 0..1,
+            },
+        );
+        assert_eq!(draft, "user@example.com");
+        assert!(state.marked_text.is_empty());
+    }
+
+    #[test]
+    fn clear_all_suppresses_stale_ime_replay() {
+        let mut draft = "user@example.com".to_string();
+        let mut state = TextFieldState::new();
+        state.apply(&mut draft, &TextFieldEditAction::ClearAll);
+        assert!(draft.is_empty());
+
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::SetMarkedText {
+                marked_text: "\u{FFFD}".into(),
+                selected_range: 0..3,
+            },
+        );
+        assert!(draft.is_empty());
+        assert!(state.marked_text.is_empty());
+
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::TypedCharacters("\u{FFFD}".into()),
+        );
+        assert!(draft.is_empty());
+
+        state.apply(&mut draft, &TextFieldEditAction::EndImeSuppress);
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::TypedCharacters("a".into()),
+        );
+        assert_eq!(draft, "a");
     }
 }

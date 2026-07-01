@@ -4,9 +4,9 @@ use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
-    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    Radius, ScrollbarWidth, Shrinkable, Stack,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill,
+    Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
+    ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -26,14 +26,16 @@ use crate::ui::display_view::DisplayView;
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
 use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
+use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
 use crate::ui::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::sync_views::SyncView;
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
-use crate::ui::window_chrome::{self, CHROME_ROW_HEIGHT, TrafficLightActions, TrafficLightMouseStates};
+use crate::ui::window_chrome::{
+    self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
+};
 use crate::ui_text;
-use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
 use wormhole_desktop_core::cloud_auth_status;
 use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_fast};
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
@@ -115,8 +117,7 @@ pub struct AppShellView {
     login_modal: ViewHandle<LoginModalView>,
     login_modal_open: bool,
     auth_authenticated: bool,
-    auth_user_id: Option<String>,
-    login_modal_open: bool,
+    auth_device_id: Option<String>,
     font: FamilyId,
     mono: FamilyId,
     hud_nodes: usize,
@@ -150,8 +151,8 @@ impl AppShellView {
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
         let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
-        let toolbox =
-            ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
+        let toolbox = ctx
+            .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
         let settings =
             ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
@@ -159,10 +160,10 @@ impl AppShellView {
             match event {
                 LoginModalEvent::AuthChanged {
                     authenticated,
-                    user_id,
+                    device_id,
                 } => {
                     view.auth_authenticated = *authenticated;
-                    view.auth_user_id = user_id.clone();
+                    view.auth_device_id = device_id.clone();
                     view.login_modal_open = false;
                     let settings_handle = view.settings.clone();
                     ctx.update_view(&settings_handle, |settings, ctx| {
@@ -177,13 +178,20 @@ impl AppShellView {
             ctx.notify();
         });
         ctx.subscribe_to_view(&settings, |view, _, event, ctx| {
-            let SettingsEvent::AccountChanged { authenticated } = event;
-            view.auth_authenticated = *authenticated;
-            if !authenticated {
-                view.auth_user_id = None;
-                view.device_ready = false;
+            match event {
+                SettingsEvent::AccountChanged { authenticated } => {
+                    view.auth_authenticated = *authenticated;
+                    if !authenticated {
+                        view.auth_device_id = None;
+                        view.device_ready = false;
+                        view.prompt_login_if_needed(ctx);
+                    }
+                    view.refresh_auth_gated_views(ctx);
+                }
+                SettingsEvent::OpenLogin => {
+                    view.open_login_modal(ctx);
+                }
             }
-            view.refresh_auth_gated_views(ctx);
             ctx.notify();
         });
         let prefs = desktop_prefs::load(&core.data_dir());
@@ -223,8 +231,7 @@ impl AppShellView {
             login_modal,
             login_modal_open: false,
             auth_authenticated: false,
-            auth_user_id: None,
-            login_modal_open: false,
+            auth_device_id: None,
             font,
             mono,
             hud_nodes: 1,
@@ -297,11 +304,25 @@ impl AppShellView {
             move |view, output, ctx| {
                 if let Ok(status) = output {
                     view.hud_nodes = status.nodes.len().max(1);
-                    view.auth_authenticated = !status.auth_required;
-                    let device_ready =
-                        !status.auth_required && !status.device_bootstrap_required;
-                    if device_ready && !view.device_ready {
+                    let auth_now = !status.auth_required;
+                    let auth_changed = auth_now != view.auth_authenticated;
+                    view.auth_authenticated = auth_now;
+                    if !auth_now {
+                        view.auth_device_id = None;
+                    }
+                    let device_ready = auth_now && !status.device_bootstrap_required;
+                    let device_ready_changed = device_ready != view.device_ready;
+                    if auth_changed || device_ready_changed {
                         view.refresh_auth_gated_views(ctx);
+                        if auth_changed {
+                            let settings_handle = view.settings.clone();
+                            ctx.update_view(&settings_handle, |settings, ctx| {
+                                settings.refresh_account(ctx);
+                            });
+                            if !auth_now {
+                                view.prompt_login_if_needed(ctx);
+                            }
+                        }
                     }
                     view.device_ready = device_ready;
                     ctx.notify();
@@ -323,15 +344,26 @@ impl AppShellView {
         settings: ViewHandle<SettingsView>,
     ) {
         let mut rx = events.subscribe();
-        ctx.spawn(async move { rx.recv().await }, move |_view, output, ctx| {
+        ctx.spawn(async move { rx.recv().await }, move |view, output, ctx| {
             if let Ok(event) = output {
-                if event.name == "deeplink-import" {
-                    if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
-                        let url = url.to_string();
-                        ctx.update_view(&settings, |view, ctx| {
-                            view.open_deeplink_url(url, ctx);
+                match event.name.as_str() {
+                    "deeplink-import" => {
+                        if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
+                            let url = url.to_string();
+                            ctx.update_view(&settings, |view, ctx| {
+                                view.open_deeplink_url(url, ctx);
+                            });
+                        }
+                    }
+                    "cloud-auth-changed" => {
+                        view.refresh_auth_status(ctx);
+                        view.refresh_auth_gated_views(ctx);
+                        let settings_handle = settings.clone();
+                        ctx.update_view(&settings_handle, |settings, ctx| {
+                            settings.refresh_account(ctx);
                         });
                     }
+                    _ => {}
                 }
             }
             Self::poll_deeplink_once(ctx, events, settings);
@@ -497,6 +529,33 @@ impl AppShellView {
         }
     }
 
+    fn tab_requires_login_prompt(tab: AppTab) -> bool {
+        matches!(
+            tab,
+            AppTab::Devices | AppTab::Chat | AppTab::Sync | AppTab::Display
+        )
+    }
+
+    fn open_login_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.login_modal_open = true;
+        let login = self.login_modal.clone();
+        ctx.update_view(&login, |modal, ctx| {
+            modal.open(ctx);
+        });
+    }
+
+    /// Auth-gated tabs open the login dialog instead of sending users to Settings.
+    fn prompt_login_if_needed(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.auth_authenticated || self.login_modal_open {
+            return;
+        }
+        if !Self::tab_requires_login_prompt(self.tab) {
+            return;
+        }
+        self.open_login_modal(ctx);
+        ctx.notify();
+    }
+
     fn refresh_auth_gated_views(&self, ctx: &mut ViewContext<Self>) {
         let devices = self.devices.clone();
         ctx.update_view(&devices, |devices, ctx| {
@@ -533,8 +592,14 @@ impl AppShellView {
             },
             |view, output, ctx| {
                 if let Ok(status) = output {
+                    let auth_resolved = status.authenticated && !view.auth_authenticated;
                     view.auth_authenticated = status.authenticated;
-                    view.auth_user_id = status.user_id;
+                    view.auth_device_id = status.device_id;
+                    if auth_resolved {
+                        view.refresh_auth_gated_views(ctx);
+                    } else if !status.authenticated {
+                        view.prompt_login_if_needed(ctx);
+                    }
                     ctx.notify();
                 }
             },
@@ -544,16 +609,16 @@ impl AppShellView {
     fn hud_login_entry(&self) -> Box<dyn Element> {
         if self.auth_authenticated {
             let label = self
-                .auth_user_id
+                .auth_device_id
                 .as_deref()
                 .map(|id| {
                     if id.len() > 10 {
-                        format!("{}…", &id[..8])
+                        format!("设备 {}", &id[..8])
                     } else {
-                        id.to_string()
+                        format!("设备 {id}")
                     }
                 })
-                .unwrap_or_else(|| "ACCOUNT".to_string());
+                .unwrap_or_else(|| "设备已登录".to_string());
             return Container::new(
                 ui_text::hud_title(label, self.mono)
                     .with_color(theme::accent_cool())
@@ -643,8 +708,7 @@ impl AppShellView {
 
         let content_height = icons::TAB_ICON_SIZE;
         let bottom_border = 2.0;
-        let vertical_pad =
-            ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
+        let vertical_pad = ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
 
         let mut container = Container::new(
             Flex::row()
@@ -828,13 +892,7 @@ impl AppShellView {
         if let Some(banner) = self.onboarding_banner() {
             column.add_child(Container::new(banner).with_uniform_padding(8.0).finish());
         }
-        column.add_child(
-            Expanded::new(
-                1.0,
-                HudBackdrop::live(tab_content_fill(content)),
-            )
-            .finish(),
-        );
+        column.add_child(Expanded::new(1.0, HudBackdrop::live(tab_content_fill(content))).finish());
         column.finish()
     }
 }
@@ -946,6 +1004,7 @@ impl TypedActionView for AppShellView {
                 self.tab_focus = *tab;
                 self.tab_bar_keyboard_focus = *source == TabSelectSource::Keyboard;
                 self.persist_last_tab();
+                self.prompt_login_if_needed(ctx);
                 ctx.notify();
             }
             AppShellAction::DismissOnboarding => {
@@ -974,11 +1033,7 @@ impl TypedActionView for AppShellView {
                 ctx.close_window();
             }
             AppShellAction::OpenLogin => {
-                self.login_modal_open = true;
-                let login = self.login_modal.clone();
-                ctx.update_view(&login, |modal, ctx| {
-                    modal.open(ctx);
-                });
+                self.open_login_modal(ctx);
                 ctx.notify();
             }
         }
@@ -1043,6 +1098,14 @@ mod tests {
         assert_eq!(AppTab::from_persist_id("terminals"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("w_drive"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("agent"), Some(AppTab::Warp));
+    }
+
+    #[test]
+    fn tab_requires_login_prompt_for_cluster_features() {
+        assert!(AppShellView::tab_requires_login_prompt(AppTab::Devices));
+        assert!(AppShellView::tab_requires_login_prompt(AppTab::Chat));
+        assert!(!AppShellView::tab_requires_login_prompt(AppTab::Settings));
+        assert!(!AppShellView::tab_requires_login_prompt(AppTab::Toolbox));
     }
 
     #[test]

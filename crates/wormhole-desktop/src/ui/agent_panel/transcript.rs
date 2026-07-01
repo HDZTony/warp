@@ -102,11 +102,7 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
         Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::End)
             .with_child(bubble)
-            .with_child(
-                Container::new(copy_btn)
-                    .with_margin_top(6.0)
-                    .finish(),
-            )
+            .with_child(Container::new(copy_btn).with_margin_top(6.0).finish())
             .finish(),
     )
     .right()
@@ -119,7 +115,11 @@ fn render_status_line(font: FamilyId, text: &str) -> Box<dyn Element> {
         .finish()
 }
 
-fn render_assistant_body(font: FamilyId, mono: FamilyId, line: &TranscriptLine) -> Box<dyn Element> {
+fn render_assistant_body(
+    font: FamilyId,
+    mono: FamilyId,
+    line: &TranscriptLine,
+) -> Box<dyn Element> {
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_main_axis_size(MainAxisSize::Min);

@@ -268,10 +268,14 @@ impl WindowsTrafficLightIcon {
         let hoverable = Hoverable::new(mouse_state_handle, move |state| {
             let hovered = state.is_hovered();
             let icon_color = self.icon_color(hovered);
-            let icon = Text::new(self.unicode_code_point(), icon_font_family, WINDOWS_ICON_FONT_SIZE)
-                .with_color(icon_color)
-                .with_line_height_ratio(WINDOWS_GOLDEN_RATIO)
-                .finish();
+            let icon = Text::new(
+                self.unicode_code_point(),
+                icon_font_family,
+                WINDOWS_ICON_FONT_SIZE,
+            )
+            .with_color(icon_color)
+            .with_line_height_ratio(WINDOWS_GOLDEN_RATIO)
+            .finish();
             let icon = Align::new(icon).finish();
             if hovered {
                 Container::new(icon)
@@ -475,12 +479,7 @@ impl TrafficLightData {
     #[cfg(windows)]
     fn windows_close_icon(icon_color: ColorU, font: FamilyId) -> Box<dyn Element> {
         ConstrainedBox::new(
-            Align::new(
-                Text::new("×", font, 16.0)
-                    .with_color(icon_color)
-                    .finish(),
-            )
-            .finish(),
+            Align::new(Text::new("×", font, 16.0).with_color(icon_color).finish()).finish(),
         )
         .with_height(BUTTON_ICON_SIZE)
         .with_width(BUTTON_ICON_SIZE)

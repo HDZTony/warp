@@ -30,7 +30,9 @@ fn write_clipboard_text_win32(text: &str) -> Result<(), String> {
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
     let wide: Vec<u16> = OsStr::new(text)

@@ -72,11 +72,7 @@ impl WDriveView {
                     view.schedule_gate_then_refresh(ctx);
                 }
                 view.status = match status {
-                    Ok(s) => format!(
-                        "Vault ready={} endpoint={}",
-                        s.ready,
-                        s.endpoint_id.as_deref().unwrap_or("—")
-                    ),
+                    Ok(s) => format!("Vault ready={}", s.ready),
                     Err(e) => format!("Vault 错误: {e}"),
                 };
                 view.files = files
