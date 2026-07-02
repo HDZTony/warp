@@ -1,9 +1,11 @@
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use warpui::elements::Fill;
 use warpui::elements::{
-    Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
-    MainAxisAlignment, MainAxisSize, ParentElement, Radius, ScrollbarWidth, Shrinkable, Stack,
+    Align, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
+    MainAxisAlignment, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement,
+    ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -22,10 +24,10 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
     add_storage_volume, create_cluster_invite, delete_share_entry, join_cluster,
-    list_share_directory, open_share_entry, remote_open_share_entry, switch_active_cluster,
-    sync_share_entry, AddStorageVolumeParams, ClusterStatusDto, JoinClusterOutcome,
-    JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto,
-    SwitchActiveClusterParams,
+    list_share_directory, open_share_entry, remote_open_share_entry, remove_cluster_node,
+    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterNodeDto,
+    ClusterStatusDto, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
+    ListShareDirectoryParams, RemoveClusterNodeParams, ShareEntryDto, SwitchActiveClusterParams,
 };
 
 use std::time::{Duration, Instant};
@@ -72,6 +74,11 @@ pub struct DevicesView {
     last_file_click: Option<(String, std::time::Instant)>,
     bootstrap_busy: bool,
     bootstrap_pending_since: Option<Instant>,
+    selected_node_id: Option<String>,
+    hovered_node_id: Option<String>,
+    delete_modal_node_id: Option<String>,
+    device_context_menu: Option<(String, f32, f32)>,
+    last_node_click: Option<(String, Instant)>,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -119,6 +126,11 @@ impl DevicesView {
             last_file_click: None,
             bootstrap_busy: false,
             bootstrap_pending_since: None,
+            selected_node_id: None,
+            hovered_node_id: None,
+            delete_modal_node_id: None,
+            device_context_menu: None,
+            last_node_click: None,
         };
         view.refresh_cluster(ctx);
         view
@@ -312,6 +324,7 @@ impl DevicesView {
         self.join_invite_draft.clear();
         self.join_feedback = None;
         self.cluster_picker_open = false;
+        self.device_context_menu = None;
         self.browsing_node_id = Some(node_id);
         self.browsing_label = label;
         self.share_entries.clear();
@@ -321,6 +334,7 @@ impl DevicesView {
         self.share_history_forward.clear();
         self.share_status = None;
         self.share_add_modal_open = false;
+        self.device_context_menu = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
         ctx.notify();
@@ -608,6 +622,92 @@ impl DevicesView {
         ctx.notify();
     }
 
+    fn handle_node_card_click(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        if self.device_context_menu.is_some() {
+            self.device_context_menu = None;
+        }
+        let now = Instant::now();
+        if let Some((last_id, last_at)) = &self.last_node_click {
+            if last_id == &node_id && last_at.elapsed() < Duration::from_millis(450) {
+                self.last_node_click = None;
+                self.open_node(node_id, ctx);
+                return;
+            }
+        }
+        self.last_node_click = Some((node_id.clone(), now));
+        self.selected_node_id = Some(node_id);
+        ctx.notify();
+    }
+
+    fn open_delete_node_modal(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        self.delete_modal_node_id = Some(node_id);
+        self.device_context_menu = None;
+        ctx.notify();
+    }
+
+    fn close_delete_node_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.delete_modal_node_id = None;
+        ctx.notify();
+    }
+
+    fn close_device_context_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        self.device_context_menu = None;
+        ctx.notify();
+    }
+
+    fn confirm_delete_node(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(node_id) = self.delete_modal_node_id.clone() else {
+            return;
+        };
+        let removed_label = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.nodes.iter().find(|node| node.node_id == node_id))
+            .map(|node| format!("{} · {}", node.os, node.node_id));
+        let delete_target = node_id.clone();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                remove_cluster_node(
+                    &state,
+                    RemoveClusterNodeParams {
+                        node_id: delete_target,
+                    },
+                )
+                .await
+            },
+            move |view, output, ctx| {
+                view.delete_modal_node_id = None;
+                view.device_context_menu = None;
+                match output {
+                    Ok(status) => {
+                        if view.browsing_node_id.as_deref() == Some(&node_id) {
+                            view.back_to_grid(ctx);
+                        }
+                        if let Some(label) = removed_label {
+                            view.status_flash = Some(format!("NODE REMOVED · {label}"));
+                        }
+                        view.apply_cluster_status(status, ctx);
+                    }
+                    Err(err) => {
+                        view.cluster_error = Some(err);
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn cluster_node_label(&self, node_id: &str) -> Option<ClusterNodeDto> {
+        self.cluster
+            .as_ref()?
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .cloned()
+    }
+
     fn joined_cluster_label(entry: &JoinedClusterDto) -> String {
         format!(
             "{} · {}",
@@ -631,6 +731,30 @@ impl DevicesView {
             })
     }
 
+    fn active_cluster_folder_name(cluster: &ClusterStatusDto) -> String {
+        cluster
+            .clusters
+            .iter()
+            .find(|c| c.active)
+            .map(|c| c.folder_name.clone())
+            .unwrap_or_else(|| {
+                cluster
+                    .cluster_id
+                    .as_deref()
+                    .map(|id| format!("集群 {}", short_cluster_id(id)))
+                    .unwrap_or_else(|| "集群".to_string())
+            })
+    }
+
+    fn active_cluster_tag(cluster: &ClusterStatusDto) -> String {
+        cluster
+            .clusters
+            .iter()
+            .find(|c| c.active)
+            .map(|c| format!("{} · {}", c.folder_name, short_cluster_id(&c.cluster_id)))
+            .unwrap_or_else(|| Self::cluster_label(cluster))
+    }
+
     fn cluster_status_text(&self, cluster: &ClusterStatusDto) -> String {
         if self.cluster_syncing {
             return "CLUSTER · SYNCING · 后台同步集群…".to_string();
@@ -640,9 +764,56 @@ impl DevicesView {
         }
         let n = cluster.nodes.len();
         format!(
-            "CLUSTER · {n} NODE{} · E2E ENCRYPTED · 点击终端「共享文件」浏览共享文件夹",
+            "CLUSTER · {n} NODE{} · E2E ENCRYPTED · 双击终端浏览共享文件夹",
             if n == 1 { "" } else { "S" }
         )
+    }
+
+    fn cluster_menu_divider() -> Box<dyn Element> {
+        Container::new(Flex::column().finish())
+            .with_vertical_margin(4.0)
+            .with_horizontal_margin(6.0)
+            .with_border(Border::top(1.0).with_border_fill(theme::border()))
+            .finish()
+    }
+
+    fn cluster_menu_section(label: &str, mono: FamilyId) -> Box<dyn Element> {
+        Container::new(
+            ui_text::cluster_ctrl(label.to_string(), mono)
+                .with_color(theme::muted())
+                .finish(),
+        )
+        .with_horizontal_padding(10.0)
+        .with_vertical_padding(6.0)
+        .finish()
+    }
+
+    fn cluster_menu_action(
+        &self,
+        label: &str,
+        action: DevicesAction,
+        accent: bool,
+    ) -> Box<dyn Element> {
+        let color = if accent {
+            theme::accent_cool()
+        } else {
+            theme::text()
+        };
+        EventHandler::new(
+            Container::new(
+                ui_text::cluster_label(label.to_string(), self.mono)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_horizontal_padding(10.0)
+            .with_vertical_padding(8.0)
+            .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
     }
 
     fn toolbar_button(
@@ -752,8 +923,91 @@ impl DevicesView {
         }
     }
 
-    fn cluster_select(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
-        let label = Self::cluster_label(cluster);
+    fn cluster_menu_popover(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
+        let mut menu = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min);
+        menu.add_child(Self::cluster_menu_section("切换集群", self.mono));
+        for entry in &cluster.clusters {
+            let cluster_id = entry.cluster_id.clone();
+            let name = entry.folder_name.clone();
+            let short_id = short_cluster_id(&entry.cluster_id);
+            let (bg, color) = if entry.active {
+                (theme::accent_cool_bg(40), theme::accent_cool())
+            } else {
+                (ColorU::new(0, 0, 0, 0), theme::text())
+            };
+            let check_color = if entry.active {
+                theme::accent_cool()
+            } else {
+                ColorU::new(0, 0, 0, 0)
+            };
+            let mut item_row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max);
+            item_row.add_child(
+                ui_text::cluster_label(name, self.mono)
+                    .with_color(color)
+                    .finish(),
+            );
+            item_row.add_child(
+                Expanded::new(
+                    1.0,
+                    Container::new(
+                        ui_text::cluster_ctrl(short_id, self.mono)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_horizontal_margin(8.0)
+                    .finish(),
+                )
+                .finish(),
+            );
+            item_row.add_child(
+                ui_text::cluster_ctrl("✓", self.mono)
+                    .with_color(check_color)
+                    .finish(),
+            );
+            menu.add_child(
+                EventHandler::new(
+                    Container::new(item_row.finish())
+                        .with_horizontal_padding(10.0)
+                        .with_vertical_padding(8.0)
+                        .with_background(bg)
+                        .finish(),
+                )
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::SelectCluster(cluster_id.clone()));
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            );
+        }
+        menu.add_child(Self::cluster_menu_divider());
+        menu.add_child(self.cluster_menu_action(
+            self.copy_invite_label(),
+            DevicesAction::CopyInvite,
+            false,
+        ));
+        menu.add_child(self.cluster_menu_action(
+            "+ 加入集群",
+            DevicesAction::OpenJoinModal,
+            true,
+        ));
+
+        Container::new(
+            ConstrainedBox::new(menu.finish())
+                .with_width(CLUSTER_SELECT_MIN_WIDTH)
+                .finish(),
+        )
+        .with_background(theme::panel())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish()
+    }
+
+    fn cluster_menu(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
+        let label = Self::active_cluster_folder_name(cluster);
         let mut trigger_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
@@ -779,7 +1033,8 @@ impl DevicesView {
             Container::new(
                 ConstrainedBox::new(trigger_row.finish())
                     .with_height(TOOLBAR_BTN_HEIGHT)
-                    .with_width(CLUSTER_SELECT_MIN_WIDTH)
+                    .with_min_width(CLUSTER_SELECT_MIN_WIDTH)
+                    .with_max_width(320.0)
                     .finish(),
             )
             .with_horizontal_padding(12.0)
@@ -794,75 +1049,35 @@ impl DevicesView {
         })
         .finish();
 
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(trigger);
-        if self.cluster_picker_open && cluster.clusters.len() > 1 {
-            let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-            for entry in &cluster.clusters {
-                let cluster_id = entry.cluster_id.clone();
-                let item_label = Self::joined_cluster_label(entry);
-                let (bg, color) = if entry.active {
-                    (theme::accent_cool_bg(40), theme::accent_cool())
-                } else {
-                    (theme::canvas(), theme::text())
-                };
-                menu.add_child(
-                    EventHandler::new(
-                        Container::new(
-                            ui_text::cluster_label(item_label, self.mono)
-                                .with_color(color)
-                                .finish(),
-                        )
-                        .with_horizontal_padding(12.0)
-                        .with_vertical_padding(10.0)
-                        .with_background(bg)
-                        .finish(),
-                    )
-                    .on_left_mouse_down(move |ctx, _, _| {
-                        ctx.dispatch_typed_action(DevicesAction::SelectCluster(cluster_id.clone()));
-                        DispatchEventResult::StopPropagation
-                    })
-                    .finish(),
-                );
-            }
-            col.add_child(
-                Container::new(menu.finish())
-                    .with_vertical_margin(4.0)
-                    .with_background(theme::canvas())
-                    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-                    .finish(),
+        let mut stack = Stack::new();
+        stack.add_child(trigger);
+        if self.cluster_picker_open {
+            stack.add_positioned_child(
+                self.cluster_menu_popover(cluster),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0.0, TOOLBAR_BTN_HEIGHT + 6.0),
+                    ParentOffsetBounds::Unbounded,
+                    ParentAnchor::TopLeft,
+                    ChildAnchor::TopLeft,
+                ),
             );
         }
 
-        ConstrainedBox::new(col.finish())
-            .with_width(CLUSTER_SELECT_MIN_WIDTH)
-            .finish()
+        EventHandler::new(
+            ConstrainedBox::new(stack.finish())
+                .with_min_width(CLUSTER_SELECT_MIN_WIDTH)
+                .with_max_width(320.0)
+                .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish()
     }
 
     fn cluster_toolbar(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
-        row.add_child(self.cluster_select(cluster));
-        row.add_child(
-            Container::new(self.toolbar_button(
-                self.copy_invite_label(),
-                DevicesAction::CopyInvite,
-                self.copy_invite_ack,
-                136.0,
-                !self.copy_invite_busy,
-            ))
-            .with_horizontal_margin(10.0)
-            .finish(),
-        );
-        row.add_child(self.toolbar_button(
-            "+ 加入集群",
-            DevicesAction::OpenJoinModal,
-            true,
-            128.0,
-            true,
-        ));
+        row.add_child(self.cluster_menu(cluster));
         row.add_child(
             Shrinkable::new(
                 1.0,
@@ -918,7 +1133,7 @@ impl DevicesView {
         let name = self
             .cluster
             .as_ref()
-            .map(DevicesView::cluster_label)
+            .map(DevicesView::active_cluster_folder_name)
             .unwrap_or_else(|| "集群".to_string());
         self.status_flash = Some(format!("INVITE COPIED · {name} · 已复制本机邀请码"));
         self.copy_invite_ack = true;
@@ -996,10 +1211,8 @@ impl DevicesView {
     }
 
     fn toggle_cluster_picker(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.cluster.as_ref().is_some_and(|c| c.clusters.len() > 1) {
-            self.cluster_picker_open = !self.cluster_picker_open;
-            ctx.notify();
-        }
+        self.cluster_picker_open = !self.cluster_picker_open;
+        ctx.notify();
     }
 
     fn close_cluster_picker(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1113,10 +1326,24 @@ impl DevicesView {
 
     fn join_modal(&self) -> Box<dyn Element> {
         let join_preview = if self.join_invite_draft.is_empty() {
-            "（从剪贴板粘贴邀请 JSON）".to_string()
+            "粘贴完整 JSON 邀请，或 wormhole://join?cluster=…&token=…".to_string()
         } else {
             truncate_middle(&self.join_invite_draft, 240)
         };
+
+        let local_invite_preview = if self.invite_busy && self.local_invite.is_none() {
+            "生成中…".to_string()
+        } else if let Some(invite) = &self.local_invite {
+            truncate_middle(invite, 320)
+        } else {
+            "（打开弹窗后自动生成）".to_string()
+        };
+
+        let cluster_tag = self
+            .cluster
+            .as_ref()
+            .map(DevicesView::active_cluster_tag)
+            .unwrap_or_else(|| "—".to_string());
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
@@ -1126,7 +1353,82 @@ impl DevicesView {
         );
         dialog.add_child(
             Container::new(
-                ui_text::body("粘贴对方邀请码加入新集群。", self.font)
+                ui_text::body(
+                    "复制本机邀请码发给其他终端，或粘贴对方邀请码加入新集群。",
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+
+        let mut local_head = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        local_head.add_child(
+            ui_text::hud_title("本机邀请码", self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        local_head.add_child(
+            Expanded::new(
+                1.0,
+                Container::new(
+                    ui_text::cluster_ctrl(cluster_tag, self.mono)
+                        .with_color(theme::accent_cool())
+                        .finish(),
+                )
+                .with_horizontal_margin(8.0)
+                .finish(),
+            )
+            .finish(),
+        );
+        dialog.add_child(local_head.finish());
+        dialog.add_child(
+            Container::new(
+                ConstrainedBox::new(
+                    ui_text::mono(local_invite_preview, self.mono)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_min_height(72.0)
+                .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(6.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_child(
+                        Expanded::new(
+                            1.0,
+                            self.toolbar_button(
+                                self.copy_invite_label(),
+                                DevicesAction::CopyInvite,
+                                self.copy_invite_ack,
+                                0.0,
+                                !self.copy_invite_busy,
+                            ),
+                        )
+                        .finish(),
+                    )
+                    .finish(),
+            )
+            .with_vertical_margin(10.0)
+            .finish(),
+        );
+        dialog.add_child(Self::cluster_menu_divider());
+        dialog.add_child(
+            Container::new(
+                ui_text::hud_title("加入集群 · 粘贴邀请码", self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -1134,15 +1436,14 @@ impl DevicesView {
             .finish(),
         );
         dialog.add_child(
-            ui_text::hud_title("加入集群 · 粘贴邀请码", self.font)
-                .with_color(theme::muted())
-                .finish(),
-        );
-        dialog.add_child(
             Container::new(
-                ui_text::mono(join_preview, self.font)
-                    .with_color(theme::text())
-                    .finish(),
+                ConstrainedBox::new(
+                    ui_text::mono(join_preview, self.mono)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_min_height(72.0)
+                .finish(),
             )
             .with_uniform_padding(10.0)
             .with_vertical_margin(6.0)
@@ -1213,7 +1514,7 @@ impl DevicesView {
         let panel = EventHandler::new(
             Container::new(
                 ConstrainedBox::new(dialog.finish())
-                    .with_width(440.0)
+                    .with_width(480.0)
                     .finish(),
             )
             .with_uniform_padding(24.0)
@@ -1343,6 +1644,11 @@ impl DevicesView {
                 );
             } else {
                 let local_id = cluster.local_node_id.clone();
+                let selected_id = self
+                    .selected_node_id
+                    .clone()
+                    .unwrap_or_else(|| local_id.clone());
+                let hovered_id = self.hovered_node_id.clone().unwrap_or_default();
                 let mut nodes = cluster.nodes.clone();
                 nodes.sort_by(|a, b| {
                     let a_local = a.node_id == local_id;
@@ -1360,7 +1666,12 @@ impl DevicesView {
                         1.0,
                         Container::new(
                             ConstrainedBox::new(ClusterTopologyPanel::element(
-                                nodes, local_id, hub_index, self.mono,
+                                nodes,
+                                local_id,
+                                selected_id,
+                                hovered_id,
+                                hub_index,
+                                self.mono,
                             ))
                             .with_min_height(280.0)
                             .finish(),
@@ -1399,14 +1710,250 @@ impl DevicesView {
     }
 
     fn grid_shell(&self) -> Box<dyn Element> {
-        let grid = self.grid_view();
-        if !self.join_modal_open {
-            return grid;
+        let has_overlay = self.join_modal_open
+            || self.delete_modal_node_id.is_some()
+            || self.device_context_menu.is_some()
+            || self.cluster_picker_open;
+        if !has_overlay {
+            return self.grid_view();
         }
         let mut stack = Stack::new();
+        let grid = if self.cluster_picker_open
+            && !self.join_modal_open
+            && self.delete_modal_node_id.is_none()
+            && self.device_context_menu.is_none()
+        {
+            EventHandler::new(self.grid_view())
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::CloseClusterPicker);
+                    DispatchEventResult::PropagateToParent
+                })
+                .finish()
+        } else {
+            self.grid_view()
+        };
         stack.add_child(grid);
-        stack.add_child(self.join_modal());
-        stack.finish()
+        if self.device_context_menu.is_some() {
+            let scrim = EventHandler::new(
+                Container::new(Flex::column().finish())
+                    .with_background(ColorU::new(8, 7, 11, 40))
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            stack.add_child(scrim);
+            stack.add_child(self.device_context_menu());
+        }
+        if self.delete_modal_node_id.is_some() {
+            stack.add_child(self.delete_node_modal());
+        }
+        if self.join_modal_open {
+            stack.add_child(self.join_modal());
+        }
+        let delete_modal_open = self.delete_modal_node_id.is_some();
+        let device_menu_open = self.device_context_menu.is_some();
+        let join_modal_open = self.join_modal_open;
+        let cluster_picker_open = self.cluster_picker_open;
+        EventHandler::new(stack.finish())
+            .on_left_mouse_down(move |ctx, _, _| {
+                if device_menu_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
+                    return DispatchEventResult::StopPropagation;
+                }
+                DispatchEventResult::PropagateToParent
+            })
+            .on_keydown(move |ctx, _, keystroke| {
+                if keystroke.key.as_str() != "escape" {
+                    return DispatchEventResult::PropagateToParent;
+                }
+                if delete_modal_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseDeleteNodeModal);
+                } else if device_menu_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
+                } else if join_modal_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseJoinModal);
+                } else if cluster_picker_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseClusterPicker);
+                }
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn delete_node_modal(&self) -> Box<dyn Element> {
+        let target = self
+            .delete_modal_node_id
+            .as_deref()
+            .and_then(|id| self.cluster_node_label(id))
+            .map(|node| format!("{} · {}", node.os, node.node_id))
+            .unwrap_or_else(|| "—".to_string());
+
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("删除终端", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(
+                    "将从当前集群移除该终端。其共享文件夹与同步状态将不再可见，此操作不可撤销。",
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::mono(target, self.mono)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(6.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        );
+
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseDeleteNodeModal,
+            false,
+            72.0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            "删除",
+            DevicesAction::ConfirmDeleteNode,
+            true,
+            80.0,
+            true,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(420.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseDeleteNodeModal);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn device_context_menu(&self) -> Box<dyn Element> {
+        let (node_id, x, y) = self.device_context_menu.clone().unwrap_or_default();
+        let is_local = self
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.local_node_id == node_id);
+
+        let mut menu = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min);
+        menu.add_child(self.device_context_item(
+            "浏览共享文件夹",
+            DevicesAction::OpenNode(node_id.clone()),
+            false,
+            true,
+        ));
+        menu.add_child(self.device_context_item(
+            if is_local {
+                "无法删除本机"
+            } else {
+                "删除终端"
+            },
+            DevicesAction::OpenDeleteNodeModal(node_id),
+            true,
+            !is_local,
+        ));
+
+        let panel = Container::new(
+            ConstrainedBox::new(menu.finish())
+                .with_width(168.0)
+                .finish(),
+        )
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish();
+
+        positioned_context_menu(x, y, panel)
+    }
+
+    fn device_context_item(
+        &self,
+        label: &str,
+        action: DevicesAction,
+        danger: bool,
+        enabled: bool,
+    ) -> Box<dyn Element> {
+        let color = if !enabled {
+            theme::muted()
+        } else if danger {
+            theme::danger()
+        } else {
+            theme::text()
+        };
+        let handler = EventHandler::new(
+            Container::new(
+                ui_text::body(label.to_string(), self.font)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .finish(),
+        );
+        if enabled {
+            handler
+                .on_left_mouse_down(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(action.clone());
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            handler.finish()
+        }
     }
 
     fn share_status_line(&self) -> String {
@@ -1897,14 +2444,7 @@ impl DevicesView {
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish();
 
-        EventHandler::new(
-            Container::new(panel)
-                .with_margin_left(x.max(8.0))
-                .with_margin_top(y.max(8.0))
-                .finish(),
-        )
-        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
-        .finish()
+        positioned_context_menu(x, y, panel)
     }
 
     fn share_context_item(
@@ -1958,8 +2498,34 @@ impl DevicesView {
             stack.add_child(scrim);
             stack.add_child(self.share_context_menu());
         }
-        stack.finish()
+        let share_menu_open = self.share_context_entry.is_some();
+        let body = stack.finish();
+        if share_menu_open {
+            EventHandler::new(body)
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::CloseShareContextMenu);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        } else {
+            body
+        }
     }
+}
+
+fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
+    let panel = EventHandler::new(panel)
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+    Align::new(
+        Container::new(panel)
+            .with_margin_left(x.max(8.0))
+            .with_margin_top(y.max(8.0))
+            .finish(),
+    )
+    .top_left()
+    .finish()
 }
 
 fn dim_color(color: ColorU, factor: f32) -> ColorU {
@@ -2056,7 +2622,14 @@ impl TypedActionView for DevicesView {
             DevicesAction::RetryDeviceBootstrap => self.retry_device_bootstrap(ctx),
             DevicesAction::OpenNode(node_id) => self.open_node(node_id.clone(), ctx),
             DevicesAction::BackToGrid => self.back_to_grid(ctx),
-            DevicesAction::OpenJoinModal => self.open_join_modal(ctx),
+            DevicesAction::CopyInvite => {
+                self.close_cluster_picker(ctx);
+                self.copy_invite(ctx);
+            }
+            DevicesAction::OpenJoinModal => {
+                self.close_cluster_picker(ctx);
+                self.open_join_modal(ctx);
+            }
             DevicesAction::CloseJoinModal => self.close_join_modal(ctx),
             DevicesAction::PasteJoinInvite => self.paste_join_invite(ctx),
             DevicesAction::SubmitJoin => {
@@ -2064,7 +2637,6 @@ impl TypedActionView for DevicesView {
                     self.submit_join(ctx);
                 }
             }
-            DevicesAction::CopyInvite => self.copy_invite(ctx),
             DevicesAction::ToggleClusterPicker => self.toggle_cluster_picker(ctx),
             DevicesAction::CloseClusterPicker => self.close_cluster_picker(ctx),
             DevicesAction::SelectCluster(cluster_id) => {
@@ -2096,6 +2668,26 @@ impl TypedActionView for DevicesView {
             }
             DevicesAction::CloseShareContextMenu => self.close_share_context_menu(ctx),
             DevicesAction::ShareFileClick(name) => self.handle_share_file_click(name.clone(), ctx),
+            DevicesAction::NodeCardClick(node_id) => {
+                self.handle_node_card_click(node_id.clone(), ctx);
+            }
+            DevicesAction::SetNodeHover(node_id) => {
+                if self.hovered_node_id != *node_id {
+                    self.hovered_node_id = node_id.clone();
+                    ctx.notify();
+                }
+            }
+            DevicesAction::OpenDeleteNodeModal(node_id) => {
+                self.open_delete_node_modal(node_id.clone(), ctx);
+            }
+            DevicesAction::CloseDeleteNodeModal => self.close_delete_node_modal(ctx),
+            DevicesAction::ConfirmDeleteNode => self.confirm_delete_node(ctx),
+            DevicesAction::OpenDeviceContextMenu { node_id, x, y } => {
+                self.device_context_menu = Some((node_id.clone(), *x, *y));
+                self.selected_node_id = Some(node_id.clone());
+                ctx.notify();
+            }
+            DevicesAction::CloseDeviceContextMenu => self.close_device_context_menu(ctx),
         }
     }
 }

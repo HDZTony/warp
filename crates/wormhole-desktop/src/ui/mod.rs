@@ -13,6 +13,7 @@ pub mod devices_actions;
 pub mod devices_view;
 pub mod display_view;
 pub mod fonts;
+pub mod hud_avatar_panel;
 pub mod hud_effects;
 pub mod icons;
 pub mod login_modal;

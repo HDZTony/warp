@@ -46,6 +46,10 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("chat-compose-emoji.svg"),
     bundled_icon!("chat-compose-send.svg"),
     bundled_icon!("chat-compose-mic.svg"),
+    bundled_icon!("chat-header-search.svg"),
+    bundled_icon!("chat-header-phone.svg"),
+    bundled_icon!("chat-header-more.svg"),
+    bundled_icon!("chat-sidebar-search.svg"),
 ];
 
 pub struct WormholeAssets;
@@ -73,6 +77,24 @@ mod tests {
             "tab-agent.svg",
             "tab-toolbox.svg",
             "tab-settings.svg",
+        ] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+        }
+    }
+
+    #[test]
+    fn bundled_chat_icons_resolve() {
+        let assets = WormholeAssets;
+        for name in [
+            "chat-compose-attach.svg",
+            "chat-compose-emoji.svg",
+            "chat-compose-send.svg",
+            "chat-compose-mic.svg",
+            "chat-header-search.svg",
+            "chat-header-phone.svg",
+            "chat-header-more.svg",
+            "chat-sidebar-search.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
