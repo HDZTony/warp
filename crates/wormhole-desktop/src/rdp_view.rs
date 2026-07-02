@@ -5,8 +5,8 @@ use display_core::protocol::CodecType;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
-    Align, ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex, Image, MainAxisSize,
-    ParentElement, Rect, Stack, Text,
+    Align, ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex, Image,
+    ParentElement, Rect, Stack,
 };
 use warpui::fonts::{Cache as FontCache, FamilyId};
 use warpui::{
@@ -579,10 +579,25 @@ impl RdpViewerView {
         });
     }
 
-    fn normalize(position: Vector2F) -> (f32, f32) {
+    fn normalize_pointer(
+        position: Vector2F,
+        surface_w: f32,
+        surface_h: f32,
+        frame_w: u32,
+        frame_h: u32,
+    ) -> (f32, f32) {
+        let surface_w = surface_w.max(1.);
+        let surface_h = surface_h.max(1.);
+        let frame_w = frame_w.max(1) as f32;
+        let frame_h = frame_h.max(1) as f32;
+        let scale = (surface_w / frame_w).min(surface_h / frame_h);
+        let content_w = frame_w * scale;
+        let content_h = frame_h * scale;
+        let offset_x = (surface_w - content_w) / 2.;
+        let offset_y = (surface_h - content_h) / 2.;
         (
-            (position.x() / VIEW_W).clamp(0., 1.),
-            (position.y() / VIEW_H).clamp(0., 1.),
+            ((position.x() - offset_x) / content_w).clamp(0., 1.),
+            ((position.y() - offset_y) / content_h).clamp(0., 1.),
         )
     }
 
@@ -676,48 +691,71 @@ impl View for RdpViewerView {
             )
             .on_left_mouse_down({
                 let input = input.clone();
+                let surface_w = surface_w;
+                let surface_h = surface_h;
+                let frame_w = frame_w;
+                let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) = RdpViewerView::normalize(position);
+                    let (x, y) =
+                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
                     input.send(0, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
             })
             .on_left_mouse_up({
                 let input = input.clone();
+                let surface_w = surface_w;
+                let surface_h = surface_h;
+                let frame_w = frame_w;
+                let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) = RdpViewerView::normalize(position);
+                    let (x, y) =
+                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
                     input.send(2, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
             })
             .on_right_mouse_down({
                 let input = input.clone();
+                let surface_w = surface_w;
+                let surface_h = surface_h;
+                let frame_w = frame_w;
+                let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) = RdpViewerView::normalize(position);
+                    let (x, y) =
+                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
                     input.send(7, x, y, 0.);
-                    DispatchEventResult::StopPropagation
-                }
-            })
-            .on_right_mouse_down({
-                let input = input.clone();
-                move |_, _, position| {
-                    let (x, y) = RdpViewerView::normalize(position);
                     input.send(8, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
             })
             .on_mouse_dragged({
                 let input = input.clone();
+                let surface_w = surface_w;
+                let surface_h = surface_h;
+                let frame_w = frame_w;
+                let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) = RdpViewerView::normalize(position);
+                    let (x, y) =
+                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
                     input.send(1, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
             })
             .on_scroll_wheel({
                 let input = input.clone();
+                let surface_w = surface_w;
+                let surface_h = surface_h;
+                let frame_w = frame_w;
+                let frame_h = frame_h;
                 move |_, _, position, _| {
-                    let (x, y) = RdpViewerView::normalize(*position);
+                    let (x, y) = RdpViewerView::normalize_pointer(
+                        *position,
+                        surface_w,
+                        surface_h,
+                        frame_w,
+                        frame_h,
+                    );
                     input.send(3, x, y, position.y());
                     DispatchEventResult::StopPropagation
                 }
@@ -744,6 +782,13 @@ impl View for RdpViewerView {
                     .finish(),
             )
             .with_child(toolbar);
+        if let Some(label) = self.watermark_text.as_ref().filter(|s| !s.is_empty()) {
+            header_column = header_column.with_child(
+                ui_text::body(label.clone(), self.font)
+                    .with_color(ColorU::new(255, 255, 255, 90))
+                    .finish(),
+            );
+        }
         if let Some(auth) = render_auth_panel(
             self.font,
             self.mono_font,
@@ -764,33 +809,15 @@ impl View for RdpViewerView {
             .with_uniform_padding(8.)
             .finish();
 
-        let mut stack = Stack::new()
+        Stack::new()
             .with_child(Rect::new().with_background_color(ColorU::black()).finish())
             .with_child(
                 Flex::column()
                     .with_child(header)
                     .with_child(Align::new(surface).finish())
                     .finish(),
-            );
-
-        if let Some(label) = self.watermark_text.as_ref().filter(|s| !s.is_empty()) {
-            let wm = label.clone();
-            let watermark = Flex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_child(
-                    Container::new(
-                        ui_text::body(wm, self.font)
-                            .with_color(ColorU::new(255, 255, 255, 70))
-                            .finish(),
-                    )
-                    .with_uniform_padding(48.)
-                    .finish(),
-                )
-                .finish();
-            stack = stack.with_child(watermark);
-        }
-
-        stack.finish()
+            )
+            .finish()
     }
 }
 
@@ -964,5 +991,30 @@ impl RdpExtrasDispatch {
             None => {}
         }
         self.bump();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pathfinder_geometry::vector::vec2f;
+
+    #[test]
+    fn normalize_pointer_maps_surface_corners_to_frame() {
+        let (x0, y0) = RdpViewerView::normalize_pointer(vec2f(0., 0.), 1280., 720., 1920, 1080);
+        assert!((x0 - 0.).abs() < f32::EPSILON);
+        assert!((y0 - 0.).abs() < f32::EPSILON);
+        let (x1, y1) =
+            RdpViewerView::normalize_pointer(vec2f(1280., 720.), 1280., 720., 1920, 1080);
+        assert!((x1 - 1.).abs() < f32::EPSILON);
+        assert!((y1 - 1.).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn normalize_pointer_letterboxes_non_matching_aspect() {
+        let (cx, cy) =
+            RdpViewerView::normalize_pointer(vec2f(640., 360.), 1280., 720., 1024, 768);
+        assert!((cx - 0.5).abs() < 0.01);
+        assert!((cy - 0.5).abs() < 0.01);
     }
 }

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill,
-    Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
-    ScrollbarWidth, Shrinkable, Stack,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Expanded,
+    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
+    Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -20,7 +20,9 @@ use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::ChatShellView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::desktop_prefs::{self};
+use crate::ui::clipboard::read_clipboard_text;
+use crate::ui::desktop_prefs::{self, format_balance_yuan};
+use crate::ui::hud_avatar_panel::{self, build_avatar_panel, build_avatar_slot, build_redeem_modal};
 use crate::ui::devices_view::DevicesView;
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_effects::HudBackdrop;
@@ -99,6 +101,13 @@ pub enum AppShellAction {
     OpenLogin,
     #[cfg(windows)]
     ToggleCcswitchIntercept,
+    ToggleAvatarPanel,
+    CloseAvatarPanel,
+    PurchaseBalance,
+    OpenRedeemModal,
+    CloseRedeemModal,
+    PasteRedeemCode,
+    SubmitRedeem,
 }
 
 pub struct AppShellView {
@@ -126,6 +135,12 @@ pub struct AppShellView {
     mono: FamilyId,
     hud_nodes: usize,
     device_ready: bool,
+    avatar_panel_open: bool,
+    balance_cents: i64,
+    balance_feedback: Option<String>,
+    redeem_modal_open: bool,
+    redeem_code_draft: String,
+    redeem_feedback: Option<String>,
     tab_scroll: ClippedScrollStateHandle,
     show_onboarding: bool,
     window_id: WindowId,
@@ -250,6 +265,12 @@ impl AppShellView {
             mono,
             hud_nodes: 1,
             device_ready: false,
+            avatar_panel_open: false,
+            balance_cents: prefs.balance_cents,
+            balance_feedback: None,
+            redeem_modal_open: false,
+            redeem_code_draft: String::new(),
+            redeem_feedback: None,
             tab_scroll: ClippedScrollStateHandle::new(),
             show_onboarding,
             window_id,
@@ -622,82 +643,106 @@ impl AppShellView {
         );
     }
 
-    fn hud_login_entry(&self) -> Box<dyn Element> {
-        if self.auth_authenticated {
-            let label = self
-                .auth_device_id
-                .as_deref()
-                .map(|id| {
-                    if id.len() > 10 {
-                        format!("设备 {}", &id[..8])
-                    } else {
-                        format!("设备 {id}")
-                    }
-                })
-                .unwrap_or_else(|| "设备已登录".to_string());
-            return Container::new(
-                ui_text::hud_title(label, self.mono)
-                    .with_color(theme::accent_cool())
-                    .finish(),
-            )
-            .with_horizontal_margin(8.0)
-            .finish();
-        }
-
-        Container::new(
-            EventHandler::new(
-                ui_text::hud_title("登录", self.mono)
-                    .with_color(theme::accent())
-                    .finish(),
-            )
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(AppShellAction::OpenLogin);
-                DispatchEventResult::StopPropagation
-            })
-            .finish(),
-        )
-        .with_uniform_padding(6.0)
-        .with_horizontal_margin(4.0)
-        .with_background(theme::accent_bg(20))
-        .with_border(Border::all(1.0).with_border_fill(theme::accent()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
-        .finish()
+    fn persist_balance_cents(&self, cents: i64) {
+        let data_dir = self.core.data_dir();
+        let _ = desktop_prefs::update(&data_dir, |prefs| {
+            prefs.balance_cents = cents.max(0);
+        });
     }
 
-    fn hud_status_bar(&self) -> Box<dyn Element> {
-        let nodes = format!("{}", self.hud_nodes);
-        let metrics = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                ui_text::hud_title("IROH · SYNC", self.mono)
-                    .with_color(theme::muted())
-                    .finish(),
-            )
-            .with_child(
-                Container::new(Flex::row().finish())
-                    .with_horizontal_margin(16.0)
-                    .finish(),
-            )
-            .with_child(self.hud_login_entry())
-            .with_child(
-                Flex::row()
-                    .with_child(
-                        ui_text::hud_title("NODES ", self.mono)
-                            .with_color(theme::muted())
-                            .finish(),
-                    )
-                    .with_child(
-                        ui_text::hud_title(nodes, self.mono)
-                            .with_color(theme::accent())
-                            .finish(),
-                    )
-                    .finish(),
-            )
-            .finish();
-        Container::new(metrics)
-            .with_uniform_padding(12.0)
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
-            .finish()
+    fn close_avatar_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.avatar_panel_open {
+            self.avatar_panel_open = false;
+            ctx.notify();
+        }
+    }
+
+    fn toggle_avatar_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        self.avatar_panel_open = !self.avatar_panel_open;
+        if !self.avatar_panel_open {
+            self.balance_feedback = None;
+        }
+        ctx.notify();
+    }
+
+    fn purchase_balance(&mut self, ctx: &mut ViewContext<Self>) {
+        self.balance_cents = self
+            .balance_cents
+            .saturating_add(hud_avatar_panel::purchase_add_cents());
+        self.persist_balance_cents(self.balance_cents);
+        let added = format_balance_yuan(hud_avatar_panel::purchase_add_cents());
+        let remaining = format_balance_yuan(self.balance_cents);
+        self.balance_feedback = Some(format!("已购买 {added} · 剩余 {remaining}"));
+        ctx.notify();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+            },
+            |view, _, ctx| {
+                view.balance_feedback = None;
+                ctx.notify();
+            },
+        );
+    }
+
+    fn open_redeem_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.avatar_panel_open = false;
+        self.redeem_modal_open = true;
+        self.redeem_feedback = None;
+        if self.redeem_code_draft.is_empty() {
+            if let Some(text) = read_clipboard_text() {
+                self.redeem_code_draft = text.trim().to_string();
+            }
+        }
+        ctx.notify();
+    }
+
+    fn close_redeem_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.redeem_modal_open = false;
+        self.redeem_code_draft.clear();
+        self.redeem_feedback = None;
+        ctx.notify();
+    }
+
+    fn paste_redeem_code(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(text) = read_clipboard_text() {
+            self.redeem_code_draft = text.trim().to_string();
+            self.redeem_feedback = None;
+            ctx.notify();
+        }
+    }
+
+    fn submit_redeem(&mut self, ctx: &mut ViewContext<Self>) {
+        let code = self.redeem_code_draft.trim().to_string();
+        if code.is_empty() {
+            self.redeem_feedback = Some("请输入有效兑换码".into());
+            ctx.notify();
+            return;
+        }
+        let Some(add) = hud_avatar_panel::redeem_cents_for_code(&code) else {
+            self.redeem_feedback = Some("兑换码无效".into());
+            ctx.notify();
+            return;
+        };
+        self.balance_cents = self.balance_cents.saturating_add(add);
+        self.persist_balance_cents(self.balance_cents);
+        self.redeem_modal_open = false;
+        self.redeem_code_draft.clear();
+        self.redeem_feedback = None;
+        let added = format_balance_yuan(add);
+        let remaining = format_balance_yuan(self.balance_cents);
+        self.balance_feedback = Some(format!("兑换成功 +{added} · 剩余 {remaining}"));
+        self.avatar_panel_open = true;
+        ctx.notify();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+            },
+            |view, _, ctx| {
+                view.balance_feedback = None;
+                ctx.notify();
+            },
+        );
     }
 
     fn tab_button(&self, tab: AppTab) -> Box<dyn Element> {
@@ -806,7 +851,13 @@ impl AppShellView {
         }
 
         tab_row.add_child(Shrinkable::new(1.0, scrollable_tabs).finish());
-        tab_row.add_child(self.hud_status_bar());
+        tab_row.add_child(Expanded::new(1.0, Empty::new().finish()).finish());
+        tab_row.add_child(build_avatar_slot(
+            self.auth_authenticated,
+            self.auth_device_id.as_deref(),
+            self.avatar_panel_open,
+            self.font,
+        ));
 
         if let Some(data) = traffic_light_data.as_ref() {
             if let Some(spacer) = window_chrome::traffic_light_spacer(data, zoom_factor) {
@@ -925,6 +976,8 @@ impl View for AppShellView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
         let login_modal_open = self.login_modal_open;
+        let avatar_panel_open = self.avatar_panel_open;
+        let redeem_modal_open = self.redeem_modal_open;
         let shell = Container::new(self.body(app))
             .with_background(theme::canvas())
             .with_uniform_padding(0.0)
@@ -934,6 +987,16 @@ impl View for AppShellView {
             .on_keydown(move |ctx, _, keystroke| {
                 if login_modal_open {
                     return DispatchEventResult::PropagateToParent;
+                }
+                if keystroke.key.as_str() == "escape" {
+                    if redeem_modal_open {
+                        ctx.dispatch_typed_action(AppShellAction::CloseRedeemModal);
+                        return DispatchEventResult::StopPropagation;
+                    }
+                    if avatar_panel_open {
+                        ctx.dispatch_typed_action(AppShellAction::CloseAvatarPanel);
+                        return DispatchEventResult::StopPropagation;
+                    }
                 }
                 if let Some(tab) = Self::tab_from_keystroke(keystroke) {
                     ctx.dispatch_typed_action(AppShellAction::SelectTab(
@@ -957,9 +1020,50 @@ impl View for AppShellView {
 
         let mut stack = Stack::new();
         stack.add_child(shell);
+        let zoom_factor = 1.0;
+        let traffic_light_data = window_chrome::traffic_light_data(app, self.window_id);
+
+        if self.avatar_panel_open && self.auth_authenticated && !self.redeem_modal_open {
+            stack.add_child(
+                EventHandler::new(Container::new(Flex::column().finish()).finish())
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(AppShellAction::CloseAvatarPanel);
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+            );
+            let panel_right_inset = traffic_light_data
+                .as_ref()
+                .map(|data| data.width(zoom_factor) + 8.0)
+                .unwrap_or(8.0);
+            stack.add_positioned_child(
+                build_avatar_panel(
+                    self.auth_device_id.as_deref(),
+                    self.balance_cents,
+                    self.balance_feedback.as_deref(),
+                    self.font,
+                    self.mono,
+                ),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(-panel_right_inset, CHROME_ROW_HEIGHT + 8.0),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopRight,
+                    ChildAnchor::TopRight,
+                ),
+            );
+        }
+        if self.redeem_modal_open {
+            stack.add_child(build_redeem_modal(
+                &self.redeem_code_draft,
+                self.redeem_feedback.as_deref(),
+                self.font,
+                self.mono,
+            ));
+        }
         stack.add_child(ChildView::new(&self.login_modal).finish());
 
-        if window_chrome::traffic_light_data(app, self.window_id)
+        if traffic_light_data
+            .as_ref()
             .is_some_and(|data| data.side == window_chrome::TrafficLightSide::Right)
         {
             stack.add_positioned_child(
@@ -1084,6 +1188,13 @@ impl TypedActionView for AppShellView {
                     },
                 );
             }
+            AppShellAction::ToggleAvatarPanel => self.toggle_avatar_panel(ctx),
+            AppShellAction::CloseAvatarPanel => self.close_avatar_panel(ctx),
+            AppShellAction::PurchaseBalance => self.purchase_balance(ctx),
+            AppShellAction::OpenRedeemModal => self.open_redeem_modal(ctx),
+            AppShellAction::CloseRedeemModal => self.close_redeem_modal(ctx),
+            AppShellAction::PasteRedeemCode => self.paste_redeem_code(ctx),
+            AppShellAction::SubmitRedeem => self.submit_redeem(ctx),
         }
     }
 
@@ -1121,6 +1232,30 @@ impl TypedActionView for AppShellView {
                     "允许转发 ccswitch 深链给 CC Switch"
                 };
                 AccessibilityContent::new_without_help(label, WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::ToggleAvatarPanel => AccessibilityContent::new_without_help(
+                "切换账户与余额面板",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::CloseAvatarPanel => AccessibilityContent::new_without_help(
+                "关闭账户与余额面板",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::PurchaseBalance => {
+                AccessibilityContent::new_without_help("购买余额", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::OpenRedeemModal => {
+                AccessibilityContent::new_without_help("打开兑换", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::CloseRedeemModal => {
+                AccessibilityContent::new_without_help("关闭兑换", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::PasteRedeemCode => AccessibilityContent::new_without_help(
+                "从剪贴板粘贴兑换码",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::SubmitRedeem => {
+                AccessibilityContent::new_without_help("提交兑换", WarpA11yRole::ButtonRole)
             }
         };
         ActionAccessibilityContent::Custom(content)

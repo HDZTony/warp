@@ -18,8 +18,8 @@ pub const AGENT_ROW_RADIUS: f32 = 10.0;
 pub const AGENT_ICON_BTN_RADIUS: f32 = 7.0;
 /// `.agent-composer` max content width.
 pub const AGENT_THREAD_MAX_WIDTH: f32 = 720.0;
-/// `.agent-thread` bottom padding (composer is a flex sibling, not overlay).
-pub const AGENT_THREAD_BOTTOM_PAD: f32 = 24.0;
+/// `.agent-thread` bottom padding — reserves space for overlay composer (HTML: 120px).
+pub const AGENT_THREAD_BOTTOM_PAD: f32 = 120.0;
 
 pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
@@ -52,6 +52,42 @@ pub fn tab_content_fill(inner: Box<dyn Element>) -> Box<dyn Element> {
             .finish(),
     );
     stack.finish()
+}
+
+/// Mirrors `.agent-thread-inner` (`max-width: 720px; margin: 0 auto`).
+///
+/// Uses side [`Expanded`] spacers so inner flex rows receive a finite width (unlike bare
+/// [`Align`] + [`ConstrainedBox::with_max_width`], which can pass an infinite main-axis max
+/// during intrinsic measurement and trip flex `MainAxisSize::Max` asserts).
+pub fn center_thread_content(inner: Box<dyn Element>) -> Box<dyn Element> {
+    let content = ConstrainedBox::new(Expanded::new(1.0, inner).finish())
+        .with_max_width(AGENT_THREAD_MAX_WIDTH)
+        .finish();
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
+        .with_child(content)
+        .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
+        .finish()
+}
+
+/// Horizontal center + max-width 720 for overlay composer (intrinsic height only).
+///
+/// Mirrors `.agent-composer-wrap` / `.agent-composer` in `desktop-current.html`.
+/// Uses [`CrossAxisAlignment::Center`] — **not** `Stretch` (Stack full-height constraints
+/// would vertically stretch the composer card). Do not use [`center_thread_content`] for composer.
+pub fn center_composer_width(inner: Box<dyn Element>) -> Box<dyn Element> {
+    let content = ConstrainedBox::new(inner)
+        .with_max_width(AGENT_THREAD_MAX_WIDTH)
+        .finish();
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
+        .with_child(content)
+        .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
+        .finish()
 }
 
 /// Matches `.view-panel` — full-height panel background + `--panel-pad`.

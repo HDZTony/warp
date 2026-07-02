@@ -32,7 +32,8 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{
-    agent_header_bg, tab_content_fill, AGENT_THREAD_BOTTOM_PAD, AGENT_THREAD_MAX_WIDTH,
+    agent_header_bg, center_composer_width, tab_content_fill, AGENT_THREAD_BOTTOM_PAD,
+    AGENT_THREAD_MAX_WIDTH,
 };
 use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
@@ -1348,18 +1349,23 @@ impl AgentPanelView {
         .finish()
     }
 
-    fn wrap_composer_with_popovers(
+    fn composer_bottom_layer(&self, inner: Box<dyn Element>) -> Box<dyn Element> {
+        let wrap = Container::new(center_composer_width(Shrinkable::new(0.0, inner).finish()))
+            .with_padding_left(24.0)
+            .with_padding_right(24.0)
+            .with_padding_top(8.0)
+            .with_padding_bottom(20.0)
+            .finish();
+        Align::new(wrap).bottom_center().finish()
+    }
+
+    fn render_composer_popovers(
         &self,
-        composer: Box<dyn Element>,
         access_mode: AgentAccessMode,
         access_menu_open: bool,
         model_menu_open: bool,
     ) -> Box<dyn Element> {
-        if !access_menu_open && !model_menu_open {
-            return composer;
-        }
         let mut stack = Stack::new();
-        stack.add_child(composer);
         if access_menu_open {
             stack.add_child(
                 Align::new(
@@ -1387,7 +1393,7 @@ impl AgentPanelView {
                 .finish(),
             );
         }
-        stack.finish()
+        self.composer_bottom_layer(stack.finish())
     }
 
     fn composer_menu_scrim(&self) -> Box<dyn Element> {
@@ -1581,23 +1587,9 @@ impl View for AgentPanelView {
         ))
         .finish();
 
-        let composer_body = Container::new(
-            ConstrainedBox::new(composer_inner)
-                .with_max_width(AGENT_THREAD_MAX_WIDTH)
-                .finish(),
-        )
-        .with_padding_left(24.0)
-        .with_padding_right(24.0)
-        .with_padding_top(8.0)
-        .with_padding_bottom(20.0)
-        .finish();
-
-        let composer = self.wrap_composer_with_popovers(
-            composer_body,
-            access_mode,
-            access_menu_open,
-            model_menu_open,
-        );
+        let composer_card = ConstrainedBox::new(composer_inner)
+            .with_max_width(AGENT_THREAD_MAX_WIDTH)
+            .finish();
 
         let thread_body = Container::new(
             Align::new(render_transcript(&transcript_model, self.font, self.mono)).finish(),
@@ -1619,21 +1611,27 @@ impl View for AgentPanelView {
         )
         .finish();
 
-        let main_column = Flex::column()
+        let thread_column = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(self.agent_header(&thread_title))
             .with_child(Expanded::new(1.0, thread_scroll).finish())
-            .with_child(composer);
+            .finish();
 
-        let main_area = if access_menu_open || model_menu_open {
-            let mut main_stack = Stack::new();
-            main_stack.add_child(main_column.finish());
+        let mut main_stack = Stack::new();
+        main_stack.add_child(thread_column);
+        if access_menu_open || model_menu_open {
             main_stack.add_child(self.composer_menu_scrim());
-            main_stack.finish()
-        } else {
-            main_column.finish()
-        };
+        }
+        main_stack.add_child(self.composer_bottom_layer(composer_card));
+        if access_menu_open || model_menu_open {
+            main_stack.add_child(self.render_composer_popovers(
+                access_mode,
+                access_menu_open,
+                model_menu_open,
+            ));
+        }
+        let main_area = main_stack.finish();
 
         let shell = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)

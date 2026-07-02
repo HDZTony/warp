@@ -311,7 +311,9 @@ impl View for ChatComposeView {
             .with_child(emoji_btn)
             .with_child(Self::send_compose_btn(!draft_empty));
 
-        let mut compose_col = Flex::column().with_child(bar.finish());
+        let mut compose_col = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(bar.finish());
         if !self.status.is_empty() && self.status_tone != StatusTone::Success {
             compose_col.add_child(status_line(
                 self.status.clone(),

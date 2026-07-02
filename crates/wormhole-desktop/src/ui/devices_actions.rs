@@ -2,6 +2,8 @@
 pub enum DevicesAction {
     Refresh,
     RetryDeviceBootstrap,
+    NodeCardClick(String),
+    SetNodeHover(Option<String>),
     OpenNode(String),
     BackToGrid,
     OpenJoinModal,
@@ -40,4 +42,13 @@ pub enum DevicesAction {
     },
     CloseShareContextMenu,
     ShareFileClick(String),
+    OpenDeleteNodeModal(String),
+    CloseDeleteNodeModal,
+    ConfirmDeleteNode,
+    OpenDeviceContextMenu {
+        node_id: String,
+        x: f32,
+        y: f32,
+    },
+    CloseDeviceContextMenu,
 }

@@ -1,13 +1,13 @@
-use std::sync::Arc;
-
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Flex, MainAxisSize, ParentElement,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
+    MainAxisAlignment, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::icons;
 use crate::ui::panel_primitives::online_dot;
 use crate::ui::theme;
 use crate::ui_text;
@@ -16,6 +16,10 @@ use wormhole_desktop_core::cluster_commands::cluster_status;
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
 const TG_HEADER_AVATAR: f32 = 40.0;
 const TG_HEADER_BTN: f32 = 36.0;
+const TG_HEADER_PAD_X: f32 = 16.0;
+const TG_HEADER_PAD_Y: f32 = 8.0;
+const TG_HEADER_INFO_GAP: f32 = 10.0;
+const TG_HEADER_ACTION_GAP: f32 = 2.0;
 
 pub struct ChatHeaderView {
     core: CoreHandle,
@@ -33,7 +37,7 @@ impl ChatHeaderView {
         selection: ConversationSelection,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let mut view = Self {
+        let view = Self {
             core,
             selection,
             font,
@@ -115,17 +119,10 @@ impl ChatHeaderView {
         }
     }
 
-    fn header_button(label: &str, font: FamilyId) -> Box<dyn Element> {
-        Container::new(
-            Align::new(
-                ui_text::body(label.to_string(), font)
-                    .with_color(theme::muted())
-                    .finish(),
-            )
-            .finish(),
-        )
-        .with_uniform_padding(8.0)
-        .finish()
+    fn header_button(icon_path: &'static str) -> Box<dyn Element> {
+        Container::new(Align::new(icons::chat_header_icon(icon_path, theme::muted())).finish())
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(TG_HEADER_BTN / 2.0)))
+            .finish()
     }
 }
 
@@ -196,30 +193,50 @@ impl View for ChatHeaderView {
             .with_margin_top(2.0)
             .finish(),
         );
-        info.add_child(text_col.finish());
+        info.add_child(
+            Container::new(text_col.finish())
+                .with_margin_left(TG_HEADER_INFO_GAP)
+                .finish(),
+        );
 
         let mut actions = Flex::row().with_main_axis_size(MainAxisSize::Min);
-        for label in ["⌕", "☎", "⋯"] {
+        for (index, icon_path) in [
+            "chat-header-search.svg",
+            "chat-header-phone.svg",
+            "chat-header-more.svg",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             actions.add_child(
-                ConstrainedBox::new(Container::new(Self::header_button(label, self.font)).finish())
-                    .with_width(TG_HEADER_BTN)
-                    .with_height(TG_HEADER_BTN)
-                    .finish(),
+                Container::new(
+                    ConstrainedBox::new(Self::header_button(icon_path))
+                        .with_width(TG_HEADER_BTN)
+                        .with_height(TG_HEADER_BTN)
+                        .finish(),
+                )
+                .with_margin_left(if index == 0 {
+                    0.0
+                } else {
+                    TG_HEADER_ACTION_GAP
+                })
+                .finish(),
             );
         }
 
         Container::new(
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                 .with_main_axis_size(MainAxisSize::Max)
-                .with_child(
-                    Container::new(info.finish())
-                        .with_uniform_padding(8.0)
-                        .finish(),
-                )
+                .with_child(info.finish())
                 .with_child(actions.finish())
                 .finish(),
         )
+        .with_padding_left(TG_HEADER_PAD_X)
+        .with_padding_right(TG_HEADER_PAD_X)
+        .with_padding_top(TG_HEADER_PAD_Y)
+        .with_padding_bottom(TG_HEADER_PAD_Y)
         .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
         .with_background(theme::panel())
         .finish()

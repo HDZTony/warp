@@ -19,6 +19,15 @@ pub const DEVICE_NAME_SIZE: f32 = 12.0;
 pub const DEVICE_META_SIZE: f32 = 13.0;
 pub const DEVICE_OS_LABEL_SIZE: f32 = 12.0;
 pub const CAPTION_GLYPH_SIZE: f32 = 22.0;
+/// Matches `.tg-header-title` in `desktop-current.html`.
+pub const CHAT_HEADER_TITLE_SIZE: f32 = 15.0;
+/// Matches `.chat-compose-input` in `desktop-current.html`.
+pub const CHAT_COMPOSE_FONT_SIZE: f32 = 14.0;
+
+/// Matches `.tg-chat-name` in `desktop-current.html`.
+pub const CHAT_SIDEBAR_NAME_SIZE: f32 = 14.0;
+/// Matches `.tg-chat-time` in `desktop-current.html`.
+pub const CHAT_SIDEBAR_TIME_SIZE: f32 = 11.0;
 
 pub fn body(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, BODY_SIZE)
@@ -62,6 +71,22 @@ pub fn device_os_label(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Te
 
 pub fn caption_glyph(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, CAPTION_GLYPH_SIZE)
+}
+
+pub fn chat_header_title(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_HEADER_TITLE_SIZE)
+}
+
+pub fn chat_compose(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_COMPOSE_FONT_SIZE)
+}
+
+pub fn chat_sidebar_name(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_SIDEBAR_NAME_SIZE)
+}
+
+pub fn chat_sidebar_time(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_SIDEBAR_TIME_SIZE)
 }
 
 /// Legacy section heading; prefer [`section_title`] for HUD panels.
