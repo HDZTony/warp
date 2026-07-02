@@ -8,8 +8,8 @@ pub const TOPO_PAD: f32 = 14.0;
 pub const CARD_GAP: f32 = 12.0;
 /// Matches `minmax(200px, 1fr)`.
 pub const CARD_MIN_WIDTH: f32 = 200.0;
-/// Minimum `.device-body` height (name + status +「共享文件」按钮).
-pub const BODY_MIN_HEIGHT: f32 = 100.0;
+/// Minimum `.device-body` height (name + status + node action buttons).
+pub const BODY_MIN_HEIGHT: f32 = 136.0;
 pub const CARD_BORDER: f32 = 1.0;
 
 /// Edge inset factor from HTML `edgePoints` (`min(w,h) * 0.38`).

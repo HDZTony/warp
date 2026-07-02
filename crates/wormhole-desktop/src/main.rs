@@ -163,7 +163,13 @@ fn main() -> Result<()> {
         }
         pending_deeplink = deep_link.take_pending_url();
         if let Some(ref url) = pending_deeplink {
-            wormhole_desktop_core::deeplink_commands::on_deeplink_received(&data_dir, url);
+            pending_deeplink =
+                wormhole_desktop_core::deeplink_commands::process_incoming_deeplink(&data_dir, url);
+        }
+        if let Err(err) =
+            wormhole_desktop_core::deeplink_commands::sync_ccswitch_protocol_registration(&data_dir)
+        {
+            tracing::warn!("无法同步 ccswitch 协议注册: {err}");
         }
         Arc::new(TrayController::spawn("Wormhole")?)
     };

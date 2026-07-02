@@ -18,14 +18,19 @@ use crate::ui::panel_primitives::{
     section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
     HUD_RADIUS, SECTION_PADDING,
 };
+use crate::ui::text_field_input::{
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    add_storage_volume, create_cluster_invite, delete_share_entry, join_cluster,
-    list_share_directory, open_share_entry, remote_open_share_entry, switch_active_cluster,
-    sync_share_entry, AddStorageVolumeParams, ClusterStatusDto, JoinClusterOutcome,
-    JoinClusterParams, JoinedClusterDto, ListShareDirectoryParams, ShareEntryDto,
-    SwitchActiveClusterParams,
+    add_storage_volume, create_cluster as create_cluster_command, create_cluster_invite,
+    delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
+    remote_open_share_entry, remove_cluster_device, switch_active_cluster, sync_share_entry,
+    AddStorageVolumeParams, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
+    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, LeaveClusterParams,
+    ListShareDirectoryParams, RemoveClusterDeviceParams, ShareEntryDto, SwitchActiveClusterParams,
 };
 
 use std::time::{Duration, Instant};
@@ -56,6 +61,11 @@ pub struct DevicesView {
     share_add_path: String,
     share_add_feedback: Option<(StatusTone, String)>,
     share_add_busy: bool,
+    create_cluster_modal_open: bool,
+    create_cluster_name: String,
+    create_cluster_name_field: TextFieldState,
+    create_cluster_name_focused: bool,
+    create_cluster_feedback: Option<(StatusTone, String)>,
     join_modal_open: bool,
     join_invite_draft: String,
     join_feedback: Option<(StatusTone, String)>,
@@ -65,6 +75,7 @@ pub struct DevicesView {
     cluster_picker_open: bool,
     copy_invite_ack: bool,
     copy_invite_busy: bool,
+    create_cluster_busy: bool,
     share_scroll: ClippedScrollStateHandle,
     share_context_entry: Option<String>,
     share_context_pos: Option<(f32, f32)>,
@@ -72,6 +83,7 @@ pub struct DevicesView {
     last_file_click: Option<(String, std::time::Instant)>,
     bootstrap_busy: bool,
     bootstrap_pending_since: Option<Instant>,
+    caret_blink: CaretBlink,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -103,6 +115,11 @@ impl DevicesView {
             share_add_path: String::new(),
             share_add_feedback: None,
             share_add_busy: false,
+            create_cluster_modal_open: false,
+            create_cluster_name: "Wormhole Cluster".to_string(),
+            create_cluster_name_field: TextFieldState::new(),
+            create_cluster_name_focused: false,
+            create_cluster_feedback: None,
             join_modal_open: false,
             join_invite_draft: String::new(),
             join_feedback: None,
@@ -112,6 +129,7 @@ impl DevicesView {
             cluster_picker_open: false,
             copy_invite_ack: false,
             copy_invite_busy: false,
+            create_cluster_busy: false,
             share_scroll: ClippedScrollStateHandle::new(),
             share_context_entry: None,
             share_context_pos: None,
@@ -119,6 +137,7 @@ impl DevicesView {
             last_file_click: None,
             bootstrap_busy: false,
             bootstrap_pending_since: None,
+            caret_blink: CaretBlink::new(),
         };
         view.refresh_cluster(ctx);
         view
@@ -609,11 +628,13 @@ impl DevicesView {
     }
 
     fn joined_cluster_label(entry: &JoinedClusterDto) -> String {
-        format!(
-            "{} · {}",
-            entry.folder_name,
-            short_cluster_id(&entry.cluster_id)
-        )
+        entry
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| entry.folder_name.clone())
     }
 
     fn cluster_label(cluster: &ClusterStatusDto) -> String {
@@ -631,12 +652,25 @@ impl DevicesView {
             })
     }
 
+    fn active_cluster_id(cluster: &ClusterStatusDto) -> Option<String> {
+        cluster
+            .clusters
+            .iter()
+            .find(|c| c.active)
+            .map(|c| c.cluster_id.clone())
+            .or_else(|| cluster.cluster_id.clone())
+    }
+
+    fn active_cluster_entry(cluster: &ClusterStatusDto) -> Option<&JoinedClusterDto> {
+        cluster.clusters.iter().find(|c| c.active)
+    }
+
     fn cluster_status_text(&self, cluster: &ClusterStatusDto) -> String {
-        if self.cluster_syncing {
-            return "CLUSTER · SYNCING · 后台同步集群…".to_string();
-        }
         if let Some(flash) = &self.status_flash {
             return flash.clone();
+        }
+        if self.cluster_syncing {
+            return "CLUSTER · SYNCING · 后台同步集群…".to_string();
         }
         let n = cluster.nodes.len();
         format!(
@@ -856,6 +890,36 @@ impl DevicesView {
             .with_horizontal_margin(10.0)
             .finish(),
         );
+        row.add_child(
+            Container::new(self.toolbar_button(
+                if self.create_cluster_busy {
+                    "创建中…"
+                } else {
+                    "+ 新建集群"
+                },
+                DevicesAction::OpenCreateClusterModal,
+                true,
+                128.0,
+                !self.create_cluster_busy,
+            ))
+            .with_horizontal_margin(0.0)
+            .finish(),
+        );
+        if Self::active_cluster_entry(cluster)
+            .is_some_and(|entry| entry.role != "owner" && !entry.revoked)
+        {
+            row.add_child(
+                Container::new(self.toolbar_button(
+                    "退出集群",
+                    DevicesAction::LeaveCluster,
+                    false,
+                    104.0,
+                    true,
+                ))
+                .with_horizontal_margin(10.0)
+                .finish(),
+            );
+        }
         row.add_child(self.toolbar_button(
             "+ 加入集群",
             DevicesAction::OpenJoinModal,
@@ -885,10 +949,20 @@ impl DevicesView {
 
     fn load_local_invite(&self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
+        let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
         ctx.spawn(
             async move {
+                let cluster_id = cluster_id.ok_or_else(|| "尚未选择集群".to_string())?;
                 let state = core.runtime().state.clone();
-                create_cluster_invite(&state).await
+                create_cluster_invite(
+                    &state,
+                    CreateClusterInviteParams {
+                        cluster_id,
+                        role: Some("member".to_string()),
+                        ttl_secs: None,
+                    },
+                )
+                .await
             },
             |view, output, ctx| {
                 view.invite_busy = false;
@@ -946,10 +1020,20 @@ impl DevicesView {
         ctx.notify();
 
         let core = self.core.clone();
+        let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
         ctx.spawn(
             async move {
+                let cluster_id = cluster_id.ok_or_else(|| "尚未选择集群".to_string())?;
                 let state = core.runtime().state.clone();
-                create_cluster_invite(&state).await
+                create_cluster_invite(
+                    &state,
+                    CreateClusterInviteParams {
+                        cluster_id,
+                        role: Some("member".to_string()),
+                        ttl_secs: None,
+                    },
+                )
+                .await
             },
             |view, output, ctx| {
                 view.copy_invite_busy = false;
@@ -973,6 +1057,8 @@ impl DevicesView {
     }
 
     fn open_join_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.create_cluster_modal_open = false;
+        self.create_cluster_name_focused = false;
         self.cluster_picker_open = false;
         self.join_modal_open = true;
         self.join_feedback = None;
@@ -985,6 +1071,112 @@ impl DevicesView {
             self.invite_busy = true;
             self.load_local_invite(ctx);
         }
+        ctx.notify();
+    }
+
+    fn open_create_cluster_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.join_modal_open = false;
+        self.cluster_picker_open = false;
+        self.create_cluster_modal_open = true;
+        self.create_cluster_feedback = None;
+        self.create_cluster_name_focused = true;
+        if self.create_cluster_name.trim().is_empty() {
+            self.create_cluster_name = "Wormhole Cluster".to_string();
+        }
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn create_cluster(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.create_cluster_busy {
+            return;
+        }
+        let name = self.create_cluster_name.trim().to_string();
+        if name.is_empty() {
+            self.create_cluster_feedback = Some((StatusTone::Danger, "请输入集群名。".to_string()));
+            self.create_cluster_name_focused = true;
+            sync_caret_blink(self, ctx);
+            ctx.notify();
+            return;
+        }
+        if name.chars().count() > 128 {
+            self.create_cluster_feedback = Some((
+                StatusTone::Danger,
+                "集群名最多 128 个字符，请缩短后再创建。".to_string(),
+            ));
+            self.create_cluster_name_focused = true;
+            sync_caret_blink(self, ctx);
+            ctx.notify();
+            return;
+        }
+        self.cluster_picker_open = false;
+        self.create_cluster_busy = true;
+        self.status_flash = Some("正在创建新集群…".into());
+        self.create_cluster_feedback = None;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                tokio::time::timeout(
+                    Duration::from_secs(15),
+                    create_cluster_command(&state, CreateClusterParams { name: Some(name) }),
+                )
+                .await
+                .map_err(|_| "创建集群超时，请检查登录状态和控制面连接后重试。".to_string())?
+            },
+            |view, output, ctx| {
+                view.create_cluster_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.cluster = Some(status);
+                        view.cluster_error = None;
+                        view.local_invite = None;
+                        view.create_cluster_modal_open = false;
+                        view.create_cluster_name_focused = false;
+                        view.create_cluster_name_field.clear_marked();
+                        view.status_flash = Some("已创建新集群".into());
+                        sync_caret_blink(view, ctx);
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e.clone());
+                        view.create_cluster_feedback = Some((StatusTone::Danger, e.clone()));
+                        view.status_flash = Some(format!("创建集群失败：{e}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn close_create_cluster_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.create_cluster_busy {
+            return;
+        }
+        self.create_cluster_modal_open = false;
+        self.create_cluster_name_focused = false;
+        self.create_cluster_feedback = None;
+        self.create_cluster_name_field.clear_marked();
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn focus_create_cluster_name(&mut self, ctx: &mut ViewContext<Self>) {
+        self.create_cluster_name_focused = true;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn edit_create_cluster_name(
+        &mut self,
+        edit: &TextFieldEditAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.create_cluster_name_field
+            .apply(&mut self.create_cluster_name, edit);
+        self.create_cluster_name_focused = true;
+        self.create_cluster_feedback = None;
+        sync_caret_blink(self, ctx);
         ctx.notify();
     }
 
@@ -1040,6 +1232,79 @@ impl DevicesView {
                     }
                     Err(e) => {
                         view.cluster_error = Some(e);
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn leave_active_cluster(&mut self, ctx: &mut ViewContext<Self>) {
+        let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
+        let Some(cluster_id) = cluster_id else {
+            self.status_flash = Some("尚未选择集群".into());
+            ctx.notify();
+            return;
+        };
+        self.status_flash = Some("正在退出集群…".into());
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                leave_cluster(&state, LeaveClusterParams { cluster_id }).await
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok(status) => {
+                        view.cluster = Some(status);
+                        view.cluster_error = None;
+                        view.local_invite = None;
+                        view.status_flash = Some("已退出集群".into());
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e.clone());
+                        view.status_flash = Some(format!("退出集群失败：{e}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn remove_cluster_device(&mut self, device_id: String, ctx: &mut ViewContext<Self>) {
+        let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
+        let Some(cluster_id) = cluster_id else {
+            self.status_flash = Some("尚未选择集群".into());
+            ctx.notify();
+            return;
+        };
+        self.status_flash = Some("正在移除设备…".into());
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                remove_cluster_device(
+                    &state,
+                    RemoveClusterDeviceParams {
+                        cluster_id,
+                        device_id,
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok(status) => {
+                        view.cluster = Some(status);
+                        view.cluster_error = None;
+                        view.local_invite = None;
+                        view.status_flash = Some("已移除设备".into());
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e.clone());
+                        view.status_flash = Some(format!("移除设备失败：{e}"));
                     }
                 }
                 ctx.notify();
@@ -1109,6 +1374,134 @@ impl DevicesView {
                 ctx.notify();
             },
         );
+    }
+
+    fn create_cluster_modal(&self) -> Box<dyn Element> {
+        let draft = self.create_cluster_name.clone();
+        let marked = self.create_cluster_name_field.marked_text.clone();
+        let field = render_field_with_caret(
+            &draft,
+            &marked,
+            "例如：家庭集群…",
+            self.font,
+            self.create_cluster_name_focused,
+            false,
+            self.caret_blink.visible,
+        );
+        let input = wrap_text_field_focus_on_click(
+            TextFieldInput::builder(field, |ctx, action| {
+                ctx.dispatch_typed_action(DevicesAction::CreateClusterNameEdit(action));
+            })
+            .focused(self.create_cluster_name_focused)
+            .ime_preedit(!marked.is_empty())
+            .on_keydown(|ctx, keystroke| match keystroke.key.as_str() {
+                "enter" | "return" => {
+                    ctx.dispatch_typed_action(DevicesAction::CreateCluster);
+                    DispatchEventResult::StopPropagation
+                }
+                "escape" => {
+                    ctx.dispatch_typed_action(DevicesAction::CloseCreateClusterModal);
+                    DispatchEventResult::StopPropagation
+                }
+                _ => DispatchEventResult::PropagateToParent,
+            })
+            .finish(),
+            |ctx| ctx.dispatch_typed_action(DevicesAction::FocusCreateClusterName),
+        );
+
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("新建集群", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body("输入一个用于设备列表展示的集群名。", self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            ui_text::hud_title("集群名", self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(input)
+                .with_uniform_padding(10.0)
+                .with_vertical_margin(6.0)
+                .with_background(theme::canvas())
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
+        );
+
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseCreateClusterModal,
+            false,
+            72.0,
+            !self.create_cluster_busy,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            if self.create_cluster_busy {
+                "创建中…"
+            } else {
+                "创建"
+            },
+            DevicesAction::CreateCluster,
+            true,
+            80.0,
+            !self.create_cluster_busy,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_vertical_margin(12.0)
+                .finish(),
+        );
+        if let Some((tone, msg)) = &self.create_cluster_feedback {
+            dialog.add_child(status_line(msg.clone(), self.font, *tone));
+        }
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(440.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseCreateClusterModal);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
     }
 
     fn join_modal(&self) -> Box<dyn Element> {
@@ -1400,12 +1793,17 @@ impl DevicesView {
 
     fn grid_shell(&self) -> Box<dyn Element> {
         let grid = self.grid_view();
-        if !self.join_modal_open {
+        if !self.join_modal_open && !self.create_cluster_modal_open {
             return grid;
         }
         let mut stack = Stack::new();
         stack.add_child(grid);
-        stack.add_child(self.join_modal());
+        if self.create_cluster_modal_open {
+            stack.add_child(self.create_cluster_modal());
+        }
+        if self.join_modal_open {
+            stack.add_child(self.join_modal());
+        }
         stack.finish()
     }
 
@@ -2029,6 +2427,16 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+impl CaretBlinkHost for DevicesView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.create_cluster_modal_open && self.create_cluster_name_focused
+    }
+}
+
 impl Entity for DevicesView {
     type Event = ();
 }
@@ -2057,6 +2465,11 @@ impl TypedActionView for DevicesView {
             DevicesAction::OpenNode(node_id) => self.open_node(node_id.clone(), ctx),
             DevicesAction::BackToGrid => self.back_to_grid(ctx),
             DevicesAction::OpenJoinModal => self.open_join_modal(ctx),
+            DevicesAction::OpenCreateClusterModal => self.open_create_cluster_modal(ctx),
+            DevicesAction::CreateCluster => self.create_cluster(ctx),
+            DevicesAction::CreateClusterNameEdit(edit) => self.edit_create_cluster_name(edit, ctx),
+            DevicesAction::FocusCreateClusterName => self.focus_create_cluster_name(ctx),
+            DevicesAction::CloseCreateClusterModal => self.close_create_cluster_modal(ctx),
             DevicesAction::CloseJoinModal => self.close_join_modal(ctx),
             DevicesAction::PasteJoinInvite => self.paste_join_invite(ctx),
             DevicesAction::SubmitJoin => {
@@ -2069,6 +2482,10 @@ impl TypedActionView for DevicesView {
             DevicesAction::CloseClusterPicker => self.close_cluster_picker(ctx),
             DevicesAction::SelectCluster(cluster_id) => {
                 self.select_cluster(cluster_id.clone(), ctx);
+            }
+            DevicesAction::LeaveCluster => self.leave_active_cluster(ctx),
+            DevicesAction::RemoveClusterDevice(device_id) => {
+                self.remove_cluster_device(device_id.clone(), ctx);
             }
             DevicesAction::ShareBack => self.share_back(ctx),
             DevicesAction::ShareForward => self.share_forward(ctx),

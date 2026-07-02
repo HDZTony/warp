@@ -217,6 +217,36 @@ fn share_files_button(
     }
 }
 
+fn remove_device_button(device_id: String, mono: FamilyId) -> Box<dyn Element> {
+    let inner = Container::new(
+        ConstrainedBox::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(
+                    ui_text::cluster_ctrl("移除设备", mono)
+                        .with_color(theme::danger())
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_height(SHARE_BTN_HEIGHT)
+        .finish(),
+    )
+    .with_horizontal_padding(SHARE_BTN_PAD_X)
+    .with_background(theme::panel())
+    .with_border(Border::all(1.0).with_border_fill(theme::danger()))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+    .finish();
+
+    EventHandler::new(inner)
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(DevicesAction::RemoveClusterDevice(device_id.clone()));
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
 fn node_card(
     node: &ClusterNodeDto,
     is_local: bool,
@@ -257,6 +287,19 @@ fn node_card(
         .left()
         .finish(),
     );
+    if node.removable {
+        if let Some(device_id) = node.device_id.clone() {
+            body.add_child(
+                Align::new(
+                    Container::new(remove_device_button(device_id, mono))
+                        .with_vertical_margin(2.0)
+                        .finish(),
+                )
+                .left()
+                .finish(),
+            );
+        }
+    }
 
     let body_block = Container::new(
         ConstrainedBox::new(body.finish())

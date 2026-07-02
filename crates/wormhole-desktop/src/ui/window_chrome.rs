@@ -10,9 +10,13 @@ use warpui::platform::FullscreenState;
 use warpui::{Action, AppContext, Element, Entity, ModelContext, SingletonEntity, WindowId};
 
 use crate::ui::theme;
+use crate::ui_text;
 
 /// Height of the integrated title row (tabs + caption). Must match [`super::app_shell`] layout.
 pub const CHROME_ROW_HEIGHT: f32 = 54.0;
+
+#[cfg(windows)]
+const WINDOWS_TRAFFIC_LIGHT_WIDTH: f32 = 190.0;
 
 const TAB_BAR_PADDING_LEFT: f32 = 16.0;
 const BUTTON_ICON_SIZE: f32 = 22.0;
@@ -39,6 +43,16 @@ pub struct TrafficLightMouseStates {
     pub minimize_window_button: MouseStateHandle,
     pub maximize_window_button: MouseStateHandle,
     pub close_window_button: MouseStateHandle,
+    #[cfg(windows)]
+    pub ccswitch_intercept_toggle: MouseStateHandle,
+}
+
+/// Windows title-bar toggle: when enabled, Wormhole handles `ccswitch://` without forwarding to CC Switch.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub struct CcswitchInterceptToggle<A: Action + Copy> {
+    pub enabled: bool,
+    pub toggle: A,
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +97,7 @@ pub fn traffic_light_data(ctx: &AppContext, window_id: WindowId) -> Option<Traff
         })
     } else if cfg!(target_os = "windows") {
         Some(TrafficLightData {
-            width: 136.0,
+            width: WINDOWS_TRAFFIC_LIGHT_WIDTH,
             side: TrafficLightSide::Right,
             scales_with_zoom: true,
         })
@@ -139,6 +153,7 @@ pub fn render_traffic_lights<A: Action + Copy + 'static>(
     mouse_states: &TrafficLightMouseStates,
     actions: TrafficLightActions<A>,
     ui_font: FamilyId,
+    #[cfg(windows)] ccswitch_intercept: Option<CcswitchInterceptToggle<A>>,
 ) -> Box<dyn Element> {
     let Some(data) = traffic_light_data(app, window_id) else {
         return Empty::new().finish();
@@ -156,7 +171,14 @@ pub fn render_traffic_lights<A: Action + Copy + 'static>(
 
     #[cfg(target_os = "windows")]
     {
-        return data.render_windows(fullscreen_state, mouse_states, actions, app, ui_font);
+        return data.render_windows(
+            fullscreen_state,
+            mouse_states,
+            actions,
+            app,
+            ui_font,
+            ccswitch_intercept,
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -305,6 +327,7 @@ impl TrafficLightData {
         actions: TrafficLightActions<A>,
         app: &AppContext,
         ui_font: FamilyId,
+        ccswitch_intercept: Option<CcswitchInterceptToggle<A>>,
     ) -> Box<dyn Element> {
         if let Some(icon_font_family) = WindowsSymbolFontState::handle(app)
             .as_ref(app)
@@ -315,11 +338,19 @@ impl TrafficLightData {
                 mouse_states,
                 actions,
                 icon_font_family,
+                ccswitch_intercept,
+                ui_font,
             );
         }
 
         log::warn!("Unable to load Windows symbol font; using rect icons for traffic lights");
-        self.render_windows_with_rect_icons(fullscreen_state, mouse_states, actions, ui_font)
+        self.render_windows_with_rect_icons(
+            fullscreen_state,
+            mouse_states,
+            actions,
+            ui_font,
+            ccswitch_intercept,
+        )
     }
 
     #[cfg(windows)]
@@ -329,34 +360,43 @@ impl TrafficLightData {
         mouse_states: &TrafficLightMouseStates,
         actions: TrafficLightActions<A>,
         icon_font_family: FamilyId,
+        ccswitch_intercept: Option<CcswitchInterceptToggle<A>>,
+        ui_font: FamilyId,
     ) -> Box<dyn Element> {
         let maximize_icon = if fullscreen_state == FullscreenState::Normal {
             WindowsTrafficLightIcon::Maximize
         } else {
             WindowsTrafficLightIcon::Restore
         };
-        let flex = Flex::row()
+        let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Min)
             .with_main_axis_alignment(MainAxisAlignment::End)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_children([
-                WindowsTrafficLightIcon::Minimize.render(
-                    mouse_states.minimize_window_button.clone(),
-                    icon_font_family,
-                    actions.minimize,
-                ),
-                maximize_icon.render(
-                    mouse_states.maximize_window_button.clone(),
-                    icon_font_family,
-                    actions.toggle_maximize,
-                ),
-                WindowsTrafficLightIcon::Close.render(
-                    mouse_states.close_window_button.clone(),
-                    icon_font_family,
-                    actions.close,
-                ),
-            ])
-            .finish();
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if let Some(toggle) = ccswitch_intercept {
+            row.add_child(Self::render_ccswitch_intercept_toggle(
+                mouse_states.ccswitch_intercept_toggle.clone(),
+                toggle,
+                ui_font,
+            ));
+        }
+        row.add_children([
+            WindowsTrafficLightIcon::Minimize.render(
+                mouse_states.minimize_window_button.clone(),
+                icon_font_family,
+                actions.minimize,
+            ),
+            maximize_icon.render(
+                mouse_states.maximize_window_button.clone(),
+                icon_font_family,
+                actions.toggle_maximize,
+            ),
+            WindowsTrafficLightIcon::Close.render(
+                mouse_states.close_window_button.clone(),
+                icon_font_family,
+                actions.close,
+            ),
+        ]);
+        let flex = row.finish();
 
         ConstrainedBox::new(flex)
             .with_height(CHROME_ROW_HEIGHT)
@@ -370,45 +410,104 @@ impl TrafficLightData {
         mouse_states: &TrafficLightMouseStates,
         actions: TrafficLightActions<A>,
         ui_font: FamilyId,
+        ccswitch_intercept: Option<CcswitchInterceptToggle<A>>,
     ) -> Box<dyn Element> {
         let fg_color = theme::text();
-        ConstrainedBox::new(
-            Align::new(
-                Flex::row()
-                    .with_children([
-                        Container::new(
-                            Self::windows_rect_button(
-                                mouse_states.minimize_window_button.clone(),
-                                Self::windows_minimize_icon(fg_color),
-                                theme::panel_elevated(),
-                                actions.minimize,
-                            )
-                            .finish(),
-                        )
-                        .finish(),
-                        Self::windows_rect_button(
-                            mouse_states.maximize_window_button.clone(),
-                            Self::windows_maximize_icon(fg_color, fullscreen_state),
-                            theme::panel_elevated(),
-                            actions.toggle_maximize,
-                        )
-                        .finish(),
-                        Container::new(
-                            Self::windows_close_button(
-                                mouse_states.close_window_button.clone(),
-                                ui_font,
-                                actions.close,
-                            )
-                            .finish(),
-                        )
-                        .finish(),
-                    ])
-                    .finish(),
+        let mut row = Flex::row();
+        if let Some(toggle) = ccswitch_intercept {
+            row.add_child(Self::render_ccswitch_intercept_toggle(
+                mouse_states.ccswitch_intercept_toggle.clone(),
+                toggle,
+                ui_font,
+            ));
+        }
+        row.add_children([
+            Container::new(
+                Self::windows_rect_button(
+                    mouse_states.minimize_window_button.clone(),
+                    Self::windows_minimize_icon(fg_color),
+                    theme::panel_elevated(),
+                    actions.minimize,
+                )
+                .finish(),
             )
             .finish(),
-        )
-        .with_max_height(CHROME_ROW_HEIGHT)
-        .with_width(self.width)
+            Self::windows_rect_button(
+                mouse_states.maximize_window_button.clone(),
+                Self::windows_maximize_icon(fg_color, fullscreen_state),
+                theme::panel_elevated(),
+                actions.toggle_maximize,
+            )
+            .finish(),
+            Container::new(
+                Self::windows_close_button(
+                    mouse_states.close_window_button.clone(),
+                    ui_font,
+                    actions.close,
+                )
+                .finish(),
+            )
+            .finish(),
+        ]);
+        ConstrainedBox::new(Align::new(row.finish()).finish())
+            .with_max_height(CHROME_ROW_HEIGHT)
+            .with_width(self.width)
+            .finish()
+    }
+
+    #[cfg(windows)]
+    fn render_ccswitch_intercept_toggle<A: Action + Copy + 'static>(
+        mouse_state: MouseStateHandle,
+        toggle: CcswitchInterceptToggle<A>,
+        ui_font: FamilyId,
+    ) -> Box<dyn Element> {
+        let enabled = toggle.enabled;
+        let action = toggle.toggle;
+        let label = if enabled { "拦截 CC" } else { "转发 CC" };
+        Hoverable::new(mouse_state, move |state| {
+            let hovered = state.is_hovered();
+            let (border, bg, color) = if enabled {
+                (
+                    theme::accent_cool(),
+                    if hovered {
+                        theme::accent_cool_bg(64)
+                    } else {
+                        theme::accent_cool_bg(40)
+                    },
+                    theme::accent_cool(),
+                )
+            } else if hovered {
+                (
+                    theme::border_bright(),
+                    theme::panel_elevated(),
+                    theme::text(),
+                )
+            } else {
+                (
+                    theme::border_bright(),
+                    theme::panel(),
+                    theme::muted(),
+                )
+            };
+            Container::new(
+                Align::new(
+                    ui_text::cluster_ctrl(label, ui_font)
+                        .with_color(color)
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_vertical_padding(WINDOWS_BUTTON_PADDING_VERTICAL)
+            .with_horizontal_padding(8.0)
+            .with_background(bg)
+            .with_border(Border::all(1.0).with_border_fill(border))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .with_margin_right(4.0)
+            .finish()
+        })
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action);
+        })
         .finish()
     }
 

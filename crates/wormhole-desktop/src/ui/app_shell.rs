@@ -35,6 +35,8 @@ use crate::ui::w_drive_view::WDriveView;
 use crate::ui::window_chrome::{
     self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
 };
+#[cfg(windows)]
+use crate::ui::window_chrome::CcswitchInterceptToggle;
 use crate::ui_text;
 use wormhole_desktop_core::cloud_auth_status;
 use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_fast};
@@ -95,6 +97,8 @@ pub enum AppShellAction {
     ToggleMaximizeWindow,
     CloseWindow,
     OpenLogin,
+    #[cfg(windows)]
+    ToggleCcswitchIntercept,
 }
 
 pub struct AppShellView {
@@ -126,6 +130,8 @@ pub struct AppShellView {
     show_onboarding: bool,
     window_id: WindowId,
     traffic_light_mouse_states: TrafficLightMouseStates,
+    #[cfg(windows)]
+    ccswitch_intercept_enabled: bool,
     #[cfg(windows)]
     tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
 }
@@ -212,6 +218,14 @@ impl AppShellView {
         }
         let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
         let window_id = ctx.window_id();
+        #[cfg(windows)]
+        let ccswitch_intercept_enabled = {
+            let settings =
+                wormhole_desktop_core::agent_deeplink_settings::load_settings_blocking(
+                    &core.data_dir(),
+                );
+            settings.ccswitch_intercept_enabled
+        };
         let view = Self {
             tab,
             hovered_tab: None,
@@ -240,6 +254,8 @@ impl AppShellView {
             show_onboarding,
             window_id,
             traffic_light_mouse_states: TrafficLightMouseStates::default(),
+            #[cfg(windows)]
+            ccswitch_intercept_enabled,
             #[cfg(windows)]
             tray,
         };
@@ -957,6 +973,11 @@ impl View for AppShellView {
                         close: AppShellAction::CloseWindow,
                     },
                     self.font,
+                    #[cfg(windows)]
+                    Some(CcswitchInterceptToggle {
+                        enabled: self.ccswitch_intercept_enabled,
+                        toggle: AppShellAction::ToggleCcswitchIntercept,
+                    }),
                 ),
                 OffsetPositioning::offset_from_parent(
                     vec2f(0.0, 0.0),
@@ -1036,6 +1057,33 @@ impl TypedActionView for AppShellView {
                 self.open_login_modal(ctx);
                 ctx.notify();
             }
+            #[cfg(windows)]
+            AppShellAction::ToggleCcswitchIntercept => {
+                let previous = self.ccswitch_intercept_enabled;
+                self.ccswitch_intercept_enabled = !previous;
+                ctx.notify();
+                let data_dir = self.core.data_dir();
+                let intercept = self.ccswitch_intercept_enabled;
+                ctx.spawn(
+                    async move {
+                        wormhole_desktop_core::deeplink_commands::configure_agent_deeplink_settings(
+                            &data_dir,
+                            wormhole_desktop_core::agent_deeplink_settings::ConfigureAgentDeeplinkSettingsParams {
+                                ccswitch_intercept_enabled: Some(intercept),
+                                watch_shared_deeplink_bus: None,
+                            },
+                        )
+                        .await
+                    },
+                    move |view, output, ctx| {
+                        if let Err(err) = output {
+                            view.ccswitch_intercept_enabled = previous;
+                            tracing::warn!("无法保存 ccswitch 拦截设置: {err}");
+                            ctx.notify();
+                        }
+                    },
+                );
+            }
         }
     }
 
@@ -1064,6 +1112,15 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::OpenLogin => {
                 AccessibilityContent::new_without_help("打开登录", WarpA11yRole::ButtonRole)
+            }
+            #[cfg(windows)]
+            AppShellAction::ToggleCcswitchIntercept => {
+                let label = if self.ccswitch_intercept_enabled {
+                    "拦截 CC Switch 深链（已开启，不转发给 CC Switch）"
+                } else {
+                    "允许转发 ccswitch 深链给 CC Switch"
+                };
+                AccessibilityContent::new_without_help(label, WarpA11yRole::ButtonRole)
             }
         };
         ActionAccessibilityContent::Custom(content)
