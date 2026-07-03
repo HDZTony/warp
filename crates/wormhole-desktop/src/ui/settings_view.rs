@@ -14,7 +14,11 @@ use crate::ui::panel_primitives::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
-use wormhole_desktop_core::{clear_cloud_auth_token, cloud_auth_status};
+use wormhole_desktop_core::{
+    DesktopErrorSettingsParams, DesktopErrorStatusDto, clear_cloud_auth_token, cloud_auth_status,
+    clear_desktop_error_events, configure_desktop_error_settings, desktop_error_status,
+    sync_desktop_errors_now,
+};
 
 #[derive(Debug, Clone)]
 pub enum SettingsEvent {
@@ -29,6 +33,10 @@ pub enum SettingsAction {
     Login,
     Logout,
     RefreshAccount,
+    RefreshDiagnostics,
+    ToggleDiagnosticUpload,
+    UploadDiagnosticsNow,
+    ClearDiagnosticQueue,
 }
 
 pub struct SettingsView {
@@ -44,6 +52,10 @@ pub struct SettingsView {
     auth_status_tone: StatusTone,
     auth_busy: bool,
     auth_device_id: Option<String>,
+    diagnostic_status: Option<DesktopErrorStatusDto>,
+    diagnostic_message: String,
+    diagnostic_tone: StatusTone,
+    diagnostic_busy: bool,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
 
@@ -69,10 +81,15 @@ impl SettingsView {
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
             auth_device_id: None,
+            diagnostic_status: None,
+            diagnostic_message: String::new(),
+            diagnostic_tone: StatusTone::Placeholder,
+            diagnostic_busy: false,
             agent_providers,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
+        view.refresh_diagnostics(ctx);
         view
     }
 
@@ -119,6 +136,36 @@ impl SettingsView {
     pub fn open_deeplink_url(&mut self, url: String, ctx: &mut ViewContext<Self>) {
         let agent = self.agent_providers.clone();
         ctx.update_view(&agent, |view, ctx| view.open_deeplink_url(url, ctx));
+    }
+
+    fn refresh_diagnostics(&mut self, ctx: &mut ViewContext<Self>) {
+        self.diagnostic_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                desktop_error_status(&state).await
+            },
+            |view, output, ctx| {
+                view.diagnostic_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.diagnostic_status = Some(status);
+                        if view.diagnostic_message.is_empty() {
+                            view.diagnostic_message =
+                                "错误会先保存在本机；开启后会在登录且设备就绪时上传诊断事件。".into();
+                            view.diagnostic_tone = StatusTone::Placeholder;
+                        }
+                    }
+                    Err(err) => {
+                        view.diagnostic_message = format!("读取诊断状态失败: {err}");
+                        view.diagnostic_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
@@ -176,6 +223,27 @@ impl SettingsView {
         )
         .with_uniform_padding(8.0)
         .with_background(theme::accent_bg(24))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
+    }
+
+    fn diagnostic_button(&self, label: &str, action: SettingsAction) -> Box<dyn Element> {
+        let label = label.to_string();
+        Container::new(
+            EventHandler::new(
+                ui_text::body(label, self.font)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_uniform_padding(8.0)
+        .with_background(theme::accent_bg(18))
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
@@ -308,6 +376,88 @@ impl SettingsView {
         }
         section_card(col.finish())
     }
+
+    fn diagnostics_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("DIAGNOSTICS · 错误捕获", self.font));
+        col.add_child(section_hint(
+            "本机自动记录 panic、warn/error 日志和崩溃文件；诊断上传默认关闭。",
+            self.font,
+        ));
+
+        if let Some(status) = &self.diagnostic_status {
+            let upload = if status.upload_enabled {
+                "已开启"
+            } else {
+                "已关闭"
+            };
+            col.add_child(
+                ui_text::body(
+                    format!("诊断上传: {upload} · 待上传事件: {}", status.pending_events),
+                    self.font,
+                )
+                .with_color(theme::text())
+                .finish(),
+            );
+            col.add_child(
+                ui_text::mono(format!("日志: {}", status.log_path), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+            col.add_child(
+                ui_text::mono(format!("队列: {}", status.error_events_path), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+        }
+
+        let mut row = Flex::row();
+        let toggle_label = if self
+            .diagnostic_status
+            .as_ref()
+            .map(|status| status.upload_enabled)
+            .unwrap_or(false)
+        {
+            "关闭上传"
+        } else {
+            "开启上传"
+        };
+        row.add_child(
+            Container::new(self.diagnostic_button(
+                toggle_label,
+                SettingsAction::ToggleDiagnosticUpload,
+            ))
+            .with_horizontal_margin(4.0)
+            .finish(),
+        );
+        row.add_child(
+            Container::new(
+                self.diagnostic_button("立即上传", SettingsAction::UploadDiagnosticsNow),
+            )
+            .with_horizontal_margin(4.0)
+            .finish(),
+        );
+        row.add_child(
+            Container::new(self.diagnostic_button("清空本地队列", SettingsAction::ClearDiagnosticQueue))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        row.add_child(
+            Container::new(self.diagnostic_button("刷新", SettingsAction::RefreshDiagnostics))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        col.add_child(row.finish());
+
+        if !self.diagnostic_message.is_empty() {
+            col.add_child(status_line(
+                self.diagnostic_message.clone(),
+                self.font,
+                self.diagnostic_tone,
+            ));
+        }
+        section_card(col.finish())
+    }
 }
 
 impl Entity for SettingsView {
@@ -323,6 +473,7 @@ impl View for SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("设置", self.font));
         col.add_child(self.account_block());
+        col.add_child(self.diagnostics_block());
         col.add_child(self.shared_path_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
@@ -341,6 +492,110 @@ impl TypedActionView for SettingsView {
         match action {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
+            SettingsAction::RefreshDiagnostics => self.refresh_diagnostics(ctx),
+            SettingsAction::ToggleDiagnosticUpload => {
+                self.diagnostic_busy = true;
+                self.diagnostic_message = "正在保存诊断上传设置…".into();
+                self.diagnostic_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                let upload_enabled = !self
+                    .diagnostic_status
+                    .as_ref()
+                    .map(|status| status.upload_enabled)
+                    .unwrap_or(false);
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        configure_desktop_error_settings(
+                            &state,
+                            DesktopErrorSettingsParams { upload_enabled },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.diagnostic_busy = false;
+                        match output {
+                            Ok(status) => {
+                                let enabled = status.upload_enabled;
+                                view.diagnostic_status = Some(status);
+                                view.diagnostic_message = if enabled {
+                                    "已开启诊断上传。".into()
+                                } else {
+                                    "已关闭诊断上传。".into()
+                                };
+                                view.diagnostic_tone = StatusTone::Success;
+                            }
+                            Err(err) => {
+                                view.diagnostic_message = format!("保存诊断设置失败: {err}");
+                                view.diagnostic_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::UploadDiagnosticsNow => {
+                self.diagnostic_busy = true;
+                self.diagnostic_message = "正在上传诊断事件…".into();
+                self.diagnostic_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        let upload = sync_desktop_errors_now(&state).await?;
+                        let status = desktop_error_status(&state).await?;
+                        Ok::<_, String>((upload, status))
+                    },
+                    |view, output, ctx| {
+                        view.diagnostic_busy = false;
+                        match output {
+                            Ok((upload, status)) => {
+                                view.diagnostic_status = Some(status);
+                                view.diagnostic_message = format!(
+                                    "上传完成: accepted={} duplicated={} rejected={}",
+                                    upload.accepted, upload.duplicated, upload.rejected
+                                );
+                                view.diagnostic_tone = StatusTone::Success;
+                            }
+                            Err(err) => {
+                                view.diagnostic_message = format!("上传诊断事件失败: {err}");
+                                view.diagnostic_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::ClearDiagnosticQueue => {
+                self.diagnostic_busy = true;
+                self.diagnostic_message = "正在清空本地错误队列…".into();
+                self.diagnostic_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        clear_desktop_error_events(&state).await
+                    },
+                    |view, output, ctx| {
+                        view.diagnostic_busy = false;
+                        match output {
+                            Ok(status) => {
+                                view.diagnostic_status = Some(status);
+                                view.diagnostic_message = "已清空本地错误队列。".into();
+                                view.diagnostic_tone = StatusTone::Success;
+                            }
+                            Err(err) => {
+                                view.diagnostic_message = format!("清空本地错误队列失败: {err}");
+                                view.diagnostic_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
             SettingsAction::Login => {
                 ctx.emit(SettingsEvent::OpenLogin);
             }
