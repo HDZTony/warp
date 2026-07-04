@@ -20,6 +20,9 @@ pub enum DevicesAction {
     CloseClusterPicker,
     SelectCluster(String),
     LeaveCluster,
+    OpenDeleteClusterModal,
+    CloseDeleteClusterModal,
+    ConfirmDeleteCluster,
     RemoveClusterDevice {
         device_id: Option<String>,
         node_id: String,

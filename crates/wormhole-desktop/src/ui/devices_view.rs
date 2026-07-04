@@ -29,9 +29,9 @@ use wormhole_desktop_core::cluster_commands::{
     CreateClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
     LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams, ShareEntryDto,
     SwitchActiveClusterParams, add_storage_volume, create_cluster as create_cluster_command,
-    create_cluster_invite, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
-    open_share_entry, remote_open_share_entry, remove_cluster_device, switch_active_cluster,
-    sync_share_entry,
+    create_cluster_invite, delete_cluster, delete_share_entry, join_cluster, leave_cluster,
+    list_share_directory, open_share_entry, remote_open_share_entry, remove_cluster_device,
+    switch_active_cluster, sync_share_entry, DeleteClusterParams,
 };
 
 use std::time::{Duration, Instant};
@@ -88,6 +88,8 @@ pub struct DevicesView {
     selected_node_id: Option<String>,
     hovered_node_id: Option<String>,
     delete_modal_node_id: Option<String>,
+    delete_modal_cluster_id: Option<String>,
+    delete_cluster_busy: bool,
     device_context_menu: Option<(String, f32, f32)>,
     last_node_click: Option<(String, Instant)>,
 }
@@ -148,6 +150,8 @@ impl DevicesView {
             selected_node_id: None,
             hovered_node_id: None,
             delete_modal_node_id: None,
+            delete_modal_cluster_id: None,
+            delete_cluster_busy: false,
             device_context_menu: None,
             last_node_click: None,
         };
@@ -758,7 +762,7 @@ impl DevicesView {
             .clusters
             .iter()
             .find(|c| c.active)
-            .map(|c| format!("{} · {}", c.folder_name, short_cluster_id(&c.cluster_id)))
+            .map(|c| format!("{} · {}", Self::joined_cluster_label(c), short_cluster_id(&c.cluster_id)))
             .unwrap_or_else(|| Self::cluster_label(cluster))
     }
 
@@ -801,16 +805,21 @@ impl DevicesView {
         action: DevicesAction,
         accent: bool,
         enabled: bool,
+        danger: bool,
     ) -> Box<dyn Element> {
         let color = if !enabled {
             dim_color(
-                if accent {
+                if danger {
+                    theme::danger()
+                } else if accent {
                     theme::accent_cool()
                 } else {
                     theme::text()
                 },
                 0.35,
             )
+        } else if danger {
+            theme::danger()
         } else if accent {
             theme::accent_cool()
         } else {
@@ -950,7 +959,7 @@ impl DevicesView {
         menu.add_child(Self::cluster_menu_section("切换集群", self.mono));
         for entry in &cluster.clusters {
             let cluster_id = entry.cluster_id.clone();
-            let name = entry.folder_name.clone();
+            let name = Self::joined_cluster_label(entry);
             let short_id = short_cluster_id(&entry.cluster_id);
             let (bg, color) = if entry.active {
                 (theme::accent_cool_bg(40), theme::accent_cool())
@@ -1009,6 +1018,7 @@ impl DevicesView {
             DevicesAction::CopyInvite,
             false,
             !self.copy_invite_busy,
+            false,
         ));
         menu.add_child(self.cluster_menu_action(
             if self.create_cluster_busy {
@@ -1019,11 +1029,22 @@ impl DevicesView {
             DevicesAction::OpenCreateClusterModal,
             true,
             !self.create_cluster_busy,
+            false,
         ));
         menu.add_child(self.cluster_menu_action(
             "加入集群",
             DevicesAction::OpenJoinModal,
             true,
+            true,
+            false,
+        ));
+        let can_delete_cluster = cluster.clusters.len() > 1;
+        menu.add_child(Self::cluster_menu_divider());
+        menu.add_child(self.cluster_menu_action(
+            "删除集群",
+            DevicesAction::OpenDeleteClusterModal,
+            false,
+            can_delete_cluster,
             true,
         ));
 
@@ -1045,7 +1066,7 @@ impl DevicesView {
     }
 
     fn cluster_menu(&self, cluster: &ClusterStatusDto) -> Box<dyn Element> {
-        let label = Self::active_cluster_folder_name(cluster);
+        let label = Self::cluster_label(cluster);
         let mut trigger_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
@@ -1178,7 +1199,7 @@ impl DevicesView {
         let name = self
             .cluster
             .as_ref()
-            .map(DevicesView::active_cluster_folder_name)
+            .map(DevicesView::cluster_label)
             .unwrap_or_else(|| "集群".to_string());
         self.status_flash = Some(format!("INVITE COPIED · {name} · 已复制本机邀请码"));
         self.copy_invite_ack = true;
@@ -1445,6 +1466,91 @@ impl DevicesView {
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
                         view.status_flash = Some(format!("退出集群失败：{e}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn open_delete_cluster_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(cluster) = self.cluster.as_ref() else {
+            return;
+        };
+        if cluster.clusters.len() <= 1 {
+            self.status_flash = Some("无法删除 — 至少保留一个集群".into());
+            self.cluster_picker_open = false;
+            ctx.notify();
+            return;
+        }
+        let cluster_id = Self::active_cluster_id(cluster);
+        self.delete_modal_cluster_id = cluster_id;
+        self.cluster_picker_open = false;
+        ctx.notify();
+    }
+
+    fn close_delete_cluster_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.delete_cluster_busy {
+            return;
+        }
+        self.delete_modal_cluster_id = None;
+        ctx.notify();
+    }
+
+    fn confirm_delete_cluster(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.delete_cluster_busy {
+            return;
+        }
+        let cluster_id = self
+            .delete_modal_cluster_id
+            .clone()
+            .or_else(|| self.cluster.as_ref().and_then(Self::active_cluster_id));
+        let removed_label = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| {
+                cluster_id.as_ref().and_then(|id| {
+                    cluster
+                        .clusters
+                        .iter()
+                        .find(|entry| entry.cluster_id == *id)
+                        .map(Self::joined_cluster_label)
+                })
+            })
+            .unwrap_or_else(|| "集群".to_string());
+        let Some(cluster_id) = cluster_id else {
+            self.status_flash = Some("尚未选择集群".into());
+            ctx.notify();
+            return;
+        };
+        self.delete_cluster_busy = true;
+        self.status_flash = Some("正在删除集群…".into());
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                delete_cluster(
+                    &state,
+                    DeleteClusterParams { cluster_id },
+                )
+                .await
+            },
+            move |view, output, ctx| {
+                view.delete_cluster_busy = false;
+                view.delete_modal_cluster_id = None;
+                view.cluster_picker_open = false;
+                match output {
+                    Ok(status) => {
+                        view.cluster = Some(status);
+                        view.cluster_error = None;
+                        view.local_invite = None;
+                        view.status_flash =
+                            Some(format!("CLUSTER REMOVED · {removed_label}"));
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e.clone());
+                        view.status_flash = Some(format!("删除集群失败：{e}"));
                     }
                 }
                 ctx.notify();
@@ -1999,6 +2105,7 @@ impl DevicesView {
         let has_overlay = self.join_modal_open
             || self.create_cluster_modal_open
             || self.delete_modal_node_id.is_some()
+            || self.delete_modal_cluster_id.is_some()
             || self.device_context_menu.is_some()
             || self.cluster_picker_open;
         if !has_overlay {
@@ -2009,6 +2116,7 @@ impl DevicesView {
             && !self.join_modal_open
             && !self.create_cluster_modal_open
             && self.delete_modal_node_id.is_none()
+            && self.delete_modal_cluster_id.is_none()
             && self.device_context_menu.is_none()
         {
             EventHandler::new(self.grid_view())
@@ -2048,10 +2156,14 @@ impl DevicesView {
         if self.delete_modal_node_id.is_some() {
             stack.add_child(self.delete_node_modal());
         }
+        if self.delete_modal_cluster_id.is_some() {
+            stack.add_child(self.delete_cluster_modal());
+        }
         if self.join_modal_open {
             stack.add_child(self.join_modal());
         }
-        let delete_modal_open = self.delete_modal_node_id.is_some();
+        let delete_node_modal_open = self.delete_modal_node_id.is_some();
+        let delete_cluster_modal_open = self.delete_modal_cluster_id.is_some();
         let device_menu_open = self.device_context_menu.is_some();
         let join_modal_open = self.join_modal_open;
         let create_cluster_modal_open = self.create_cluster_modal_open;
@@ -2068,7 +2180,9 @@ impl DevicesView {
                 if keystroke.key.as_str() != "escape" {
                     return DispatchEventResult::PropagateToParent;
                 }
-                if delete_modal_open {
+                if delete_cluster_modal_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseDeleteClusterModal);
+                } else if delete_node_modal_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseDeleteNodeModal);
                 } else if device_menu_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
@@ -2079,6 +2193,136 @@ impl DevicesView {
                 } else if cluster_picker_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseClusterPicker);
                 }
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn delete_cluster_modal(&self) -> Box<dyn Element> {
+        let target = self
+            .delete_modal_cluster_id
+            .as_deref()
+            .and_then(|id| {
+                self.cluster.as_ref().and_then(|cluster| {
+                    cluster
+                        .clusters
+                        .iter()
+                        .find(|entry| entry.cluster_id == id)
+                        .map(|entry| {
+                            format!(
+                                "{} · {}",
+                                Self::joined_cluster_label(entry),
+                                short_cluster_id(id)
+                            )
+                        })
+                })
+            })
+            .unwrap_or_else(|| "—".to_string());
+        let is_owner = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| {
+                self.delete_modal_cluster_id.as_ref().and_then(|id| {
+                    cluster
+                        .clusters
+                        .iter()
+                        .find(|entry| entry.cluster_id == *id)
+                        .map(|entry| entry.role == "owner")
+                })
+            })
+            .unwrap_or(false);
+        let body = if is_owner {
+            "将从本机移除该集群及其全部终端、共享文件夹与同步索引；控制面上的集群记录将一并销毁。此操作不可撤销。"
+        } else {
+            "将从本机移除该集群及其全部终端、共享文件夹与同步索引。此操作不可撤销。"
+        };
+
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("删除集群", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(body, self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::mono(target, self.mono)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(6.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        );
+
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseDeleteClusterModal,
+            false,
+            72.0,
+            !self.delete_cluster_busy,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            if self.delete_cluster_busy {
+                "删除中…"
+            } else {
+                "删除"
+            },
+            DevicesAction::ConfirmDeleteCluster,
+            true,
+            80.0,
+            !self.delete_cluster_busy,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(420.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseDeleteClusterModal);
                 DispatchEventResult::StopPropagation
             })
             .finish()
@@ -2959,6 +3203,9 @@ impl TypedActionView for DevicesView {
                 self.select_cluster(cluster_id.clone(), ctx);
             }
             DevicesAction::LeaveCluster => self.leave_active_cluster(ctx),
+            DevicesAction::OpenDeleteClusterModal => self.open_delete_cluster_modal(ctx),
+            DevicesAction::CloseDeleteClusterModal => self.close_delete_cluster_modal(ctx),
+            DevicesAction::ConfirmDeleteCluster => self.confirm_delete_cluster(ctx),
             DevicesAction::RemoveClusterDevice { device_id, node_id } => {
                 self.remove_cluster_device(device_id.clone(), node_id.clone(), ctx);
             }
