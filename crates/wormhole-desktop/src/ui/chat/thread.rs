@@ -11,6 +11,7 @@ use warpui::{AppContext, Element, Entity, View, ViewContext};
 use crate::ui::chat::bubble::{format_message_time_pub, ChatBubbleView};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
     chat_config, chat_list_messages, ChatMessageDto, ListChatMessagesParams,
 };
@@ -23,6 +24,8 @@ pub struct ChatThreadView {
     local_endpoint: Option<String>,
     messages: Vec<ChatMessageDto>,
     bubbles: Vec<warpui::ViewHandle<ChatBubbleView>>,
+    system_bubbles: Vec<warpui::ViewHandle<ChatBubbleView>>,
+    search_filter: String,
     hint_bubble: warpui::ViewHandle<ChatBubbleView>,
     scroll: ClippedScrollStateHandle,
 }
@@ -44,6 +47,8 @@ impl ChatThreadView {
             local_endpoint: None,
             messages: Vec::new(),
             bubbles: Vec::new(),
+            system_bubbles: Vec::new(),
+            search_filter: String::new(),
             hint_bubble,
             scroll: ClippedScrollStateHandle::new(),
         };
@@ -111,6 +116,38 @@ impl ChatThreadView {
         }
     }
 
+    pub fn set_search_filter(&mut self, query: String, ctx: &mut ViewContext<Self>) {
+        if self.search_filter == query {
+            return;
+        }
+        self.search_filter = query;
+        ctx.notify();
+    }
+
+    pub fn clear_local_messages(&mut self, ctx: &mut ViewContext<Self>) {
+        self.messages.clear();
+        self.bubbles.clear();
+        self.system_bubbles.clear();
+        ctx.notify();
+    }
+
+    pub fn push_system_message(&mut self, body: String, ctx: &mut ViewContext<Self>) {
+        self.system_bubbles
+            .push(ctx.add_view(move |ctx| ChatBubbleView::system_hint(ctx, body)));
+        ctx.notify();
+    }
+
+    fn message_visible(&self, index: usize) -> bool {
+        let filter = self.search_filter.trim();
+        if filter.is_empty() {
+            return true;
+        }
+        self.messages
+            .get(index)
+            .map(|msg| msg.body.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()))
+            .unwrap_or(false)
+    }
+
     fn rebuild_bubbles(&mut self, ctx: &mut ViewContext<Self>) {
         self.bubbles.clear();
         let local = self.local_endpoint.as_deref();
@@ -137,7 +174,18 @@ impl View for ChatThreadView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
-        if self.messages.is_empty() {
+        for bubble in &self.system_bubbles {
+            col.add_child(
+                Container::new(
+                    Align::new(ChildView::new(bubble).finish())
+                        .top_center()
+                        .finish(),
+                )
+                .with_vertical_margin(4.0)
+                .finish(),
+            );
+        }
+        if self.messages.is_empty() && self.system_bubbles.is_empty() {
             col.add_child(
                 Container::new(
                     Align::new(ChildView::new(&self.hint_bubble).finish())
@@ -148,12 +196,36 @@ impl View for ChatThreadView {
                 .finish(),
             );
         } else {
-            for bubble in &self.bubbles {
+            for (index, bubble) in self.bubbles.iter().enumerate() {
+                if !self.message_visible(index) {
+                    continue;
+                }
                 col.add_child(
                     Container::new(ChildView::new(bubble).finish())
                         .with_horizontal_padding(16.0)
                         .with_vertical_margin(4.0)
                         .finish(),
+                );
+            }
+            if !self.search_filter.trim().is_empty()
+                && self
+                    .bubbles
+                    .iter()
+                    .enumerate()
+                    .all(|(i, _)| !self.message_visible(i))
+            {
+                col.add_child(
+                    Container::new(
+                        Align::new(
+                            ui_text::body("无匹配消息".to_string(), self.font)
+                                .with_color(crate::ui::theme::muted())
+                                .finish(),
+                        )
+                        .top_center()
+                        .finish(),
+                    )
+                    .with_vertical_margin(24.0)
+                    .finish(),
                 );
             }
         }

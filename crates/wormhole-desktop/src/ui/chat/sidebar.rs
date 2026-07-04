@@ -9,7 +9,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::bubble::format_message_time_pub;
-use crate::ui::chat::shell::ConversationSelection;
+use crate::ui::chat::shell::{ChatShellUiState, ConversationSelection};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::online_dot;
 use crate::ui::text_field_input::{
@@ -50,6 +50,7 @@ struct SidebarRow {
 pub struct ChatSidebarView {
     core: CoreHandle,
     selection: ConversationSelection,
+    ui_state: Arc<Mutex<ChatShellUiState>>,
     font: FamilyId,
     rows: Vec<SidebarRow>,
     search: String,
@@ -65,11 +66,13 @@ impl ChatSidebarView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         selection: ConversationSelection,
+        ui_state: Arc<Mutex<ChatShellUiState>>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mut view = Self {
             core,
             selection,
+            ui_state,
             font,
             rows: Vec::new(),
             search: String::new(),
@@ -188,6 +191,12 @@ impl ChatSidebarView {
 
     fn chat_item(&self, row: &SidebarRow, selected: bool) -> Box<dyn Element> {
         let id = row.id.clone();
+        let muted = selected
+            && self
+                .ui_state
+                .lock()
+                .map(|u| u.muted)
+                .unwrap_or(false);
         let mut top = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
@@ -204,6 +213,17 @@ impl ChatSidebarView {
             )
             .finish(),
         );
+        if muted {
+            top.add_child(
+                Container::new(
+                    ui_text::body("🔕".to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_margin_right(6.0)
+                .finish(),
+            );
+        }
         if !row.time.is_empty() {
             top.add_child(
                 ui_text::device_meta(row.time.clone(), self.font)

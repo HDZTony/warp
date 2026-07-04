@@ -41,6 +41,9 @@ pub enum UiCommand {
         window_key: String,
         reconnect: bool,
     },
+    CloseRdp {
+        window_key: String,
+    },
     OpenAgent {
         window_key: String,
         title: String,
@@ -140,6 +143,7 @@ pub struct CoordinatorState {
     rdp_runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
     pending_warp_focus: Option<PreferredAgent>,
     main_shell_window: Option<WindowId>,
+    pending_rdp_closed: Vec<String>,
 }
 
 impl CoordinatorState {
@@ -159,6 +163,7 @@ impl CoordinatorState {
             rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(rdp_data_dir))),
             pending_warp_focus: None,
             main_shell_window: None,
+            pending_rdp_closed: Vec::new(),
         }
     }
 
@@ -172,6 +177,24 @@ impl CoordinatorState {
 
     pub fn is_main_shell_window(&self, window_id: WindowId) -> bool {
         self.main_shell_window == Some(window_id)
+    }
+
+    /// Remove a tracked RDP popout when the user closes it via the window chrome.
+    pub fn remove_rdp_window_by_id(&mut self, window_id: WindowId) -> Option<String> {
+        let key = self
+            .rdp_windows
+            .iter()
+            .find(|(_, &id)| id == window_id)
+            .map(|(k, _)| k.clone());
+        if let Some(ref k) = key {
+            self.rdp_windows.remove(k);
+            self.pending_rdp_closed.push(k.clone());
+        }
+        key
+    }
+
+    pub fn take_pending_rdp_closed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_rdp_closed)
     }
 
     pub fn take_pending_warp_focus(&mut self) -> Option<PreferredAgent> {
@@ -268,6 +291,7 @@ impl CoordinatorView {
                     window_key,
                     reconnect: _,
                 } => self.focus_rdp_window(ctx, &window_key),
+                UiCommand::CloseRdp { window_key } => self.close_rdp_window(ctx, &window_key),
                 UiCommand::OpenAgent { backend, .. } => self.focus_warp_for_agent(backend, ctx),
                 UiCommand::FocusAgent { window_key: _ } => {
                     if let Ok(mut guard) = self.state.lock() {
@@ -673,6 +697,11 @@ impl CoordinatorView {
         guard.rdp_windows.get(window_key).copied()
     }
 
+    fn take_rdp_window_id(&self, window_key: &str) -> Option<WindowId> {
+        let mut guard = self.state.lock().expect("coordinator lock");
+        guard.rdp_windows.remove(window_key)
+    }
+
     fn agent_window_id(&self, window_key: &str) -> Option<WindowId> {
         let guard = self.state.lock().expect("coordinator lock");
         guard.agent_windows.get(window_key).copied()
@@ -691,6 +720,16 @@ impl CoordinatorView {
     fn focus_rdp_window(&self, ctx: &mut ViewContext<Self>, window_key: &str) {
         if let Some(window_id) = self.rdp_window_id(window_key) {
             ctx.windows().show_window_and_focus_app(window_id);
+        }
+    }
+
+    fn close_rdp_window(&self, ctx: &mut ViewContext<Self>, window_key: &str) {
+        if let Some(window_id) = self.take_rdp_window_id(window_key) {
+            ctx.windows()
+                .close_window(window_id, TerminationMode::ForceTerminate);
+            if let Ok(mut guard) = self.state.lock() {
+                guard.pending_rdp_closed.push(window_key.to_string());
+            }
         }
     }
 

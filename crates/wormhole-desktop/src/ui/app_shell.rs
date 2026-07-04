@@ -17,7 +17,7 @@ use warpui_core::keymap::Keystroke;
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
-use crate::ui::chat::ChatShellView;
+use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::clipboard::read_clipboard_text;
@@ -170,7 +170,23 @@ impl AppShellView {
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
         let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
-        let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
+        let chat = ctx.add_typed_action_view(|ctx| {
+            ChatShellView::new(ctx, core.clone(), coordinator.clone())
+        });
+        ctx.subscribe_to_view(&chat, |view, _, event, ctx| {
+            match event {
+                ChatShellEvent::NavigateToDevices { node_id } => {
+                    view.tab = AppTab::Devices;
+                    view.tab_focus = AppTab::Devices;
+                    let devices_handle = view.devices.clone();
+                    let peer = node_id.clone();
+                    ctx.update_view(&devices_handle, |devices, ctx| {
+                        devices.browse_peer(peer, ctx);
+                    });
+                    ctx.notify();
+                }
+            }
+        });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
         let toolbox = ctx
             .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
@@ -429,10 +445,23 @@ impl AppShellView {
             async move { waiter.recv().await },
             move |view, output, ctx| {
                 if output.is_ok() {
-                    if let Ok(mut guard) = coordinator.lock() {
-                        if let Some(agent) = guard.take_pending_warp_focus() {
-                            view.focus_warp_tab(agent, ctx);
+                    let (agent, closed) = {
+                        if let Ok(mut guard) = coordinator.lock() {
+                            (guard.take_pending_warp_focus(), guard.take_pending_rdp_closed())
+                        } else {
+                            (None, Vec::new())
                         }
+                    };
+                    if let Some(agent) = agent {
+                        view.focus_warp_tab(agent, ctx);
+                    }
+                    if !closed.is_empty() {
+                        let chat = view.chat.clone();
+                        ctx.update_view(&chat, |chat, ctx| {
+                            for key in closed {
+                                chat.on_rdp_window_closed(&key, ctx);
+                            }
+                        });
                     }
                     Self::poll_warp_focus_once(ctx, tick_rx, coordinator);
                 }
