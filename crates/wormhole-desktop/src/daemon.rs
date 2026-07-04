@@ -13,12 +13,12 @@ use crate::wormhole_native_ipc::{
     OpenHostControlWindowRequest, OpenHostControlWindowResponse, OpenLiveViewerWindowRequest,
     OpenLiveViewerWindowResponse, OpenRdpWindowRequest, OpenRdpWindowResponse,
     OpenWorkspaceHudWindowRequest, OpenWorkspaceHudWindowResponse, OpenWorkspaceRdpWindowRequest,
-    OpenWorkspaceRdpWindowResponse, CloseRdpWindowRequest, FOCUS_AGENT_EVENTS_PATH, FOCUS_AGENT_PATH,
+    OpenWorkspaceRdpWindowResponse, FOCUS_AGENT_EVENTS_PATH, FOCUS_AGENT_PATH,
     FOCUS_COMPUTER_USE_PATH, FOCUS_HOST_CONTROL_PATH, FOCUS_LIVE_VIEWER_PATH, FOCUS_RDP_PATH,
     FOCUS_WORKSPACE_HUD_PATH, FOCUS_WORKSPACE_RDP_PATH, HEALTH_PATH, INVOKE_RDP_PATH,
     OPEN_AGENT_EVENTS_PATH, OPEN_AGENT_PATH, OPEN_COMPUTER_USE_PATH, OPEN_HOST_CONTROL_PATH,
     OPEN_LIVE_VIEWER_PATH, OPEN_RDP_PATH, OPEN_WORKSPACE_HUD_PATH, OPEN_WORKSPACE_RDP_PATH,
-    CLOSE_RDP_PATH, SHUTDOWN_PATH,
+    SHUTDOWN_PATH,
 };
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -62,7 +62,6 @@ async fn run_async(coordinator: Arc<Mutex<CoordinatorState>>) -> anyhow::Result<
         .route(HEALTH_PATH, get(health))
         .route(OPEN_RDP_PATH, post(open_rdp))
         .route(FOCUS_RDP_PATH, post(focus_rdp))
-        .route(CLOSE_RDP_PATH, post(close_rdp))
         .route(OPEN_AGENT_PATH, post(open_agent))
         .route(FOCUS_AGENT_PATH, post(focus_agent))
         .route(OPEN_COMPUTER_USE_PATH, post(open_computer_use))
@@ -186,29 +185,6 @@ async fn focus_rdp(
             window_key,
             reconnect: body.reconnect,
         });
-    }
-    Ok("ok")
-}
-
-async fn close_rdp(
-    State(state): State<DaemonState>,
-    headers: HeaderMap,
-    axum::Json(body): axum::Json<CloseRdpWindowRequest>,
-) -> Result<&'static str, (StatusCode, axum::Json<ApiErrorBody>)> {
-    authorize(&headers, &state.token)?;
-    let peer = body.peer.trim().to_string();
-    if peer.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(ApiErrorBody {
-                error: "peer is required".into(),
-            }),
-        ));
-    }
-    let window_key = crate::wormhole_native_ipc::rdp_window_key(&peer);
-    {
-        let mut guard = state.coordinator.lock().expect("coordinator lock");
-        guard.enqueue(UiCommand::CloseRdp { window_key });
     }
     Ok("ok")
 }

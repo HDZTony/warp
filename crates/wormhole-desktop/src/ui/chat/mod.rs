@@ -8,4 +8,4 @@ pub mod sticker_picker;
 pub mod thread;
 pub mod video;
 
-pub use shell::{ChatShellEvent, ChatShellView};
+pub use shell::ChatShellView;

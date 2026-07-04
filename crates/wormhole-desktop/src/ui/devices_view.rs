@@ -323,11 +323,6 @@ impl DevicesView {
         );
     }
 
-    /// Open a peer's shared-folder browser (used from chat profile → 共享文件).
-    pub fn browse_peer(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
-        self.open_node(node_id, ctx);
-    }
-
     fn open_node(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         let local_id = self
             .cluster
