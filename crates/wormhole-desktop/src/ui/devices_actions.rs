@@ -20,7 +20,10 @@ pub enum DevicesAction {
     CloseClusterPicker,
     SelectCluster(String),
     LeaveCluster,
-    RemoveClusterDevice(String),
+    RemoveClusterDevice {
+        device_id: Option<String>,
+        node_id: String,
+    },
     ShareBack,
     ShareForward,
     ShareNavigate {

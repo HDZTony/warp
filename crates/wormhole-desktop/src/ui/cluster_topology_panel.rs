@@ -14,7 +14,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 
 use crate::ui::cluster_layout::{
-    card_height, cards_row_card_width, BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD,
+    BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD, card_height, cards_row_card_width,
 };
 
 const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
@@ -26,7 +26,7 @@ const SHARE_BTN_PAD_X: f32 = 10.0;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
 use crate::ui::icons;
-use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
+use crate::ui::panel_primitives::{HUD_RADIUS, StatusTone, status_line};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::ClusterNodeDto;
@@ -315,7 +315,11 @@ fn share_files_button(
     }
 }
 
-fn remove_device_button(device_id: String, mono: FamilyId) -> Box<dyn Element> {
+fn remove_device_button(
+    device_id: Option<String>,
+    node_id: String,
+    mono: FamilyId,
+) -> Box<dyn Element> {
     let inner = Container::new(
         ConstrainedBox::new(
             Flex::row()
@@ -339,7 +343,10 @@ fn remove_device_button(device_id: String, mono: FamilyId) -> Box<dyn Element> {
 
     EventHandler::new(inner)
         .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(DevicesAction::RemoveClusterDevice(device_id.clone()));
+            ctx.dispatch_typed_action(DevicesAction::RemoveClusterDevice {
+                device_id: device_id.clone(),
+                node_id: node_id.clone(),
+            });
             DispatchEventResult::StopPropagation
         })
         .finish()
@@ -400,17 +407,19 @@ fn node_card(
         .finish(),
     );
     if node.removable {
-        if let Some(device_id) = node.device_id.clone() {
-            body.add_child(
-                Align::new(
-                    Container::new(remove_device_button(device_id, mono))
-                        .with_vertical_margin(2.0)
-                        .finish(),
-                )
-                .left()
+        body.add_child(
+            Align::new(
+                Container::new(remove_device_button(
+                    node.device_id.clone(),
+                    node.node_id.clone(),
+                    mono,
+                ))
+                .with_vertical_margin(2.0)
                 .finish(),
-            );
-        }
+            )
+            .left()
+            .finish(),
+        );
     }
 
     let body_block = Container::new(
