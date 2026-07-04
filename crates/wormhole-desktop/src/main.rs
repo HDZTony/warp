@@ -201,18 +201,17 @@ fn main() -> Result<()> {
 
     let coordinator_for_close = coordinator.clone();
     let mut callbacks = AppCallbacks::default();
-    #[cfg(windows)]
-    {
-        callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
-            if ui::windows_shell::should_hide_main_window_to_tray(window_id, &coordinator_for_close)
-            {
-                ui::windows_shell::hide_main_window(window_id, ctx);
-                ApproveTerminateResult::Cancel
-            } else {
-                ApproveTerminateResult::Terminate
-            }
-        }));
-    }
+    callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
+        #[cfg(windows)]
+        if ui::windows_shell::should_hide_main_window_to_tray(window_id, &coordinator_for_close) {
+            ui::windows_shell::hide_main_window(window_id, ctx);
+            return ApproveTerminateResult::Cancel;
+        }
+        if let Ok(mut guard) = coordinator_for_close.lock() {
+            guard.remove_rdp_window_by_id(window_id);
+        }
+        ApproveTerminateResult::Terminate
+    }));
 
     let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
     let import_model = new_shared_import_model();

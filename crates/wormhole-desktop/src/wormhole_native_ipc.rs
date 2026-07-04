@@ -6,6 +6,7 @@ use serde_json::Value;
 pub const HEALTH_PATH: &str = "/health";
 pub const OPEN_RDP_PATH: &str = "/open-rdp";
 pub const FOCUS_RDP_PATH: &str = "/focus-rdp";
+pub const CLOSE_RDP_PATH: &str = "/close-rdp";
 pub const OPEN_AGENT_PATH: &str = "/open-agent";
 pub const FOCUS_AGENT_PATH: &str = "/focus-agent";
 pub const OPEN_COMPUTER_USE_PATH: &str = "/open-computer-use";
@@ -103,6 +104,11 @@ pub struct FocusRdpWindowRequest {
     pub peer: String,
     #[serde(default)]
     pub reconnect: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseRdpWindowRequest {
+    pub peer: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

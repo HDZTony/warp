@@ -320,6 +320,11 @@ impl DevicesView {
         );
     }
 
+    /// Open a peer's shared-folder browser (used from chat profile → 共享文件).
+    pub fn browse_peer(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        self.open_node(node_id, ctx);
+    }
+
     fn open_node(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         let local_id = self
             .cluster
@@ -1090,7 +1095,7 @@ impl DevicesView {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
-        row.add_child(self.cluster_select(cluster));
+        row.add_child(self.cluster_menu(cluster));
         row.add_child(
             Container::new(self.toolbar_button(
                 self.copy_invite_label(),
