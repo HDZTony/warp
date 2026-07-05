@@ -26,12 +26,12 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
     AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams,
-    CreateClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
-    LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams, ShareEntryDto,
-    SwitchActiveClusterParams, add_storage_volume, create_cluster as create_cluster_command,
-    create_cluster_invite, delete_cluster, delete_share_entry, join_cluster, leave_cluster,
-    list_share_directory, open_share_entry, remote_open_share_entry, remove_cluster_device,
-    switch_active_cluster, sync_share_entry, DeleteClusterParams,
+    CreateClusterParams, DeleteClusterParams, JoinClusterOutcome, JoinClusterParams,
+    JoinedClusterDto, LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
+    ShareEntryDto, SwitchActiveClusterParams, add_storage_volume,
+    create_cluster as create_cluster_command, create_cluster_invite, delete_cluster,
+    delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
+    remote_open_share_entry, remove_cluster_device, switch_active_cluster, sync_share_entry,
 };
 
 use std::time::{Duration, Instant};
@@ -182,7 +182,10 @@ impl DevicesView {
         self.cluster_syncing = status.syncing;
         self.cluster = Some(status.clone());
         self.cluster_error = None;
-        if self.local_invite.is_none() && !self.invite_busy {
+        if Self::active_cluster_id(&status).is_some()
+            && self.local_invite.is_none()
+            && !self.invite_busy
+        {
             self.load_local_invite(ctx);
         }
         if status.syncing {
@@ -762,7 +765,13 @@ impl DevicesView {
             .clusters
             .iter()
             .find(|c| c.active)
-            .map(|c| format!("{} · {}", Self::joined_cluster_label(c), short_cluster_id(&c.cluster_id)))
+            .map(|c| {
+                format!(
+                    "{} · {}",
+                    Self::joined_cluster_label(c),
+                    short_cluster_id(&c.cluster_id)
+                )
+            })
             .unwrap_or_else(|| Self::cluster_label(cluster))
     }
 
@@ -772,6 +781,9 @@ impl DevicesView {
         }
         if self.cluster_syncing {
             return "CLUSTER · SYNCING · 后台同步集群…".to_string();
+        }
+        if cluster.clusters.is_empty() {
+            return "CLUSTER · EMPTY · 创建或加入集群开始同步".to_string();
         }
         let n = cluster.nodes.len();
         format!(
@@ -957,6 +969,18 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         menu.add_child(Self::cluster_menu_section("切换集群", self.mono));
+        if cluster.clusters.is_empty() {
+            menu.add_child(
+                Container::new(
+                    ui_text::cluster_label("暂无集群", self.mono)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_horizontal_padding(10.0)
+                .with_vertical_padding(8.0)
+                .finish(),
+            );
+        }
         for entry in &cluster.clusters {
             let cluster_id = entry.cluster_id.clone();
             let name = Self::joined_cluster_label(entry);
@@ -1012,14 +1036,17 @@ impl DevicesView {
                 .finish(),
             );
         }
+        if Self::active_cluster_id(cluster).is_some() {
+            menu.add_child(Self::cluster_menu_divider());
+            menu.add_child(self.cluster_menu_action(
+                self.copy_invite_label(),
+                DevicesAction::CopyInvite,
+                false,
+                !self.copy_invite_busy,
+                false,
+            ));
+        }
         menu.add_child(Self::cluster_menu_divider());
-        menu.add_child(self.cluster_menu_action(
-            self.copy_invite_label(),
-            DevicesAction::CopyInvite,
-            false,
-            !self.copy_invite_busy,
-            false,
-        ));
         menu.add_child(self.cluster_menu_action(
             if self.create_cluster_busy {
                 "创建中…"
@@ -1038,15 +1065,16 @@ impl DevicesView {
             true,
             false,
         ));
-        let can_delete_cluster = cluster.clusters.len() > 1;
-        menu.add_child(Self::cluster_menu_divider());
-        menu.add_child(self.cluster_menu_action(
-            "删除集群",
-            DevicesAction::OpenDeleteClusterModal,
-            false,
-            can_delete_cluster,
-            true,
-        ));
+        if Self::active_cluster_id(cluster).is_some() {
+            menu.add_child(Self::cluster_menu_divider());
+            menu.add_child(self.cluster_menu_action(
+                "删除集群",
+                DevicesAction::OpenDeleteClusterModal,
+                false,
+                true,
+                true,
+            ));
+        }
 
         Container::new(
             ConstrainedBox::new(menu.finish())
@@ -1118,6 +1146,48 @@ impl DevicesView {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
+        if cluster.clusters.is_empty() {
+            row.add_child(self.toolbar_button(
+                if self.create_cluster_busy {
+                    "创建中…"
+                } else {
+                    "创建集群"
+                },
+                DevicesAction::OpenCreateClusterModal,
+                true,
+                112.0,
+                !self.create_cluster_busy,
+            ));
+            row.add_child(
+                Container::new(self.toolbar_button(
+                    "加入集群",
+                    DevicesAction::OpenJoinModal,
+                    true,
+                    104.0,
+                    true,
+                ))
+                .with_horizontal_margin(10.0)
+                .finish(),
+            );
+            row.add_child(
+                Shrinkable::new(
+                    1.0,
+                    Container::new(
+                        ConstrainedBox::new(
+                            ui_text::cluster_status(self.cluster_status_text(cluster), self.mono)
+                                .with_color(theme::muted())
+                                .finish(),
+                        )
+                        .with_height(TOOLBAR_BTN_HEIGHT)
+                        .finish(),
+                    )
+                    .with_horizontal_margin(10.0)
+                    .finish(),
+                )
+                .finish(),
+            );
+            return row.finish();
+        }
         row.add_child(self.cluster_menu(cluster));
         if Self::active_cluster_entry(cluster)
             .is_some_and(|entry| entry.role != "owner" && !entry.revoked)
@@ -1154,7 +1224,13 @@ impl DevicesView {
         row.finish()
     }
 
-    fn load_local_invite(&self, ctx: &mut ViewContext<Self>) {
+    fn load_local_invite(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.invite_busy {
+            return;
+        }
+        self.invite_busy = true;
+        ctx.notify();
+
         let core = self.core.clone();
         let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
         ctx.spawn(
@@ -1477,12 +1553,6 @@ impl DevicesView {
         let Some(cluster) = self.cluster.as_ref() else {
             return;
         };
-        if cluster.clusters.len() <= 1 {
-            self.status_flash = Some("无法删除 — 至少保留一个集群".into());
-            self.cluster_picker_open = false;
-            ctx.notify();
-            return;
-        }
         let cluster_id = Self::active_cluster_id(cluster);
         self.delete_modal_cluster_id = cluster_id;
         self.cluster_picker_open = false;
@@ -1530,11 +1600,7 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                delete_cluster(
-                    &state,
-                    DeleteClusterParams { cluster_id },
-                )
-                .await
+                delete_cluster(&state, DeleteClusterParams { cluster_id }).await
             },
             move |view, output, ctx| {
                 view.delete_cluster_busy = false;
@@ -1545,8 +1611,7 @@ impl DevicesView {
                         view.cluster = Some(status);
                         view.cluster_error = None;
                         view.local_invite = None;
-                        view.status_flash =
-                            Some(format!("CLUSTER REMOVED · {removed_label}"));
+                        view.status_flash = Some(format!("CLUSTER REMOVED · {removed_label}"));
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
@@ -2031,6 +2096,35 @@ impl DevicesView {
                         )
                         .with_uniform_padding(SECTION_PADDING)
                         .finish(),
+                    )
+                    .finish(),
+                );
+            } else if cluster.clusters.is_empty() {
+                let mut empty = Flex::column()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_alignment(MainAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                empty.add_child(
+                    ui_text::title("暂无集群", self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                );
+                empty.add_child(
+                    Container::new(
+                        ui_text::body("点击上方「创建集群」或「加入集群」开始同步。", self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_vertical_margin(10.0)
+                    .finish(),
+                );
+                col.add_child(
+                    Expanded::new(
+                        1.0,
+                        Container::new(empty.finish())
+                            .with_uniform_padding(SECTION_PADDING)
+                            .with_background(theme::panel())
+                            .finish(),
                     )
                     .finish(),
                 );

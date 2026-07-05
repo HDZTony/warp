@@ -49,8 +49,8 @@ pub struct TrafficLightMouseStates {
 
 /// Windows title-bar toggle: when enabled, Wormhole handles `ccswitch://` without forwarding to CC Switch.
 #[cfg(windows)]
-#[derive(Clone, Copy)]
-pub struct CcswitchInterceptToggle<A: Action + Copy> {
+#[derive(Clone)]
+pub struct CcswitchInterceptToggle<A: Action + Clone> {
     pub enabled: bool,
     pub toggle: A,
 }
@@ -140,14 +140,14 @@ pub fn traffic_light_spacer(data: &TrafficLightData, zoom_factor: f32) -> Option
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct TrafficLightActions<A: Action + Copy> {
+#[derive(Clone)]
+pub struct TrafficLightActions<A: Action + Clone> {
     pub minimize: A,
     pub toggle_maximize: A,
     pub close: A,
 }
 
-pub fn render_traffic_lights<A: Action + Copy + 'static>(
+pub fn render_traffic_lights<A: Action + Clone + 'static>(
     window_id: WindowId,
     app: &AppContext,
     mouse_states: &TrafficLightMouseStates,
@@ -281,7 +281,7 @@ impl WindowsTrafficLightIcon {
         }
     }
 
-    fn render<A: Action + Copy + 'static>(
+    fn render<A: Action + Clone + 'static>(
         self,
         mouse_state_handle: MouseStateHandle,
         icon_font_family: FamilyId,
@@ -308,7 +308,7 @@ impl WindowsTrafficLightIcon {
             }
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action);
+            ctx.dispatch_typed_action(action.clone());
         })
         .finish();
 
@@ -320,7 +320,7 @@ impl WindowsTrafficLightIcon {
 
 impl TrafficLightData {
     #[cfg(windows)]
-    fn render_windows<A: Action + Copy + 'static>(
+    fn render_windows<A: Action + Clone + 'static>(
         &self,
         fullscreen_state: FullscreenState,
         mouse_states: &TrafficLightMouseStates,
@@ -354,7 +354,7 @@ impl TrafficLightData {
     }
 
     #[cfg(windows)]
-    fn render_windows_with_glyph_icons<A: Action + Copy + 'static>(
+    fn render_windows_with_glyph_icons<A: Action + Clone + 'static>(
         &self,
         fullscreen_state: FullscreenState,
         mouse_states: &TrafficLightMouseStates,
@@ -404,7 +404,7 @@ impl TrafficLightData {
     }
 
     #[cfg(windows)]
-    fn render_windows_with_rect_icons<A: Action + Copy + 'static>(
+    fn render_windows_with_rect_icons<A: Action + Clone + 'static>(
         &self,
         fullscreen_state: FullscreenState,
         mouse_states: &TrafficLightMouseStates,
@@ -456,7 +456,7 @@ impl TrafficLightData {
     }
 
     #[cfg(windows)]
-    fn render_ccswitch_intercept_toggle<A: Action + Copy + 'static>(
+    fn render_ccswitch_intercept_toggle<A: Action + Clone + 'static>(
         mouse_state: MouseStateHandle,
         toggle: CcswitchInterceptToggle<A>,
         ui_font: FamilyId,
@@ -506,7 +506,7 @@ impl TrafficLightData {
             .finish()
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action);
+            ctx.dispatch_typed_action(action.clone());
         })
         .finish()
     }
@@ -586,7 +586,7 @@ impl TrafficLightData {
     }
 
     #[cfg(windows)]
-    fn windows_close_button<A: Action + Copy + 'static>(
+    fn windows_close_button<A: Action + Clone + 'static>(
         mouse_state: MouseStateHandle,
         font: FamilyId,
         action: A,
@@ -612,12 +612,12 @@ impl TrafficLightData {
             .finish()
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action);
+            ctx.dispatch_typed_action(action.clone());
         })
     }
 
     #[cfg(windows)]
-    fn windows_rect_button<A: Action + Copy + 'static>(
+    fn windows_rect_button<A: Action + Clone + 'static>(
         mouse_state: MouseStateHandle,
         child: Box<dyn Element>,
         hover_color: ColorU,
@@ -640,12 +640,12 @@ impl TrafficLightData {
             .finish()
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action);
+            ctx.dispatch_typed_action(action.clone());
         })
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn render_linux<A: Action + Copy + 'static>(
+    fn render_linux<A: Action + Clone + 'static>(
         &self,
         fullscreen_state: FullscreenState,
         mouse_states: &TrafficLightMouseStates,
@@ -768,7 +768,7 @@ impl TrafficLightData {
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn linux_circle_button<A: Action + Copy + 'static>(
+    fn linux_circle_button<A: Action + Clone + 'static>(
         mouse_state: MouseStateHandle,
         child: Box<dyn Element>,
         action: A,
@@ -790,7 +790,7 @@ impl TrafficLightData {
             .finish()
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action);
+            ctx.dispatch_typed_action(action.clone());
         })
     }
 }

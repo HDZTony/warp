@@ -7,11 +7,11 @@ use warpui::{Element, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
-    section_hint, status_line, tab_content_fill, StatusTone, SECTION_PADDING,
+    SECTION_PADDING, StatusTone, section_hint, status_line, tab_content_fill,
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    cluster_status, cluster_status_fast, ClusterStatusDto,
+    ClusterStatusDto, cluster_status, cluster_status_fast,
 };
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
@@ -72,8 +72,11 @@ pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, 
         return cluster_status(state).await;
     }
     let coordinator = ClusterGossipCoordinator::global();
-    coordinator.ensure_background(state.clone());
     let mut status = cluster_status_fast(state).await?;
+    if !status.configured {
+        return Ok(status);
+    }
+    coordinator.ensure_background(state.clone());
     if !coordinator.is_gossip_ready() {
         status.syncing = true;
     }

@@ -1,46 +1,56 @@
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Expanded,
-    Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    Radius, ScrollbarWidth, Shrinkable, Stack,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler,
+    Expanded, Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement,
+    ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
-    AccessibilityData, AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext,
-    ViewHandle, WindowId,
+    AccessibilityData, AppContext, Element, Entity, SingletonEntity as _, TypedActionView,
+    UpdateView, View, ViewContext, ViewHandle, WindowId, assets::asset_cache::AssetCache,
 };
+use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
 use warpui_core::keymap::Keystroke;
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::ChatShellView;
+use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::clipboard::read_clipboard_text;
-use crate::ui::desktop_prefs::{self, format_balance_yuan};
-use crate::ui::hud_avatar_panel::{self, build_avatar_panel, build_avatar_slot, build_redeem_modal};
+use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
 use crate::ui::devices_view::DevicesView;
 use crate::ui::display_view::DisplayView;
+use crate::ui::hud_avatar_panel::{
+    PurchaseProductUi, build_avatar_panel, build_avatar_slot, build_purchase_modal,
+    build_redeem_modal,
+};
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
 use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
-use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
+use crate::ui::panel_primitives::StatusTone;
+use crate::ui::panel_primitives::{HUD_RADIUS, section_hint, tab_content_fill};
 use crate::ui::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::sync_views::SyncView;
+use crate::ui::text_field_input::{
+    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldState, sync_caret_blink,
+};
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
-use crate::ui::window_chrome::{
-    self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
-};
 #[cfg(windows)]
 use crate::ui::window_chrome::CcswitchInterceptToggle;
+use crate::ui::window_chrome::{
+    self, CHROME_ROW_HEIGHT, TrafficLightActions, TrafficLightMouseStates,
+};
 use crate::ui_text;
 use wormhole_desktop_core::cloud_auth_status;
+use wormhole_desktop_core::cloud_credits::{CloudCreditProductDto, CloudCreditRedeemRequest};
 use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_fast};
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
@@ -90,7 +100,13 @@ pub enum TabSelectSource {
     Keyboard,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RedeemTab {
+    Redeem,
+    History,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppShellAction {
     SelectTab(AppTab, TabSelectSource),
     SetTabHover(Option<AppTab>),
@@ -104,9 +120,15 @@ pub enum AppShellAction {
     ToggleAvatarPanel,
     CloseAvatarPanel,
     PurchaseBalance,
+    ClosePurchaseModal,
+    RefreshCreditProducts,
+    CopyPurchaseLink(String),
+    OpenPurchaseLink(String),
     OpenRedeemModal,
     CloseRedeemModal,
-    PasteRedeemCode,
+    SwitchRedeemTab(RedeemTab),
+    RedeemCodeEdit(TextFieldEditAction),
+    FocusRedeemCode,
     SubmitRedeem,
 }
 
@@ -136,11 +158,28 @@ pub struct AppShellView {
     hud_nodes: usize,
     device_ready: bool,
     avatar_panel_open: bool,
-    balance_cents: i64,
+    balance_credits: i64,
+    balance_busy: bool,
     balance_feedback: Option<String>,
+    purchase_modal_open: bool,
+    purchase_products: Vec<CloudCreditProductDto>,
+    purchase_busy: bool,
+    purchase_feedback: Option<String>,
+    purchase_qr_loaded: HashSet<String>,
     redeem_modal_open: bool,
+    redeem_tab: RedeemTab,
     redeem_code_draft: String,
+    redeem_code_field: TextFieldState,
+    redeem_code_focused: bool,
+    redeem_caret_blink: CaretBlink,
     redeem_feedback: Option<String>,
+    redeem_feedback_tone: StatusTone,
+    redeem_busy: bool,
+    redeem_history: Vec<RedeemHistoryEntry>,
+    redeem_history_busy: bool,
+    redeem_history_error: Option<String>,
+    redeem_code_overrides: HashMap<String, String>,
+    redeem_history_scroll: ClippedScrollStateHandle,
     tab_scroll: ClippedScrollStateHandle,
     show_onboarding: bool,
     window_id: WindowId,
@@ -235,10 +274,9 @@ impl AppShellView {
         let window_id = ctx.window_id();
         #[cfg(windows)]
         let ccswitch_intercept_enabled = {
-            let settings =
-                wormhole_desktop_core::agent_deeplink_settings::load_settings_blocking(
-                    &core.data_dir(),
-                );
+            let settings = wormhole_desktop_core::agent_deeplink_settings::load_settings_blocking(
+                &core.data_dir(),
+            );
             settings.ccswitch_intercept_enabled
         };
         let view = Self {
@@ -266,11 +304,28 @@ impl AppShellView {
             hud_nodes: 1,
             device_ready: false,
             avatar_panel_open: false,
-            balance_cents: prefs.balance_cents,
+            balance_credits: 0,
+            balance_busy: false,
             balance_feedback: None,
+            purchase_modal_open: false,
+            purchase_products: Vec::new(),
+            purchase_busy: false,
+            purchase_feedback: None,
+            purchase_qr_loaded: HashSet::new(),
             redeem_modal_open: false,
+            redeem_tab: RedeemTab::Redeem,
             redeem_code_draft: String::new(),
+            redeem_code_field: TextFieldState::new(),
+            redeem_code_focused: false,
+            redeem_caret_blink: CaretBlink::new(),
             redeem_feedback: None,
+            redeem_feedback_tone: StatusTone::Neutral,
+            redeem_busy: false,
+            redeem_history: Vec::new(),
+            redeem_history_busy: false,
+            redeem_history_error: None,
+            redeem_code_overrides: prefs.redeem_code_overrides,
+            redeem_history_scroll: ClippedScrollStateHandle::new(),
             tab_scroll: ClippedScrollStateHandle::new(),
             show_onboarding,
             window_id,
@@ -316,10 +371,12 @@ impl AppShellView {
             |_, _, _| {},
         );
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if tick_tx.send_blocking(()).is_err() {
-                break;
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if tick_tx.send_blocking(()).is_err() {
+                    break;
+                }
             }
         });
         Self::poll_hud_once(ctx, tick_rx, core);
@@ -410,10 +467,12 @@ impl AppShellView {
     fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {
         let coordinator = Arc::clone(&self.coordinator);
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if tick_tx.send_blocking(()).is_err() {
-                break;
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if tick_tx.send_blocking(()).is_err() {
+                    break;
+                }
             }
         });
         Self::poll_warp_focus_once(ctx, tick_rx, coordinator);
@@ -444,10 +503,12 @@ impl AppShellView {
     fn start_tray_poll(&self, ctx: &mut ViewContext<Self>) {
         let tray = self.tray.clone();
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if tick_tx.send_blocking(()).is_err() {
-                break;
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if tick_tx.send_blocking(()).is_err() {
+                    break;
+                }
             }
         });
         Self::poll_tray_once(ctx, tick_rx, tray);
@@ -610,6 +671,7 @@ impl AppShellView {
         ctx.update_view(&display, |display, ctx| {
             display.refresh(ctx);
         });
+        ctx.dispatch_typed_action(&AppShellAction::RefreshCreditProducts);
     }
 
     fn persist_last_tab(&self) {
@@ -643,13 +705,6 @@ impl AppShellView {
         );
     }
 
-    fn persist_balance_cents(&self, cents: i64) {
-        let data_dir = self.core.data_dir();
-        let _ = desktop_prefs::update(&data_dir, |prefs| {
-            prefs.balance_cents = cents.max(0);
-        });
-    }
-
     fn close_avatar_panel(&mut self, ctx: &mut ViewContext<Self>) {
         if self.avatar_panel_open {
             self.avatar_panel_open = false;
@@ -661,85 +716,366 @@ impl AppShellView {
         self.avatar_panel_open = !self.avatar_panel_open;
         if !self.avatar_panel_open {
             self.balance_feedback = None;
+        } else {
+            self.refresh_cloud_credit_balance(ctx);
         }
         ctx.notify();
     }
 
     fn purchase_balance(&mut self, ctx: &mut ViewContext<Self>) {
-        self.balance_cents = self
-            .balance_cents
-            .saturating_add(hud_avatar_panel::purchase_add_cents());
-        self.persist_balance_cents(self.balance_cents);
-        let added = format_balance_yuan(hud_avatar_panel::purchase_add_cents());
-        let remaining = format_balance_yuan(self.balance_cents);
-        self.balance_feedback = Some(format!("已购买 {added} · 剩余 {remaining}"));
+        self.avatar_panel_open = false;
+        self.purchase_modal_open = true;
+        self.purchase_feedback = None;
         ctx.notify();
+        self.refresh_credit_products(ctx);
+    }
+
+    fn close_purchase_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.purchase_modal_open = false;
+        self.purchase_feedback = None;
+        ctx.notify();
+    }
+
+    fn refresh_cloud_credit_balance(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.auth_authenticated {
+            return;
+        }
+        self.balance_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
         ctx.spawn(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                let state = core.runtime().state.clone();
+                wormhole_desktop_core::cloud_credits::cloud_credit_balance(&state).await
             },
-            |view, _, ctx| {
-                view.balance_feedback = None;
+            |view, output, ctx| {
+                view.balance_busy = false;
+                match output {
+                    Ok(balance) => {
+                        view.balance_credits = balance.balance_credits.max(0);
+                    }
+                    Err(err) => {
+                        view.balance_feedback = Some(format!("余额同步失败: {err}"));
+                    }
+                }
                 ctx.notify();
             },
         );
     }
 
+    fn refresh_credit_products(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.auth_authenticated {
+            self.purchase_feedback = Some("请先登录 Wormhole 账户".into());
+            ctx.notify();
+            return;
+        }
+        self.purchase_busy = true;
+        if self.purchase_products.is_empty() {
+            self.purchase_feedback = None;
+        }
+        self.refresh_cloud_credit_balance(ctx);
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                wormhole_desktop_core::cloud_credits::cloud_credit_products(&state).await
+            },
+            |view, output, ctx| {
+                view.purchase_busy = false;
+                match output {
+                    Ok(products) => {
+                        view.purchase_products = products.products;
+                        view.purchase_feedback = None;
+                        let product_ids = view
+                            .purchase_products
+                            .iter()
+                            .map(|product| product.product_id.clone())
+                            .collect::<Vec<_>>();
+                        for product_id in product_ids {
+                            view.queue_product_qr_load(product_id, ctx);
+                        }
+                    }
+                    Err(err) => {
+                        view.purchase_feedback = Some(format!("读取商品失败: {err}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn queue_product_qr_load(&mut self, product_id: String, ctx: &mut ViewContext<Self>) {
+        if self.purchase_qr_loaded.contains(&product_id) {
+            return;
+        }
+        let core = self.core.clone();
+        ctx.spawn(
+            {
+                let product_id = product_id.clone();
+                async move {
+                    let state = core.runtime().state.clone();
+                    let bytes = wormhole_desktop_core::cloud_credits::cloud_credit_product_qr_png(
+                        &state,
+                        &product_id,
+                    )
+                    .await?;
+                    Ok::<_, String>((product_id, bytes))
+                }
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok((product_id, bytes)) => match Self::decode_qr_asset_payload(bytes) {
+                        Ok(payload) => {
+                            let asset_id = Self::product_qr_asset_id(&product_id);
+                            AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
+                                cache.insert_raw_asset_bytes::<ImageType>(
+                                    asset_id, &payload, model_ctx,
+                                );
+                            });
+                            view.purchase_qr_loaded.insert(product_id);
+                        }
+                        Err(err) => {
+                            view.purchase_feedback = Some(format!("二维码解析失败: {err}"));
+                        }
+                    },
+                    Err(err) => {
+                        view.purchase_feedback = Some(format!("二维码同步失败: {err}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn decode_qr_asset_payload(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|err| err.to_string())?;
+        let image = reader.decode().map_err(|err| err.to_string())?.to_rgb8();
+        let (width, height) = image.dimensions();
+        CustomImageHeader::prepend_custom_header(
+            image.into_raw(),
+            width,
+            height,
+            CustomImageFormat::Rgb,
+        )
+        .map_err(|err| format!("{err:?}"))
+    }
+
+    fn product_qr_asset_id(product_id: &str) -> String {
+        format!("wormhole-credit-product-qr-{product_id}")
+    }
+
+    fn purchase_product_ui(&self) -> Vec<PurchaseProductUi> {
+        self.purchase_products
+            .iter()
+            .map(|product| PurchaseProductUi {
+                product_id: product.product_id.clone(),
+                label: product.label.clone(),
+                pay_url: product.pay_url.clone(),
+                qr_asset_id: Self::product_qr_asset_id(&product.product_id),
+                qr_loaded: self.purchase_qr_loaded.contains(&product.product_id),
+            })
+            .collect()
+    }
+
+    fn copy_purchase_link(&mut self, link: &str, ctx: &mut ViewContext<Self>) {
+        match write_clipboard_text(link) {
+            Ok(()) => self.purchase_feedback = Some("支付链接已复制".into()),
+            Err(err) => self.purchase_feedback = Some(format!("复制失败: {err}")),
+        }
+        ctx.notify();
+    }
+
+    fn open_purchase_link(&mut self, link: &str, ctx: &mut ViewContext<Self>) {
+        match open_external_url(link) {
+            Ok(()) => self.purchase_feedback = Some("已打开支付链接".into()),
+            Err(err) => self.purchase_feedback = Some(format!("打开失败: {err}")),
+        }
+        ctx.notify();
+    }
+
     fn open_redeem_modal(&mut self, ctx: &mut ViewContext<Self>) {
         self.avatar_panel_open = false;
         self.redeem_modal_open = true;
+        self.redeem_tab = RedeemTab::Redeem;
         self.redeem_feedback = None;
-        if self.redeem_code_draft.is_empty() {
-            if let Some(text) = read_clipboard_text() {
-                self.redeem_code_draft = text.trim().to_string();
-            }
-        }
+        self.redeem_feedback_tone = StatusTone::Neutral;
+        self.redeem_code_focused = true;
+        sync_caret_blink(self, ctx);
         ctx.notify();
     }
 
     fn close_redeem_modal(&mut self, ctx: &mut ViewContext<Self>) {
         self.redeem_modal_open = false;
+        self.redeem_tab = RedeemTab::Redeem;
         self.redeem_code_draft.clear();
+        self.redeem_code_field.clear_marked();
+        self.redeem_code_focused = false;
         self.redeem_feedback = None;
+        self.redeem_feedback_tone = StatusTone::Neutral;
+        self.redeem_busy = false;
+        self.redeem_history_busy = false;
+        self.redeem_history_error = None;
+        sync_caret_blink(self, ctx);
         ctx.notify();
     }
 
-    fn paste_redeem_code(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(text) = read_clipboard_text() {
-            self.redeem_code_draft = text.trim().to_string();
-            self.redeem_feedback = None;
-            ctx.notify();
+    fn switch_redeem_tab(&mut self, tab: RedeemTab, ctx: &mut ViewContext<Self>) {
+        self.redeem_tab = tab;
+        if tab == RedeemTab::Redeem {
+            self.redeem_code_focused = true;
+            sync_caret_blink(self, ctx);
+        } else {
+            self.redeem_code_focused = false;
+            sync_caret_blink(self, ctx);
+            self.refresh_redeem_history(ctx);
+            return;
         }
+        ctx.notify();
+    }
+
+    fn refresh_redeem_history(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.auth_authenticated {
+            self.redeem_history.clear();
+            self.redeem_history_busy = false;
+            self.redeem_history_error = Some("请先登录后查看兑换记录".into());
+            ctx.notify();
+            return;
+        }
+        if self.redeem_history_busy {
+            return;
+        }
+        self.redeem_history_busy = true;
+        self.redeem_history_error = None;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                wormhole_desktop_core::cloud_credits::cloud_credit_ledger(&state, 50).await
+            },
+            |view, output, ctx| {
+                view.redeem_history_busy = false;
+                match output {
+                    Ok(ledger) => {
+                        view.redeem_history = redeem_history_from_ledger(
+                            &ledger.entries,
+                            &view.redeem_code_overrides,
+                        );
+                        view.redeem_history_error = None;
+                    }
+                    Err(err) => {
+                        view.redeem_history.clear();
+                        view.redeem_history_error = Some(err);
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn persist_redeem_code_override(&self, card_key_id: &str, code: &str) {
+        let mut overrides = self.redeem_code_overrides.clone();
+        overrides.insert(card_key_id.to_string(), code.to_string());
+        let data_dir = self.core.data_dir();
+        if let Err(err) = desktop_prefs::update(&data_dir, |prefs| {
+            prefs.redeem_code_overrides = overrides;
+        }) {
+            tracing::warn!("无法保存兑换码缓存: {err}");
+        }
+    }
+
+    fn focus_redeem_code(&mut self, ctx: &mut ViewContext<Self>) {
+        self.redeem_code_focused = true;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn edit_redeem_code(&mut self, edit: &TextFieldEditAction, ctx: &mut ViewContext<Self>) {
+        self.redeem_code_field
+            .apply(&mut self.redeem_code_draft, edit);
+        self.redeem_code_focused = true;
+        self.redeem_feedback = None;
+        self.redeem_feedback_tone = StatusTone::Neutral;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
     }
 
     fn submit_redeem(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.redeem_busy {
+            return;
+        }
         let code = self.redeem_code_draft.trim().to_string();
         if code.is_empty() {
-            self.redeem_feedback = Some("请输入有效兑换码".into());
+            self.redeem_feedback = Some("请输入兑换码。".into());
+            self.redeem_feedback_tone = StatusTone::Danger;
             ctx.notify();
             return;
         }
-        let Some(add) = hud_avatar_panel::redeem_cents_for_code(&code) else {
-            self.redeem_feedback = Some("兑换码无效".into());
-            ctx.notify();
-            return;
-        };
-        self.balance_cents = self.balance_cents.saturating_add(add);
-        self.persist_balance_cents(self.balance_cents);
-        self.redeem_modal_open = false;
-        self.redeem_code_draft.clear();
-        self.redeem_feedback = None;
-        let added = format_balance_yuan(add);
-        let remaining = format_balance_yuan(self.balance_cents);
-        self.balance_feedback = Some(format!("兑换成功 +{added} · 剩余 {remaining}"));
-        self.avatar_panel_open = true;
+        self.redeem_busy = true;
+        self.redeem_feedback = Some("正在验证卡密…".into());
+        self.redeem_feedback_tone = StatusTone::Neutral;
+        sync_caret_blink(self, ctx);
         ctx.notify();
+        let core = self.core.clone();
         ctx.spawn(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                let state = core.runtime().state.clone();
+                wormhole_desktop_core::cloud_credits::cloud_credit_redeem_card_key(
+                    &state,
+                    CloudCreditRedeemRequest { code },
+                )
+                .await
             },
-            |view, _, ctx| {
-                view.balance_feedback = None;
+            |view, output, ctx| {
+                view.redeem_busy = false;
+                match output {
+                    Ok(redeem) => {
+                        let redeemed_code = view.redeem_code_draft.trim().to_string();
+                        if let Some(card_key_id) = redeem
+                            .card_key_id
+                            .as_ref()
+                            .map(|value| value.trim())
+                            .filter(|value| !value.is_empty())
+                        {
+                            view.redeem_code_overrides
+                                .insert(card_key_id.to_string(), redeemed_code.clone());
+                            view.persist_redeem_code_override(card_key_id, &redeemed_code);
+                        }
+                        view.balance_credits = redeem.balance_credits.max(0);
+                        view.redeem_modal_open = false;
+                        view.redeem_tab = RedeemTab::Redeem;
+                        view.redeem_code_draft.clear();
+                        view.redeem_code_field.clear_marked();
+                        view.redeem_code_focused = false;
+                        view.redeem_feedback = None;
+                        view.redeem_feedback_tone = StatusTone::Neutral;
+                        view.balance_feedback = Some(format!(
+                            "兑换成功 +{} · 当前 {}",
+                            redeem
+                                .amount_added_yuan
+                                .as_deref()
+                                .map(|value| format!("¥{value}"))
+                                .unwrap_or_else(|| {
+                                    desktop_prefs::format_account_balance(redeem.credits_added)
+                                }),
+                            redeem
+                                .balance_amount_yuan
+                                .as_deref()
+                                .map(|value| format!("¥{value}"))
+                                .unwrap_or_else(|| {
+                                    desktop_prefs::format_account_balance(redeem.balance_credits)
+                                })
+                        ));
+                        view.avatar_panel_open = true;
+                    }
+                    Err(err) => {
+                        view.redeem_feedback = Some(err);
+                        view.redeem_feedback_tone = StatusTone::Danger;
+                    }
+                }
+                sync_caret_blink(view, ctx);
                 ctx.notify();
             },
         );
@@ -964,6 +1300,16 @@ impl AppShellView {
     }
 }
 
+impl CaretBlinkHost for AppShellView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.redeem_caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.redeem_modal_open && self.redeem_code_focused
+    }
+}
+
 impl Entity for AppShellView {
     type Event = ();
 }
@@ -978,6 +1324,7 @@ impl View for AppShellView {
         let login_modal_open = self.login_modal_open;
         let avatar_panel_open = self.avatar_panel_open;
         let redeem_modal_open = self.redeem_modal_open;
+        let purchase_modal_open = self.purchase_modal_open;
         let shell = Container::new(self.body(app))
             .with_background(theme::canvas())
             .with_uniform_padding(0.0)
@@ -991,6 +1338,10 @@ impl View for AppShellView {
                 if keystroke.key.as_str() == "escape" {
                     if redeem_modal_open {
                         ctx.dispatch_typed_action(AppShellAction::CloseRedeemModal);
+                        return DispatchEventResult::StopPropagation;
+                    }
+                    if purchase_modal_open {
+                        ctx.dispatch_typed_action(AppShellAction::ClosePurchaseModal);
                         return DispatchEventResult::StopPropagation;
                     }
                     if avatar_panel_open {
@@ -1023,7 +1374,11 @@ impl View for AppShellView {
         let zoom_factor = 1.0;
         let traffic_light_data = window_chrome::traffic_light_data(app, self.window_id);
 
-        if self.avatar_panel_open && self.auth_authenticated && !self.redeem_modal_open {
+        if self.avatar_panel_open
+            && self.auth_authenticated
+            && !self.redeem_modal_open
+            && !self.purchase_modal_open
+        {
             stack.add_child(
                 EventHandler::new(Container::new(Flex::column().finish()).finish())
                     .on_left_mouse_down(|ctx, _, _| {
@@ -1039,7 +1394,8 @@ impl View for AppShellView {
             stack.add_positioned_child(
                 build_avatar_panel(
                     self.auth_device_id.as_deref(),
-                    self.balance_cents,
+                    self.balance_credits,
+                    self.balance_busy,
                     self.balance_feedback.as_deref(),
                     self.font,
                     self.mono,
@@ -1054,8 +1410,28 @@ impl View for AppShellView {
         }
         if self.redeem_modal_open {
             stack.add_child(build_redeem_modal(
+                self.redeem_tab,
                 &self.redeem_code_draft,
+                &self.redeem_code_field.marked_text,
+                self.redeem_code_focused,
+                self.redeem_caret_blink.visible,
                 self.redeem_feedback.as_deref(),
+                self.redeem_feedback_tone,
+                self.redeem_busy,
+                self.redeem_history_busy,
+                self.redeem_history_error.as_deref(),
+                &self.redeem_history,
+                &self.redeem_history_scroll,
+                self.font,
+                self.mono,
+            ));
+        }
+        if self.purchase_modal_open {
+            let products = self.purchase_product_ui();
+            stack.add_child(build_purchase_modal(
+                &products,
+                self.purchase_busy,
+                self.purchase_feedback.as_deref(),
                 self.font,
                 self.mono,
             ));
@@ -1191,9 +1567,15 @@ impl TypedActionView for AppShellView {
             AppShellAction::ToggleAvatarPanel => self.toggle_avatar_panel(ctx),
             AppShellAction::CloseAvatarPanel => self.close_avatar_panel(ctx),
             AppShellAction::PurchaseBalance => self.purchase_balance(ctx),
+            AppShellAction::ClosePurchaseModal => self.close_purchase_modal(ctx),
+            AppShellAction::RefreshCreditProducts => self.refresh_credit_products(ctx),
+            AppShellAction::CopyPurchaseLink(link) => self.copy_purchase_link(link, ctx),
+            AppShellAction::OpenPurchaseLink(link) => self.open_purchase_link(link, ctx),
             AppShellAction::OpenRedeemModal => self.open_redeem_modal(ctx),
             AppShellAction::CloseRedeemModal => self.close_redeem_modal(ctx),
-            AppShellAction::PasteRedeemCode => self.paste_redeem_code(ctx),
+            AppShellAction::SwitchRedeemTab(tab) => self.switch_redeem_tab(*tab, ctx),
+            AppShellAction::RedeemCodeEdit(edit) => self.edit_redeem_code(edit, ctx),
+            AppShellAction::FocusRedeemCode => self.focus_redeem_code(ctx),
             AppShellAction::SubmitRedeem => self.submit_redeem(ctx),
         }
     }
@@ -1244,22 +1626,77 @@ impl TypedActionView for AppShellView {
             AppShellAction::PurchaseBalance => {
                 AccessibilityContent::new_without_help("购买余额", WarpA11yRole::ButtonRole)
             }
+            AppShellAction::ClosePurchaseModal => {
+                AccessibilityContent::new_without_help("关闭购买", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::RefreshCreditProducts => {
+                AccessibilityContent::new_without_help("刷新购买商品", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::CopyPurchaseLink(_) => {
+                AccessibilityContent::new_without_help("复制支付链接", WarpA11yRole::ButtonRole)
+            }
+            AppShellAction::OpenPurchaseLink(_) => {
+                AccessibilityContent::new_without_help("打开支付链接", WarpA11yRole::ButtonRole)
+            }
             AppShellAction::OpenRedeemModal => {
                 AccessibilityContent::new_without_help("打开兑换", WarpA11yRole::ButtonRole)
             }
             AppShellAction::CloseRedeemModal => {
                 AccessibilityContent::new_without_help("关闭兑换", WarpA11yRole::ButtonRole)
             }
-            AppShellAction::PasteRedeemCode => AccessibilityContent::new_without_help(
-                "从剪贴板粘贴兑换码",
+            AppShellAction::SwitchRedeemTab(tab) => AccessibilityContent::new_without_help(
+                match tab {
+                    RedeemTab::Redeem => "切换到兑换余额",
+                    RedeemTab::History => "切换到兑换记录",
+                },
                 WarpA11yRole::ButtonRole,
             ),
+            AppShellAction::RedeemCodeEdit(_) => {
+                AccessibilityContent::new_without_help("编辑兑换码", WarpA11yRole::TextfieldRole)
+            }
+            AppShellAction::FocusRedeemCode => AccessibilityContent::new_without_help(
+                "聚焦兑换码输入",
+                WarpA11yRole::TextfieldRole,
+            ),
             AppShellAction::SubmitRedeem => {
-                AccessibilityContent::new_without_help("提交兑换", WarpA11yRole::ButtonRole)
+                AccessibilityContent::new_without_help("确定兑换", WarpA11yRole::ButtonRole)
             }
         };
         ActionAccessibilityContent::Custom(content)
     }
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("支付链接不是有效的 HTTP URL".into());
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("当前平台不支持自动打开链接，请复制后在浏览器打开".into())
 }
 
 #[cfg(test)]

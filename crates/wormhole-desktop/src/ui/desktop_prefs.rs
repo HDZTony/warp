@@ -1,16 +1,19 @@
 //! Desktop shell UI preferences (`{data_dir}/desktop-ui.json`).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use wormhole_desktop_core::cloud_credits::CloudCreditLedgerEntryDto;
 
 pub const PREFS_FILE: &str = "desktop-ui.json";
 
-/// Demo balance default matching [`desktop-current.html`](../../../../docs/design/desktop-current.html).
-pub const DEFAULT_BALANCE_CENTS: i64 = 37_550;
-
-fn default_balance_cents() -> i64 {
-    DEFAULT_BALANCE_CENTS
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RedeemHistoryEntry {
+    pub time: String,
+    pub code: String,
+    #[serde(alias = "amount_cents")]
+    pub amount_credits: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,9 +23,12 @@ pub struct DesktopUiPrefs {
     /// Persisted [`AppTab`](crate::ui::app_shell::AppTab) id, e.g. `"chat"`.
     #[serde(default)]
     pub last_tab: Option<String>,
-    /// Demo wallet balance in cents (¥375.50 = 37550).
-    #[serde(default = "default_balance_cents")]
-    pub balance_cents: i64,
+    /// Legacy field; redeem history is loaded from control plane ledger.
+    #[serde(default)]
+    pub redeem_history: Vec<RedeemHistoryEntry>,
+    /// Maps server `cardKeyId` → user-entered redeem code for display.
+    #[serde(default)]
+    pub redeem_code_overrides: HashMap<String, String>,
 }
 
 impl Default for DesktopUiPrefs {
@@ -30,25 +36,117 @@ impl Default for DesktopUiPrefs {
         Self {
             onboarding_dismissed: false,
             last_tab: None,
-            balance_cents: default_balance_cents(),
+            redeem_history: Vec::new(),
+            redeem_code_overrides: HashMap::new(),
         }
     }
 }
 
-/// Formats cents as `¥1,234.56` (HTML `formatMoney` parity).
-pub fn format_balance_yuan(cents: i64) -> String {
-    let safe = cents.max(0);
-    let yuan = format!("{:.2}", safe as f64 / 100.0);
-    let (int_part, dec) = yuan.split_once('.').unwrap_or((&yuan, "00"));
+pub fn format_account_balance(credits: i64) -> String {
+    let safe = credits.max(0).to_string();
+    format!("¥{}.00", group_digits(&safe))
+}
+
+/// Formats redeem history amounts (`1 credit = 1元`) with a leading `+`.
+pub fn format_redeem_amount(amount_credits: i64) -> String {
+    format!("+{}", format_account_balance(amount_credits))
+}
+
+pub fn redeem_history_from_ledger(
+    entries: &[CloudCreditLedgerEntryDto],
+    code_overrides: &HashMap<String, String>,
+) -> Vec<RedeemHistoryEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.source == "card_key_redeem" && entry.delta_credits > 0)
+        .map(|entry| {
+            let card_key_id = metadata_string(&entry.metadata, "cardKeyId");
+            let code = card_key_id
+                .as_ref()
+                .and_then(|id| code_overrides.get(id))
+                .cloned()
+                .unwrap_or_else(|| ledger_entry_code_label(entry, card_key_id.as_deref()));
+            RedeemHistoryEntry {
+                time: ledger_entry_time(
+                    entry.created_at,
+                    metadata_string(&entry.metadata, "redeemedAt").as_deref(),
+                ),
+                code,
+                amount_credits: entry.delta_credits,
+            }
+        })
+        .collect()
+}
+
+pub fn redeem_history_time(redeemed_at: Option<&str>) -> String {
+    if let Some(raw) = redeemed_at.map(str::trim).filter(|value| !value.is_empty()) {
+        if raw.len() >= 19 {
+            return raw[..19].replace('T', " ");
+        }
+        return raw.to_string();
+    }
+    local_timestamp()
+}
+
+pub fn ledger_entry_time(created_at: u64, redeemed_at: Option<&str>) -> String {
+    if let Some(raw) = redeemed_at.map(str::trim).filter(|value| !value.is_empty()) {
+        return redeem_history_time(Some(raw));
+    }
+    timestamp_from_unix(created_at)
+}
+
+fn ledger_entry_code_label(
+    entry: &CloudCreditLedgerEntryDto,
+    card_key_id: Option<&str>,
+) -> String {
+    if let Some(id) = card_key_id.filter(|value| !value.is_empty()) {
+        return id.to_string();
+    }
+    entry
+        .reference_id
+        .strip_prefix("card_key:")
+        .filter(|value| !value.is_empty())
+        .unwrap_or(entry.reference_id.as_str())
+        .to_string()
+}
+
+fn metadata_string(metadata: &serde_json::Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn group_digits(digits: &str) -> String {
     let mut grouped = String::new();
-    for (i, ch) in int_part.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
             grouped.push(',');
         }
         grouped.push(ch);
     }
-    let int_grouped: String = grouped.chars().rev().collect();
-    format!("¥{int_grouped}.{dec}")
+    grouped.chars().rev().collect()
+}
+
+fn local_timestamp() -> String {
+    let Ok(duration) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return "—".to_string();
+    };
+    timestamp_from_unix(duration.as_secs())
+}
+
+fn timestamp_from_unix(secs: u64) -> String {
+    let secs = secs as i64;
+    let days = secs / 86_400;
+    let hour = (secs / 3600) % 24;
+    let minute = (secs / 60) % 60;
+    let second = secs % 60;
+    let year = 1970 + days / 365;
+    let month = ((days % 365) / 30).clamp(1, 12);
+    let day = ((days % 365) % 30).clamp(1, 28);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
 pub fn load(data_dir: &Path) -> DesktopUiPrefs {
@@ -76,6 +174,7 @@ pub fn update(data_dir: &Path, mutate: impl FnOnce(&mut DesktopUiPrefs)) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wormhole_desktop_core::cloud_credits::CloudCreditLedgerEntryDto;
 
     #[test]
     fn roundtrip_last_tab() {
@@ -85,7 +184,7 @@ mod tests {
         let prefs = DesktopUiPrefs {
             onboarding_dismissed: true,
             last_tab: Some("warp".into()),
-            balance_cents: DEFAULT_BALANCE_CENTS,
+            ..Default::default()
         };
         save(&dir, &prefs).expect("save");
         assert_eq!(load(&dir), prefs);
@@ -93,27 +192,74 @@ mod tests {
     }
 
     #[test]
-    fn format_balance_yuan_matches_html_default() {
-        assert_eq!(format_balance_yuan(37_550), "¥375.50");
-        assert_eq!(format_balance_yuan(100_000), "¥1,000.00");
-        assert_eq!(format_balance_yuan(0), "¥0.00");
-        assert_eq!(format_balance_yuan(-5), "¥0.00");
+    fn format_account_balance_groups_digits() {
+        assert_eq!(format_account_balance(37_550), "¥37,550.00");
+        assert_eq!(format_account_balance(100_000), "¥100,000.00");
+        assert_eq!(format_account_balance(0), "¥0.00");
+        assert_eq!(format_account_balance(-5), "¥0.00");
     }
 
     #[test]
-    fn missing_balance_field_uses_default() {
-        let dir = std::env::temp_dir().join(format!(
-            "wormhole-desktop-ui-prefs-balance-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("dir");
-        std::fs::write(
-            dir.join(PREFS_FILE),
-            r#"{"onboarding_dismissed":false}"#,
-        )
-        .expect("write");
-        assert_eq!(load(&dir).balance_cents, DEFAULT_BALANCE_CENTS);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn format_redeem_amount_uses_yuan_credits() {
+        assert_eq!(format_redeem_amount(5), "+¥5.00");
+        assert_eq!(format_redeem_amount(5000), "+¥5,000.00");
+        assert_eq!(format_redeem_amount(0), "+¥0.00");
+    }
+
+    #[test]
+    fn redeem_history_from_ledger_filters_and_maps() {
+        let entries = vec![
+            CloudCreditLedgerEntryDto {
+                entry_id: "e1".into(),
+                delta_credits: 5,
+                balance_after: 5,
+                source: "card_key_redeem".into(),
+                reference_id: "card_key:abc123".into(),
+                metadata: serde_json::json!({
+                    "cardKeyId": "abc123",
+                    "redeemedAt": "2026-07-02T18:24:06Z"
+                }),
+                created_at: 1_780_000_000,
+            },
+            CloudCreditLedgerEntryDto {
+                entry_id: "e2".into(),
+                delta_credits: -1,
+                balance_after: 4,
+                source: "agent_platform_usage".into(),
+                reference_id: "usage:1".into(),
+                metadata: serde_json::json!({}),
+                created_at: 1_780_000_100,
+            },
+        ];
+        let mut overrides = HashMap::new();
+        overrides.insert("abc123".into(), "WORMHOLE-TEST".into());
+        let history = redeem_history_from_ledger(&entries, &overrides);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].code, "WORMHOLE-TEST");
+        assert_eq!(history[0].time, "2026-07-02 18:24:06");
+        assert_eq!(history[0].amount_credits, 5);
+    }
+
+    #[test]
+    fn redeem_history_from_ledger_falls_back_to_reference_id() {
+        let entries = vec![CloudCreditLedgerEntryDto {
+            entry_id: "e1".into(),
+            delta_credits: 10,
+            balance_after: 10,
+            source: "card_key_redeem".into(),
+            reference_id: "card_key:WH-2024".into(),
+            metadata: serde_json::json!({}),
+            created_at: 1_780_000_000,
+        }];
+        let history = redeem_history_from_ledger(&entries, &HashMap::new());
+        assert_eq!(history[0].code, "WH-2024");
+    }
+
+    #[test]
+    fn redeem_history_time_normalizes_iso() {
+        assert_eq!(
+            redeem_history_time(Some("2026-07-02T18:24:06Z")),
+            "2026-07-02 18:24:06"
+        );
     }
 }
