@@ -11,8 +11,8 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{
-    AccessibilityData, AppContext, Element, Entity, SingletonEntity as _, TypedActionView,
-    UpdateView, View, ViewContext, ViewHandle, WindowId, assets::asset_cache::AssetCache,
+    assets::asset_cache::AssetCache, AccessibilityData, AppContext, Element, Entity,
+    SingletonEntity as _, TypedActionView, UpdateView, View, ViewContext, ViewHandle, WindowId,
 };
 use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
 use warpui_core::keymap::Keystroke;
@@ -27,18 +27,18 @@ use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEn
 use crate::ui::devices_view::DevicesView;
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
-    PurchaseProductUi, build_avatar_panel, build_avatar_slot, build_purchase_modal,
-    build_redeem_modal,
+    build_avatar_panel, build_avatar_slot, build_purchase_modal, build_redeem_modal,
+    PurchaseProductUi,
 };
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
 use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
 use crate::ui::panel_primitives::StatusTone;
-use crate::ui::panel_primitives::{HUD_RADIUS, section_hint, tab_content_fill};
+use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
 use crate::ui::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::sync_views::SyncView;
 use crate::ui::text_field_input::{
-    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldState, sync_caret_blink,
+    sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
@@ -46,7 +46,7 @@ use crate::ui::w_drive_view::WDriveView;
 #[cfg(windows)]
 use crate::ui::window_chrome::CcswitchInterceptToggle;
 use crate::ui::window_chrome::{
-    self, CHROME_ROW_HEIGHT, TrafficLightActions, TrafficLightMouseStates,
+    self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
 };
 use crate::ui_text;
 use wormhole_desktop_core::cloud_auth_status;
@@ -371,12 +371,10 @@ impl AppShellView {
             |_, _, _| {},
         );
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_hud_once(ctx, tick_rx, core);
@@ -467,12 +465,10 @@ impl AppShellView {
     fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {
         let coordinator = Arc::clone(&self.coordinator);
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_warp_focus_once(ctx, tick_rx, coordinator);
@@ -503,12 +499,10 @@ impl AppShellView {
     fn start_tray_poll(&self, ctx: &mut ViewContext<Self>) {
         let tray = self.tray.clone();
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                if tick_tx.send_blocking(()).is_err() {
-                    break;
-                }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if tick_tx.send_blocking(()).is_err() {
+                break;
             }
         });
         Self::poll_tray_once(ctx, tick_rx, tray);

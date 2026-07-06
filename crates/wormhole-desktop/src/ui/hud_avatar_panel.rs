@@ -1,7 +1,6 @@
 //! Tab-bar account avatar + balance popover (HTML `.hud-avatar-*` / `.hud-balance-*`).
 
 use pathfinder_color::ColorU;
-use warpui::Element;
 use warpui::elements::Fill;
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
@@ -9,14 +8,15 @@ use warpui::elements::{
     MainAxisAlignment, MainAxisSize, ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
+use warpui::Element;
 use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::app_shell::{AppShellAction, RedeemTab};
 use crate::ui::desktop_prefs::{format_account_balance, format_redeem_amount, RedeemHistoryEntry};
-use crate::ui::panel_primitives::{HUD_RADIUS, StatusTone, status_line};
+use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
-    TextFieldInput, render_field_with_caret, wrap_text_field_focus_on_click,
+    render_field_with_caret, wrap_text_field_focus_on_click, TextFieldInput,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -582,7 +582,12 @@ fn redeem_tab_bar(active_tab: RedeemTab, font: FamilyId) -> Box<dyn Element> {
     bar.add_child(
         Expanded::new(
             1.0,
-            redeem_tab_button("兑换余额", active_tab == RedeemTab::Redeem, RedeemTab::Redeem, font),
+            redeem_tab_button(
+                "兑换余额",
+                active_tab == RedeemTab::Redeem,
+                RedeemTab::Redeem,
+                font,
+            ),
         )
         .finish(),
     );
@@ -594,7 +599,12 @@ fn redeem_tab_bar(active_tab: RedeemTab, font: FamilyId) -> Box<dyn Element> {
     bar.add_child(
         Expanded::new(
             1.0,
-            redeem_tab_button("兑换记录", active_tab == RedeemTab::History, RedeemTab::History, font),
+            redeem_tab_button(
+                "兑换记录",
+                active_tab == RedeemTab::History,
+                RedeemTab::History,
+                font,
+            ),
         )
         .finish(),
     );
@@ -939,7 +949,12 @@ fn redeem_history_row(entry: &RedeemHistoryEntry, mono: FamilyId) -> Box<dyn Ele
             .with_child(
                 Expanded::new(
                     1.4,
-                    history_cell(&entry.code, mono, theme::accent_cool(), CrossAxisAlignment::Start),
+                    history_cell(
+                        &entry.code,
+                        mono,
+                        theme::accent_cool(),
+                        CrossAxisAlignment::Start,
+                    ),
                 )
                 .finish(),
             )
@@ -1042,17 +1057,9 @@ fn modal_submit_button(
     enabled: bool,
 ) -> Box<dyn Element> {
     let (border, bg, color) = if enabled {
-        (
-            theme::accent(),
-            theme::accent_bg(40),
-            theme::accent(),
-        )
+        (theme::accent(), theme::accent_bg(40), theme::accent())
     } else {
-        (
-            theme::border(),
-            theme::panel(),
-            theme::placeholder(),
-        )
+        (theme::border(), theme::panel(), theme::placeholder())
     };
     let button = EventHandler::new(
         Container::new(

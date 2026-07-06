@@ -483,11 +483,7 @@ impl TrafficLightData {
                     theme::text(),
                 )
             } else {
-                (
-                    theme::border_bright(),
-                    theme::panel(),
-                    theme::muted(),
-                )
+                (theme::border_bright(), theme::panel(), theme::muted())
             };
             Container::new(
                 Align::new(

@@ -95,10 +95,7 @@ pub fn ledger_entry_time(created_at: u64, redeemed_at: Option<&str>) -> String {
     timestamp_from_unix(created_at)
 }
 
-fn ledger_entry_code_label(
-    entry: &CloudCreditLedgerEntryDto,
-    card_key_id: Option<&str>,
-) -> String {
+fn ledger_entry_code_label(entry: &CloudCreditLedgerEntryDto, card_key_id: Option<&str>) -> String {
     if let Some(id) = card_key_id.filter(|value| !value.is_empty()) {
         return id.to_string();
     }

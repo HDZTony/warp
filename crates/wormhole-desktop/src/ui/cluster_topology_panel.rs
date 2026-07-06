@@ -14,7 +14,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 
 use crate::ui::cluster_layout::{
-    BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD, card_height, cards_row_card_width,
+    card_height, cards_row_card_width, BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD,
 };
 
 const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
@@ -26,7 +26,7 @@ const SHARE_BTN_PAD_X: f32 = 10.0;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
 use crate::ui::icons;
-use crate::ui::panel_primitives::{HUD_RADIUS, StatusTone, status_line};
+use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::ClusterNodeDto;

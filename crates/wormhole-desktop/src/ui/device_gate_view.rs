@@ -7,11 +7,11 @@ use warpui::{Element, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
-    SECTION_PADDING, StatusTone, section_hint, status_line, tab_content_fill,
+    section_hint, status_line, tab_content_fill, StatusTone, SECTION_PADDING,
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    ClusterStatusDto, cluster_status, cluster_status_fast,
+    cluster_status, cluster_status_fast, ClusterStatusDto,
 };
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};

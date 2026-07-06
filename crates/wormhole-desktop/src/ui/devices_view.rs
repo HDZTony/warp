@@ -15,23 +15,24 @@ use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    HUD_RADIUS, SECTION_PADDING, StatusTone, section_hint, section_title, status_line,
-    tab_content_fill, truncate_middle,
+    section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
+    HUD_RADIUS, SECTION_PADDING,
 };
 use crate::ui::text_field_input::{
-    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
-    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams,
-    CreateClusterParams, DeleteClusterParams, JoinClusterOutcome, JoinClusterParams,
-    JoinedClusterDto, LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
-    ShareEntryDto, SwitchActiveClusterParams, add_storage_volume,
-    create_cluster as create_cluster_command, create_cluster_invite, delete_cluster,
-    delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
-    remote_open_share_entry, remove_cluster_device, switch_active_cluster, sync_share_entry,
+    add_storage_volume, create_cluster as create_cluster_command, create_cluster_invite,
+    delete_cluster, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
+    open_share_entry, remote_open_share_entry, remove_cluster_device, remove_cluster_node,
+    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterNodeDto,
+    ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams, DeleteClusterParams,
+    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, LeaveClusterParams,
+    ListShareDirectoryParams, RemoveClusterDeviceParams, RemoveClusterNodeParams, ShareEntryDto,
+    SwitchActiveClusterParams,
 };
 
 use std::time::{Duration, Instant};
@@ -182,12 +183,6 @@ impl DevicesView {
         self.cluster_syncing = status.syncing;
         self.cluster = Some(status.clone());
         self.cluster_error = None;
-        if Self::active_cluster_id(&status).is_some()
-            && self.local_invite.is_none()
-            && !self.invite_busy
-        {
-            self.load_local_invite(ctx);
-        }
         if status.syncing {
             self.schedule_cluster_poll(ctx);
         } else if status.auth_required || status.device_bootstrap_required {
@@ -282,8 +277,6 @@ impl DevicesView {
                         view.schedule_bootstrap_poll(ctx);
                     } else if status.syncing {
                         view.schedule_cluster_poll(ctx);
-                    } else if view.local_invite.is_none() && !view.invite_busy {
-                        view.load_local_invite(ctx);
                     }
                 }
                 ctx.notify();
@@ -1224,42 +1217,6 @@ impl DevicesView {
         row.finish()
     }
 
-    fn load_local_invite(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.invite_busy {
-            return;
-        }
-        self.invite_busy = true;
-        ctx.notify();
-
-        let core = self.core.clone();
-        let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
-        ctx.spawn(
-            async move {
-                let cluster_id = cluster_id.ok_or_else(|| "尚未选择集群".to_string())?;
-                let state = core.runtime().state.clone();
-                create_cluster_invite(
-                    &state,
-                    CreateClusterInviteParams {
-                        cluster_id,
-                        role: Some("member".to_string()),
-                        ttl_secs: None,
-                    },
-                )
-                .await
-            },
-            |view, output, ctx| {
-                view.invite_busy = false;
-                match output {
-                    Ok(invite) => view.local_invite = Some(invite),
-                    Err(e) => {
-                        view.join_feedback = Some((StatusTone::Danger, e));
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
     fn copy_invite_label(&self) -> &'static str {
         if self.copy_invite_ack {
             "已复制"
@@ -1295,6 +1252,17 @@ impl DevicesView {
 
     fn copy_invite(&mut self, ctx: &mut ViewContext<Self>) {
         if self.copy_invite_busy {
+            return;
+        }
+        if let Some(invite) = self.local_invite.clone() {
+            match write_clipboard_text(&invite) {
+                Ok(()) => self.apply_copy_invite_success(invite, ctx),
+                Err(e) => {
+                    self.status_flash = Some(format!("复制失败：{e}"));
+                    self.join_feedback = Some((StatusTone::Danger, e));
+                    ctx.notify();
+                }
+            }
             return;
         }
         self.copy_invite_ack = false;
@@ -1641,15 +1609,19 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                remove_cluster_device(
-                    &state,
-                    RemoveClusterDeviceParams {
-                        cluster_id,
-                        device_id,
-                        node_id: Some(node_id),
-                    },
-                )
-                .await
+                if device_id.is_some() {
+                    remove_cluster_device(
+                        &state,
+                        RemoveClusterDeviceParams {
+                            cluster_id,
+                            device_id,
+                            node_id: Some(node_id),
+                        },
+                    )
+                    .await
+                } else {
+                    remove_cluster_node(&state, RemoveClusterNodeParams { node_id }).await
+                }
             },
             |view, output, ctx| {
                 match output {

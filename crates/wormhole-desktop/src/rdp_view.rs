@@ -696,8 +696,9 @@ impl View for RdpViewerView {
                 let frame_w = frame_w;
                 let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) =
-                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
+                    let (x, y) = RdpViewerView::normalize_pointer(
+                        position, surface_w, surface_h, frame_w, frame_h,
+                    );
                     input.send(0, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
@@ -709,8 +710,9 @@ impl View for RdpViewerView {
                 let frame_w = frame_w;
                 let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) =
-                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
+                    let (x, y) = RdpViewerView::normalize_pointer(
+                        position, surface_w, surface_h, frame_w, frame_h,
+                    );
                     input.send(2, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
@@ -722,8 +724,9 @@ impl View for RdpViewerView {
                 let frame_w = frame_w;
                 let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) =
-                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
+                    let (x, y) = RdpViewerView::normalize_pointer(
+                        position, surface_w, surface_h, frame_w, frame_h,
+                    );
                     input.send(7, x, y, 0.);
                     input.send(8, x, y, 0.);
                     DispatchEventResult::StopPropagation
@@ -736,8 +739,9 @@ impl View for RdpViewerView {
                 let frame_w = frame_w;
                 let frame_h = frame_h;
                 move |_, _, position| {
-                    let (x, y) =
-                        RdpViewerView::normalize_pointer(position, surface_w, surface_h, frame_w, frame_h);
+                    let (x, y) = RdpViewerView::normalize_pointer(
+                        position, surface_w, surface_h, frame_w, frame_h,
+                    );
                     input.send(1, x, y, 0.);
                     DispatchEventResult::StopPropagation
                 }
@@ -750,11 +754,7 @@ impl View for RdpViewerView {
                 let frame_h = frame_h;
                 move |_, _, position, _| {
                     let (x, y) = RdpViewerView::normalize_pointer(
-                        *position,
-                        surface_w,
-                        surface_h,
-                        frame_w,
-                        frame_h,
+                        *position, surface_w, surface_h, frame_w, frame_h,
                     );
                     input.send(3, x, y, position.y());
                     DispatchEventResult::StopPropagation
@@ -1012,8 +1012,7 @@ mod tests {
 
     #[test]
     fn normalize_pointer_letterboxes_non_matching_aspect() {
-        let (cx, cy) =
-            RdpViewerView::normalize_pointer(vec2f(640., 360.), 1280., 720., 1024, 768);
+        let (cx, cy) = RdpViewerView::normalize_pointer(vec2f(640., 360.), 1280., 720., 1024, 768);
         assert!((cx - 0.5).abs() < 0.01);
         assert!((cy - 0.5).abs() < 0.01);
     }

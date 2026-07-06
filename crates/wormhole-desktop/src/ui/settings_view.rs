@@ -15,9 +15,9 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
 use wormhole_desktop_core::{
-    DesktopErrorSettingsParams, DesktopErrorStatusDto, clear_cloud_auth_token, cloud_auth_status,
-    clear_desktop_error_events, configure_desktop_error_settings, desktop_error_status,
-    sync_desktop_errors_now,
+    clear_cloud_auth_token, clear_desktop_error_events, cloud_auth_status,
+    configure_desktop_error_settings, desktop_error_status, sync_desktop_errors_now,
+    DesktopErrorSettingsParams, DesktopErrorStatusDto,
 };
 
 #[derive(Debug, Clone)]
@@ -154,7 +154,8 @@ impl SettingsView {
                         view.diagnostic_status = Some(status);
                         if view.diagnostic_message.is_empty() {
                             view.diagnostic_message =
-                                "错误会先保存在本机；开启后会在登录且设备就绪时上传诊断事件。".into();
+                                "错误会先保存在本机；开启后会在登录且设备就绪时上传诊断事件。"
+                                    .into();
                             view.diagnostic_tone = StatusTone::Placeholder;
                         }
                     }
@@ -423,10 +424,9 @@ impl SettingsView {
             "开启上传"
         };
         row.add_child(
-            Container::new(self.diagnostic_button(
-                toggle_label,
-                SettingsAction::ToggleDiagnosticUpload,
-            ))
+            Container::new(
+                self.diagnostic_button(toggle_label, SettingsAction::ToggleDiagnosticUpload),
+            )
             .with_horizontal_margin(4.0)
             .finish(),
         );
@@ -438,9 +438,11 @@ impl SettingsView {
             .finish(),
         );
         row.add_child(
-            Container::new(self.diagnostic_button("清空本地队列", SettingsAction::ClearDiagnosticQueue))
-                .with_horizontal_margin(4.0)
-                .finish(),
+            Container::new(
+                self.diagnostic_button("清空本地队列", SettingsAction::ClearDiagnosticQueue),
+            )
+            .with_horizontal_margin(4.0)
+            .finish(),
         );
         row.add_child(
             Container::new(self.diagnostic_button("刷新", SettingsAction::RefreshDiagnostics))
