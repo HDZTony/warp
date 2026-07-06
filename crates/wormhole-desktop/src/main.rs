@@ -84,7 +84,7 @@ fn main() -> Result<()> {
     let env_filter = if std::env::var("RUST_LOG").is_ok() {
         EnvFilter::from_default_env()
     } else {
-        EnvFilter::new("wormhole_desktop=info,noq_proto=warn")
+        EnvFilter::new("wormhole_desktop=info,noq_proto=error")
     };
     wormhole_desktop_core::init_desktop_tracing(&data_dir, "wormhole-desktop", env_filter);
     wormhole_desktop_core::install_observability_for_process(&data_dir, "wormhole-desktop");
