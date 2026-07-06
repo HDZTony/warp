@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{
@@ -15,7 +17,6 @@ use crate::ui_text;
 /// Height of the integrated title row (tabs + caption). Must match [`super::app_shell`] layout.
 pub const CHROME_ROW_HEIGHT: f32 = 54.0;
 
-#[cfg(windows)]
 const WINDOWS_TRAFFIC_LIGHT_WIDTH: f32 = 190.0;
 
 const TAB_BAR_PADDING_LEFT: f32 = 16.0;

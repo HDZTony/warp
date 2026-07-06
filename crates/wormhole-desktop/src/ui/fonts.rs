@@ -47,7 +47,10 @@ fn load_bundled_ui_font(cache: &mut FontCache) -> Option<FamilyId> {
 pub fn warm_up_font_cache(ctx: &mut warpui::AppContext) {
     FontCache::handle(ctx).update(ctx, |cache, _| {
         if load_bundled_ui_font(cache).is_none() {
+            #[cfg(not(all(unix, not(target_os = "macos"))))]
             let _ = load_first_system_font(cache, UI_FONT_CANDIDATES);
+            #[cfg(all(unix, not(target_os = "macos")))]
+            tracing::warn!("bundled OPPO Sans missing; Linux dev uses default font family");
         }
     });
 }
@@ -62,8 +65,16 @@ where
 {
     FontCache::handle(ctx)
         .update(ctx, |cache, _| {
-            load_bundled_ui_font(cache)
-                .or_else(|| load_first_system_font(cache, UI_FONT_CANDIDATES))
+            load_bundled_ui_font(cache).or_else(|| {
+                #[cfg(not(all(unix, not(target_os = "macos"))))]
+                {
+                    load_first_system_font(cache, UI_FONT_CANDIDATES)
+                }
+                #[cfg(all(unix, not(target_os = "macos")))]
+                {
+                    None
+                }
+            })
         })
         .unwrap_or(FamilyId(0))
 }
@@ -72,6 +83,12 @@ pub fn load_mono_font<E>(ctx: &mut ViewContext<E>, fallback: FamilyId) -> Family
 where
     E: warpui::Entity + warpui::View,
 {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = ctx;
+        return fallback;
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
     FontCache::handle(ctx)
         .update(ctx, |cache, _| {
             cache
