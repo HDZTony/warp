@@ -8,14 +8,15 @@ use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::shell::ConversationSelection;
+use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::chat::sticker_picker::StickerPickerView;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{status_line, StatusTone};
 use crate::ui::text_field_input::{
-    compose_input_height, render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost,
-    TextFieldEditAction, TextFieldInput, TextFieldState,
+    compose_input_height, render_compose_field_with_caret, sync_caret_blink, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use wormhole_desktop_core::chat_commands::{chat_send_message, SendChatMessageParams};
@@ -36,6 +37,7 @@ pub enum ChatComposeAction {
 pub struct ChatComposeView {
     core: CoreHandle,
     selection: ConversationSelection,
+    shell_state: SharedChatShellState,
     font: FamilyId,
     draft: String,
     field_state: TextFieldState,
@@ -53,12 +55,14 @@ impl ChatComposeView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         selection: ConversationSelection,
+        shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let sticker_picker = ctx.add_view(|ctx| StickerPickerView::new(ctx, core.clone()));
         Self {
             core,
             selection,
+            shell_state,
             font,
             draft: String::new(),
             field_state: TextFieldState::new(),
@@ -111,6 +115,9 @@ impl ChatComposeView {
                         view.field_state.clear_marked();
                         view.status = "已发送".into();
                         view.status_tone = StatusTone::Success;
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.message_tick = state.message_tick.saturating_add(1);
+                        }
                     }
                     Err(e) => {
                         view.status = format!("发送失败: {e}");
@@ -185,7 +192,7 @@ impl ChatComposeView {
         } else {
             "输入消息…"
         };
-        let field = render_field_with_caret(
+        let field = render_compose_field_with_caret(
             &draft,
             &marked,
             placeholder,

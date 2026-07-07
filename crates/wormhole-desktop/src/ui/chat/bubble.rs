@@ -1,15 +1,16 @@
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
-    MainAxisAlignment, MainAxisSize, ParentElement, Radius, Shrinkable,
+    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, Empty, Expanded, Flex,
+    MainAxisSize, ParentElement, Shrinkable,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
+use crate::ui::chat::layout::bubble_corner_radius;
+use crate::ui::panel_primitives::{
+    chat_bubble_in_bg, chat_bubble_out_bg, chat_bubble_out_border, TG_BUBBLE_MAX_WIDTH,
+};
 use crate::ui::theme;
 use crate::ui_text;
-
-const TG_BUBBLE_MAX_WIDTH: f32 = 520.0;
-const TG_BUBBLE_RADIUS: f32 = 12.0;
 
 pub struct ChatBubbleView {
     font: FamilyId,
@@ -17,6 +18,9 @@ pub struct ChatBubbleView {
     outgoing: bool,
     timestamp: String,
     system: bool,
+    grouped: bool,
+    read: bool,
+    search_hit: bool,
 }
 
 impl ChatBubbleView {
@@ -25,6 +29,9 @@ impl ChatBubbleView {
         body: String,
         outgoing: bool,
         timestamp: String,
+        grouped: bool,
+        read: bool,
+        search_hit: bool,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         Self {
@@ -33,6 +40,9 @@ impl ChatBubbleView {
             outgoing,
             timestamp,
             system: false,
+            grouped,
+            read,
+            search_hit,
         }
     }
 
@@ -44,6 +54,9 @@ impl ChatBubbleView {
             outgoing: false,
             timestamp: String::new(),
             system: true,
+            grouped: false,
+            read: false,
+            search_hit: false,
         }
     }
 }
@@ -69,61 +82,89 @@ impl View for ChatBubbleView {
                 .with_vertical_padding(4.0)
                 .with_background(theme::panel())
                 .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+                .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                    warpui::elements::Radius::Pixels(999.0),
+                ))
                 .finish(),
             )
             .finish();
         }
 
         let (bg, border) = if self.outgoing {
-            (theme::accent_cool_bg(40), theme::accent_cool())
+            (chat_bubble_out_bg(), chat_bubble_out_border())
         } else {
-            (theme::panel_elevated(), theme::border())
+            (chat_bubble_in_bg(), theme::border())
         };
-        let radius = CornerRadius::with_all(Radius::Pixels(TG_BUBBLE_RADIUS));
+        let radius = bubble_corner_radius(self.outgoing, self.grouped);
 
-        let mut bubble_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        bubble_col.add_child(
-            ui_text::body(self.body.clone(), self.font)
-                .with_color(theme::text())
-                .finish(),
-        );
+        let mut meta_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
         if !self.timestamp.is_empty() {
-            bubble_col.add_child(
-                Container::new(
-                    Align::new(
-                        ui_text::device_meta(self.timestamp.clone(), self.font)
-                            .with_color(theme::muted())
-                            .finish(),
-                    )
-                    .right()
+            meta_row.add_child(
+                ui_text::chat_bubble_meta(self.timestamp.clone(), self.font)
+                    .with_color(theme::muted())
                     .finish(),
+            );
+        }
+        if self.outgoing && self.read {
+            meta_row.add_child(
+                Container::new(
+                    ui_text::chat_bubble_meta("✓✓", self.font)
+                        .with_color(theme::accent_cool())
+                        .finish(),
                 )
-                .with_margin_top(4.0)
+                .with_margin_left(4.0)
                 .finish(),
             );
         }
 
-        let bubble = Container::new(
+        let mut bubble_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        bubble_col.add_child(
+            ui_text::chat_bubble_text(self.body.clone(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        if !self.timestamp.is_empty() || (self.outgoing && self.read) {
+            bubble_col.add_child(
+                Container::new(Align::new(meta_row.finish()).right().finish())
+                    .with_margin_top(2.0)
+                    .finish(),
+            );
+        }
+
+        let mut bubble = Container::new(
             ConstrainedBox::new(bubble_col.finish())
                 .with_max_width(TG_BUBBLE_MAX_WIDTH)
                 .finish(),
         )
-        .with_uniform_padding(10.0)
+        .with_padding_left(11.0)
+        .with_padding_right(11.0)
+        .with_padding_top(7.0)
+        .with_padding_bottom(5.0)
         .with_background(bg)
-        .with_border(Border::all(1.0).with_border_fill(border))
-        .with_corner_radius(radius)
-        .finish();
+        .with_corner_radius(radius);
+        let border_width = if self.search_hit { 2.0 } else { 1.0 };
+        let border_color = if self.search_hit {
+            theme::accent_cool()
+        } else {
+            border
+        };
+        bubble = bubble.with_border(Border::all(border_width).with_border_fill(border_color));
+        let bubble = bubble.finish();
 
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(if self.outgoing {
-                MainAxisAlignment::End
-            } else {
-                MainAxisAlignment::Start
-            })
-            .with_child(Shrinkable::new(1.0, bubble).finish())
-            .finish()
+        let bubble_slot = Shrinkable::new(0.72, bubble).finish();
+        let spacer = Expanded::new(1.0, Empty::new().finish()).finish();
+
+        let mut row = Flex::row().with_main_axis_size(MainAxisSize::Max);
+        if self.outgoing {
+            row.add_child(spacer);
+            row.add_child(bubble_slot);
+        } else {
+            row.add_child(bubble_slot);
+            row.add_child(spacer);
+        }
+        row.finish()
     }
 }
 
@@ -139,4 +180,18 @@ fn format_message_time(timestamp: u64) -> String {
 
 pub fn format_message_time_pub(timestamp: u64) -> String {
     format_message_time(timestamp)
+}
+
+pub fn outgoing_message_read(sent_at: u64, is_last_outgoing: bool) -> bool {
+    if !is_last_outgoing {
+        return true;
+    }
+    if sent_at == 0 {
+        return false;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now.saturating_sub(sent_at) >= 1
 }

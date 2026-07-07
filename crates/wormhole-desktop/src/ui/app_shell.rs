@@ -19,7 +19,7 @@ use warpui_core::keymap::Keystroke;
 
 use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
-use crate::ui::chat::ChatShellView;
+use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
@@ -209,7 +209,17 @@ impl AppShellView {
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
         let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
-        let chat = ctx.add_view(|ctx| ChatShellView::new(ctx, core.clone()));
+        let chat = ctx.add_typed_action_view(|ctx| ChatShellView::new(ctx, core.clone()));
+        ctx.subscribe_to_view(&chat, |view, _, event, ctx| {
+            if let ChatShellEvent::BrowseNodeShares(node_id) = event {
+                view.tab = AppTab::Devices;
+                let devices = view.devices.clone();
+                ctx.update_view(&devices, |devices, ctx| {
+                    devices.open_node_from_chat(node_id.clone(), ctx);
+                });
+                ctx.notify();
+            }
+        });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
         let toolbox = ctx
             .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));

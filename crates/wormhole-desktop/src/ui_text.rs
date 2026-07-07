@@ -28,6 +28,20 @@ pub const CHAT_COMPOSE_FONT_SIZE: f32 = 14.0;
 pub const CHAT_SIDEBAR_NAME_SIZE: f32 = 14.0;
 /// Matches `.tg-chat-time` in `desktop-current.html`.
 pub const CHAT_SIDEBAR_TIME_SIZE: f32 = 11.0;
+/// Matches `.tg-chat-preview` in `desktop-current.html`.
+pub const CHAT_PREVIEW_SIZE: f32 = 13.0;
+/// Matches `.tg-bubble` body in `desktop-current.html`.
+pub const CHAT_BUBBLE_TEXT_SIZE: f32 = 14.0;
+/// Matches `.tg-bubble-meta` in `desktop-current.html`.
+pub const CHAT_BUBBLE_META_SIZE: f32 = 10.0;
+/// Matches `.tg-header-status` in `desktop-current.html`.
+pub const CHAT_HEADER_STATUS_SIZE: f32 = 12.0;
+/// Matches `.tg-avatar` initials in `desktop-current.html`.
+pub const CHAT_AVATAR_GLYPH_SIZE: f32 = 13.0;
+/// Matches `.tg-avatar.sm` in `desktop-current.html`.
+pub const CHAT_AVATAR_SM_GLYPH_SIZE: f32 = 12.0;
+/// Matches profile `.tg-avatar` in `desktop-current.html`.
+pub const CHAT_AVATAR_LG_GLYPH_SIZE: f32 = 18.0;
 
 pub fn body(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, BODY_SIZE)
@@ -87,6 +101,30 @@ pub fn chat_sidebar_name(text: impl Into<Cow<'static, str>>, font: FamilyId) -> 
 
 pub fn chat_sidebar_time(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, CHAT_SIDEBAR_TIME_SIZE)
+}
+
+pub fn chat_preview(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_PREVIEW_SIZE)
+}
+
+pub fn chat_bubble_text(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_BUBBLE_TEXT_SIZE)
+}
+
+pub fn chat_bubble_meta(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_BUBBLE_META_SIZE)
+}
+
+pub fn chat_header_status(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, CHAT_HEADER_STATUS_SIZE)
+}
+
+pub fn chat_avatar_glyph(
+    text: impl Into<Cow<'static, str>>,
+    font: FamilyId,
+    size: f32,
+) -> Text {
+    Text::new(text, font, size)
 }
 
 /// Legacy section heading; prefer [`section_title`] for HUD panels.

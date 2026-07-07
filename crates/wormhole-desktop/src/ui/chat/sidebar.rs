@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use warpui::elements::{
-    Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth,
+    Align, Border, ClippedScrollStateHandle, ClippedScrollable, Container, CornerRadius,
+    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, MainAxisSize,
+    ParentElement, Radius, ScrollbarWidth, Shrinkable,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -11,7 +11,8 @@ use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use crate::ui::chat::bubble::format_message_time_pub;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::online_dot;
+use crate::ui::icons;
+use crate::ui::panel_primitives::{chat_item_active_bg, chat_sidebar_search_bg, tg_avatar};
 use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
     CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
@@ -192,34 +193,35 @@ impl ChatSidebarView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
         top.add_child(
-            Expanded::new(
+            Shrinkable::new(
                 1.0,
-                ui_text::body(row.title.clone(), self.font)
-                    .with_color(if selected {
-                        theme::text()
-                    } else {
-                        theme::text()
-                    })
+                ui_text::chat_sidebar_name(row.title.clone(), self.font)
+                    .with_color(theme::text())
                     .finish(),
             )
             .finish(),
         );
         if !row.time.is_empty() {
             top.add_child(
-                ui_text::device_meta(row.time.clone(), self.font)
+                ui_text::chat_sidebar_time(row.time.clone(), self.font)
                     .with_color(theme::muted())
                     .finish(),
             );
         }
 
+        let preview_color = if selected {
+            theme::text()
+        } else {
+            theme::muted()
+        };
         let mut preview_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
         preview_row.add_child(
-            Expanded::new(
+            Shrinkable::new(
                 1.0,
-                ui_text::body(row.preview.clone(), self.font)
-                    .with_color(theme::muted())
+                ui_text::chat_preview(row.preview.clone(), self.font)
+                    .with_color(preview_color)
                     .finish(),
             )
             .finish(),
@@ -245,38 +247,22 @@ impl ChatSidebarView {
         col.add_child(top.finish());
         col.add_child(
             Container::new(preview_row.finish())
-                .with_margin_top(4.0)
+                .with_margin_top(3.0)
                 .finish(),
         );
 
         let row_body = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(tg_avatar(
+                Self::avatar_initials(&row.title),
+                self.font,
+                TG_SIDEBAR_AVATAR,
+            ))
             .with_child(
-                Container::new(
-                    ConstrainedBox::new(
-                        Container::new(
-                            Align::new(
-                                ui_text::body(Self::avatar_initials(&row.title), self.font)
-                                    .with_color(theme::text())
-                                    .finish(),
-                            )
-                            .finish(),
-                        )
-                        .with_background(theme::panel_elevated())
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
-                            TG_SIDEBAR_AVATAR / 2.0,
-                        )))
-                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                        .finish(),
-                    )
-                    .with_width(TG_SIDEBAR_AVATAR)
-                    .with_height(TG_SIDEBAR_AVATAR)
+                Container::new(Shrinkable::new(1.0, col.finish()).finish())
+                    .with_margin_left(10.0)
                     .finish(),
-                )
-                .with_horizontal_margin(10.0)
-                .finish(),
             )
-            .with_child(Expanded::new(1.0, col.finish()).finish())
             .finish();
 
         let interactive = EventHandler::new(row_body)
@@ -287,12 +273,12 @@ impl ChatSidebarView {
             .finish();
 
         Container::new(interactive)
-            .with_padding_left(8.0)
-            .with_padding_right(8.0)
-            .with_padding_top(6.0)
-            .with_padding_bottom(6.0)
+            .with_padding_left(12.0)
+            .with_padding_right(12.0)
+            .with_padding_top(9.0)
+            .with_padding_bottom(9.0)
             .with_background(if selected {
-                theme::accent_cool_bg(32)
+                chat_item_active_bg()
             } else {
                 pathfinder_color::ColorU::transparent_black()
             })
@@ -325,9 +311,29 @@ impl ChatSidebarView {
             DispatchEventResult::PropagateToParent
         })
         .finish();
-        wrap_text_field_focus_on_click(input, |ctx| {
+        let input = wrap_text_field_focus_on_click(input, |ctx| {
             ctx.dispatch_typed_action(ChatSidebarAction::ActivateSearch);
-        })
+        });
+
+        Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Container::new(icons::chat_sidebar_search_icon(theme::muted()))
+                        .with_horizontal_margin(2.0)
+                        .finish(),
+                )
+                .with_child(Shrinkable::new(1.0, input).finish())
+                .finish(),
+        )
+        .with_padding_left(10.0)
+        .with_padding_right(10.0)
+        .with_padding_top(7.0)
+        .with_padding_bottom(7.0)
+        .with_background(chat_sidebar_search_bg())
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+        .finish()
     }
 }
 
@@ -380,6 +386,7 @@ impl View for ChatSidebarView {
                     .with_horizontal_padding(12.0)
                     .with_vertical_padding(10.0)
                     .with_background(theme::panel())
+                    .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
                     .finish(),
             )
             .with_child(
@@ -388,7 +395,9 @@ impl View for ChatSidebarView {
                     Container::new(
                         ClippedScrollable::vertical(
                             self.scroll.clone(),
-                            list.finish(),
+                            Container::new(list.finish())
+                                .with_vertical_padding(4.0)
+                                .finish(),
                             ScrollbarWidth::Auto,
                             Fill::None,
                             Fill::None,

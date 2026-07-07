@@ -411,6 +411,10 @@ impl DevicesView {
         );
     }
 
+    pub fn open_node_from_chat(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        self.open_node(node_id, ctx);
+    }
+
     fn open_node(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         let local_id = self
             .cluster

@@ -275,9 +275,60 @@ pub fn render_field_with_caret(
     disabled: bool,
     caret_blink: bool,
 ) -> Box<dyn Element> {
+    render_field_with_caret_sized(
+        draft,
+        marked,
+        placeholder,
+        font,
+        focused,
+        disabled,
+        caret_blink,
+        ui_text::BODY_SIZE,
+    )
+}
+
+pub fn render_compose_field_with_caret(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    caret_blink: bool,
+) -> Box<dyn Element> {
+    render_field_with_caret_sized(
+        draft,
+        marked,
+        placeholder,
+        font,
+        focused,
+        disabled,
+        caret_blink,
+        ui_text::CHAT_COMPOSE_FONT_SIZE,
+    )
+}
+
+fn render_field_with_caret_sized(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    caret_blink: bool,
+    font_size: f32,
+) -> Box<dyn Element> {
     let show_caret = focused && !disabled;
     let draft_empty = draft.is_empty() && marked.is_empty();
-    let field = render_field_text(draft, marked, placeholder, font, focused, disabled);
+    let field = render_field_text_sized(
+        draft,
+        marked,
+        placeholder,
+        font,
+        focused,
+        disabled,
+        font_size,
+    );
     let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
     if show_caret && draft_empty {
         row.add_child(render_caret(true, caret_blink));
@@ -311,11 +362,26 @@ pub fn render_field_text(
     focused: bool,
     disabled: bool,
 ) -> Box<dyn Element> {
+    render_field_text_sized(draft, marked, placeholder, font, focused, disabled, ui_text::BODY_SIZE)
+}
+
+fn render_field_text_sized(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    font_size: f32,
+) -> Box<dyn Element> {
+    let field_text = |text: String, color: pathfinder_color::ColorU| {
+        warpui::elements::Text::new(text, font, font_size)
+            .with_color(color)
+            .finish()
+    };
     let show_placeholder = should_show_placeholder(focused, draft, marked);
     if show_placeholder {
-        return ui_text::body(placeholder.to_string(), font)
-            .with_color(theme::placeholder())
-            .finish();
+        return field_text(placeholder.to_string(), theme::placeholder());
     }
 
     let text_color = if disabled {
@@ -330,9 +396,7 @@ pub fn render_field_text(
     };
 
     if marked.is_empty() {
-        return ui_text::body(draft.to_string(), font)
-            .with_color(text_color)
-            .finish();
+        return field_text(draft.to_string(), text_color);
     }
 
     if !draft.contains('\n') {
@@ -340,17 +404,9 @@ pub fn render_field_text(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(warpui::elements::MainAxisSize::Min);
         if !draft.is_empty() {
-            row.add_child(
-                ui_text::body(draft.to_string(), font)
-                    .with_color(text_color)
-                    .finish(),
-            );
+            row.add_child(field_text(draft.to_string(), text_color));
         }
-        row.add_child(
-            ui_text::body(marked.to_string(), font)
-                .with_color(marked_color)
-                .finish(),
-        );
+        row.add_child(field_text(marked.to_string(), marked_color));
         return row.finish();
     }
 
@@ -363,24 +419,12 @@ pub fn render_field_text(
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(warpui::elements::MainAxisSize::Min);
             if !line.is_empty() {
-                row.add_child(
-                    ui_text::body((*line).to_string(), font)
-                        .with_color(text_color)
-                        .finish(),
-                );
+                row.add_child(field_text((*line).to_string(), text_color));
             }
-            row.add_child(
-                ui_text::body(marked.to_string(), font)
-                    .with_color(marked_color)
-                    .finish(),
-            );
+            row.add_child(field_text(marked.to_string(), marked_color));
             col.add_child(row.finish());
         } else {
-            col.add_child(
-                ui_text::body((*line).to_string(), font)
-                    .with_color(text_color)
-                    .finish(),
-            );
+            col.add_child(field_text((*line).to_string(), text_color));
         }
     }
     col.finish()

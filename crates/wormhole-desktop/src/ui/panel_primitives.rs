@@ -1,12 +1,20 @@
+use pathfinder_color::ColorU;
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded, Flex,
-    MainAxisSize, ParentElement, Radius, Stack,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded,
+    Flex, MainAxisSize, ParentElement, Radius, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
 
 use crate::ui::theme;
 use crate::ui_text;
+
+pub const TG_AVATAR_SIZE: f32 = 46.0;
+pub const TG_AVATAR_SM_SIZE: f32 = 40.0;
+pub const TG_AVATAR_LG_SIZE: f32 = 72.0;
+pub const TG_BUBBLE_MAX_WIDTH: f32 = 520.0;
+pub const TG_BUBBLE_RADIUS: f32 = 12.0;
+pub const TG_BUBBLE_TAIL_RADIUS: f32 = 4.0;
 
 /// Matches `desktop-current.html` `--panel-pad` / `--radius`.
 pub const SECTION_PADDING: f32 = 14.0;
@@ -151,6 +159,74 @@ pub fn agent_header_bg() -> pathfinder_color::ColorU {
 /// `.agent-row-item.active` background: 14% accent-cool + panel.
 pub fn agent_row_active_bg() -> pathfinder_color::ColorU {
     pathfinder_color::ColorU::new(67, 66, 81, 255)
+}
+
+/// `.tg-chat-item.active` — accent-cool 10% + panel.
+pub fn chat_item_active_bg() -> ColorU {
+    ColorU::new(60, 58, 73, 255)
+}
+
+/// `.chat-sidebar-search-wrap` — canvas 65% + panel.
+pub fn chat_sidebar_search_bg() -> ColorU {
+    ColorU::new(20, 18, 26, 255)
+}
+
+/// `.tg-msg-row.in .tg-bubble` background.
+pub fn chat_bubble_in_bg() -> ColorU {
+    theme::panel_elevated()
+}
+
+/// `.tg-msg-row.out .tg-bubble` — accent-cool 18% + panel-elevated.
+pub fn chat_bubble_out_bg() -> ColorU {
+    ColorU::new(92, 85, 94, 255)
+}
+
+/// Outgoing bubble border — accent-cool 35% + border.
+pub fn chat_bubble_out_border() -> ColorU {
+    ColorU::new(143, 141, 163, 255)
+}
+
+/// `.tg-avatar` background — accent-cool 14% + panel-elevated.
+pub fn tg_avatar_bg() -> ColorU {
+    ColorU::new(86, 78, 87, 255)
+}
+
+/// `.tg-avatar` border — accent-cool 28% + border.
+pub fn tg_avatar_border() -> ColorU {
+    ColorU::new(134, 132, 153, 255)
+}
+
+pub fn tg_avatar_glyph_size(diameter: f32) -> f32 {
+    if diameter >= TG_AVATAR_LG_SIZE - 1.0 {
+        ui_text::CHAT_AVATAR_LG_GLYPH_SIZE
+    } else if diameter <= TG_AVATAR_SM_SIZE + 1.0 {
+        ui_text::CHAT_AVATAR_SM_GLYPH_SIZE
+    } else {
+        ui_text::CHAT_AVATAR_GLYPH_SIZE
+    }
+}
+
+/// Matches `.tg-avatar` / `.tg-avatar.sm` / profile avatar sizes.
+pub fn tg_avatar(initials: impl Into<String>, font: FamilyId, diameter: f32) -> Box<dyn Element> {
+    let initials = initials.into();
+    let glyph_size = tg_avatar_glyph_size(diameter);
+    Container::new(
+        ConstrainedBox::new(
+            Align::new(
+                ui_text::chat_avatar_glyph(initials, font, glyph_size)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .finish(),
+        )
+        .with_width(diameter)
+        .with_height(diameter)
+        .finish(),
+    )
+    .with_background(tg_avatar_bg())
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(diameter / 2.0)))
+    .with_border(Border::all(1.0).with_border_fill(tg_avatar_border()))
+    .finish()
 }
 
 /// `.conv-device-status .dot` — online indicator.

@@ -91,6 +91,10 @@ pub fn chat_compose_icon(path: &'static str, color: ColorU) -> Box<dyn Element> 
     icon(path, CHAT_COMPOSE_ICON_SIZE, color)
 }
 
+pub fn chat_sidebar_search_icon(color: ColorU) -> Box<dyn Element> {
+    icon("chat-sidebar-search.svg", 15.0, color)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceIconKind {
     Pc,
