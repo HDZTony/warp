@@ -197,7 +197,7 @@ impl DevicesView {
                 let state = core.runtime().state.clone();
                 fetch_cluster_for_ui(&state).await
             },
-            |view, output, ctx| {
+            move |view, output, ctx| {
                 match output {
                     Ok(status) => view.apply_cluster_status(status, ctx),
                     Err(e) => {
@@ -226,7 +226,7 @@ impl DevicesView {
                     wormhole_desktop_core::device_identity::device_bootstrap(&state).await;
                 fetch_cluster_for_ui(&state).await
             },
-            |view, output, ctx| {
+            move |view, output, ctx| {
                 view.bootstrap_busy = false;
                 match output {
                     Ok(status) => view.apply_cluster_status(status, ctx),
@@ -682,7 +682,11 @@ impl DevicesView {
             .cluster
             .as_ref()
             .and_then(|cluster| cluster.nodes.iter().find(|node| node.node_id == node_id))
-            .and_then(|node| node.device_id.clone());
+            .and_then(|node| {
+                node.server_member_confirmed
+                    .then(|| node.device_id.clone())
+                    .flatten()
+            });
         self.delete_modal_node_id = None;
         self.device_context_menu = None;
         if self.browsing_node_id.as_deref() == Some(node_id.as_str()) {
@@ -1606,6 +1610,7 @@ impl DevicesView {
         self.status_flash = Some("正在移除设备…".into());
         ctx.notify();
         let core = self.core.clone();
+        let removing_server_member = device_id.is_some();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
@@ -1623,13 +1628,17 @@ impl DevicesView {
                     remove_cluster_node(&state, RemoveClusterNodeParams { node_id }).await
                 }
             },
-            |view, output, ctx| {
+            move |view, output, ctx| {
                 match output {
                     Ok(status) => {
                         view.cluster = Some(status);
                         view.cluster_error = None;
                         view.local_invite = None;
-                        view.status_flash = Some("已移除设备".into());
+                        view.status_flash = Some(if removing_server_member {
+                            "已移除设备".into()
+                        } else {
+                            "已隐藏离线终端".into()
+                        });
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
