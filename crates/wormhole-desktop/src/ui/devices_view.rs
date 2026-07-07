@@ -93,6 +93,7 @@ pub struct DevicesView {
     delete_cluster_busy: bool,
     device_context_menu: Option<(String, f32, f32)>,
     last_node_click: Option<(String, Instant)>,
+    stable_cluster_poll_scheduled: bool,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -100,6 +101,7 @@ const TOOLBAR_BTN_PAD_X: f32 = 18.0;
 const CLUSTER_SELECT_MIN_WIDTH: f32 = 240.0;
 const GRID_SECTION_TITLE_HEIGHT: f32 = 28.0;
 const BOOTSTRAP_PENDING_HINT_AFTER: Duration = Duration::from_secs(35);
+const STABLE_CLUSTER_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 impl DevicesView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
@@ -155,6 +157,7 @@ impl DevicesView {
             delete_cluster_busy: false,
             device_context_menu: None,
             last_node_click: None,
+            stable_cluster_poll_scheduled: false,
         };
         view.refresh_cluster(ctx);
         view
@@ -184,9 +187,15 @@ impl DevicesView {
         self.cluster = Some(status.clone());
         self.cluster_error = None;
         if status.syncing {
+            self.stable_cluster_poll_scheduled = false;
             self.schedule_cluster_poll(ctx);
         } else if status.auth_required || status.device_bootstrap_required {
+            self.stable_cluster_poll_scheduled = false;
             self.schedule_bootstrap_poll(ctx);
+        } else if status.configured {
+            self.schedule_stable_cluster_poll(ctx);
+        } else {
+            self.stable_cluster_poll_scheduled = false;
         }
     }
 
@@ -278,6 +287,28 @@ impl DevicesView {
                     } else if status.syncing {
                         view.schedule_cluster_poll(ctx);
                     }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_stable_cluster_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.stable_cluster_poll_scheduled {
+            return;
+        }
+        self.stable_cluster_poll_scheduled = true;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(STABLE_CLUSTER_POLL_INTERVAL).await;
+                let state = core.runtime().state.clone();
+                fetch_cluster_for_ui(&state).await
+            },
+            |view, output, ctx| {
+                view.stable_cluster_poll_scheduled = false;
+                if let Ok(status) = output {
+                    view.apply_cluster_status(status, ctx);
                 }
                 ctx.notify();
             },
@@ -742,6 +773,11 @@ impl DevicesView {
         cluster.clusters.iter().find(|c| c.active)
     }
 
+    fn active_cluster_is_owner(cluster: &ClusterStatusDto) -> bool {
+        Self::active_cluster_entry(cluster)
+            .is_some_and(|entry| entry.role == "owner" && !entry.revoked)
+    }
+
     fn active_cluster_folder_name(cluster: &ClusterStatusDto) -> String {
         cluster
             .clusters
@@ -1062,7 +1098,7 @@ impl DevicesView {
             true,
             false,
         ));
-        if Self::active_cluster_id(cluster).is_some() {
+        if Self::active_cluster_is_owner(cluster) {
             menu.add_child(Self::cluster_menu_divider());
             menu.add_child(self.cluster_menu_action(
                 "删除集群",
@@ -1380,7 +1416,7 @@ impl DevicesView {
                 view.create_cluster_busy = false;
                 match output {
                     Ok(status) => {
-                        view.cluster = Some(status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.local_invite = None;
                         view.create_cluster_modal_open = false;
@@ -1475,7 +1511,7 @@ impl DevicesView {
             |view, output, ctx| {
                 match output {
                     Ok(status) => {
-                        view.cluster = Some(status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.local_invite = None;
                     }
@@ -1506,7 +1542,7 @@ impl DevicesView {
             |view, output, ctx| {
                 match output {
                     Ok(status) => {
-                        view.cluster = Some(status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.local_invite = None;
                         view.status_flash = Some("已退出集群".into());
@@ -1525,6 +1561,12 @@ impl DevicesView {
         let Some(cluster) = self.cluster.as_ref() else {
             return;
         };
+        if !Self::active_cluster_is_owner(cluster) {
+            self.status_flash = Some("只有集群创建者可以删除集群；成员请使用退出集群".into());
+            self.cluster_picker_open = false;
+            ctx.notify();
+            return;
+        }
         let cluster_id = Self::active_cluster_id(cluster);
         self.delete_modal_cluster_id = cluster_id;
         self.cluster_picker_open = false;
@@ -1547,6 +1589,25 @@ impl DevicesView {
             .delete_modal_cluster_id
             .clone()
             .or_else(|| self.cluster.as_ref().and_then(Self::active_cluster_id));
+        let is_owner = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| {
+                cluster_id.as_ref().and_then(|id| {
+                    cluster
+                        .clusters
+                        .iter()
+                        .find(|entry| entry.cluster_id == *id)
+                        .map(|entry| entry.role == "owner" && !entry.revoked)
+                })
+            })
+            .unwrap_or(false);
+        if !is_owner {
+            self.delete_modal_cluster_id = None;
+            self.status_flash = Some("只有集群创建者可以删除集群；成员请使用退出集群".into());
+            ctx.notify();
+            return;
+        }
         let removed_label = self
             .cluster
             .as_ref()
@@ -1580,7 +1641,7 @@ impl DevicesView {
                 view.cluster_picker_open = false;
                 match output {
                     Ok(status) => {
-                        view.cluster = Some(status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.local_invite = None;
                         view.status_flash = Some(format!("CLUSTER REMOVED · {removed_label}"));
@@ -1631,7 +1692,7 @@ impl DevicesView {
             move |view, output, ctx| {
                 match output {
                     Ok(status) => {
-                        view.cluster = Some(status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.local_invite = None;
                         view.status_flash = Some(if removing_server_member {
@@ -1678,22 +1739,20 @@ impl DevicesView {
                 view.invite_busy = false;
                 match output {
                     Ok(result) => {
-                        view.cluster = Some(result.status);
+                        let status = result.status;
+                        let cluster_label = DevicesView::cluster_label(&status);
+                        view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.join_modal_open = false;
                         view.join_invite_draft.clear();
                         view.join_feedback = None;
                         view.local_invite = None;
                         view.status_flash = Some(match result.outcome {
-                            JoinClusterOutcome::Joined => format!(
-                                "已加入集群 · {}",
-                                DevicesView::cluster_label(&view.cluster.as_ref().unwrap())
-                            ),
+                            JoinClusterOutcome::Joined => format!("已加入集群 · {cluster_label}"),
                             JoinClusterOutcome::AlreadyActive => "您已在该集群中".to_string(),
-                            JoinClusterOutcome::SwitchedActive => format!(
-                                "已切换到集群 · {}",
-                                DevicesView::cluster_label(&view.cluster.as_ref().unwrap())
-                            ),
+                            JoinClusterOutcome::SwitchedActive => {
+                                format!("已切换到集群 · {cluster_label}")
+                            }
                         });
                         ctx.spawn(
                             async move {
