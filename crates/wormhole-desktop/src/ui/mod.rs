@@ -20,6 +20,7 @@ pub mod login_modal;
 pub mod multiline_input;
 pub mod panel_primitives;
 pub mod settings_view;
+pub mod spinning_icon;
 pub mod sync_views;
 pub mod text_field_input;
 pub mod theme;

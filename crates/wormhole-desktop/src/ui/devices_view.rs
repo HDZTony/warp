@@ -94,6 +94,7 @@ pub struct DevicesView {
     device_context_menu: Option<(String, f32, f32)>,
     last_node_click: Option<(String, Instant)>,
     stable_cluster_poll_scheduled: bool,
+    cluster_refresh_busy: bool,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -158,6 +159,7 @@ impl DevicesView {
             device_context_menu: None,
             last_node_click: None,
             stable_cluster_poll_scheduled: false,
+            cluster_refresh_busy: false,
         };
         view.refresh_cluster(ctx);
         view
@@ -217,6 +219,69 @@ impl DevicesView {
                     }
                 }
                 ctx.notify();
+            },
+        );
+    }
+
+    fn manual_refresh_cluster(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.cluster_refresh_busy {
+            return;
+        }
+        self.close_cluster_picker(ctx);
+        self.cluster_refresh_busy = true;
+        ctx.notify();
+
+        let core = self.core.clone();
+        let was_browsing = self.mode == ViewMode::Files;
+        let browsing_node_id = self.browsing_node_id.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                fetch_cluster_for_ui(&state).await
+            },
+            move |view, output, ctx| {
+                view.cluster_refresh_busy = false;
+                match output {
+                    Ok(status) => {
+                        let node_count = status.nodes.len();
+                        view.apply_cluster_status(status, ctx);
+                        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+                        view.status_flash =
+                            Some(format!("REFRESHED · {node_count} NODES · {timestamp}"));
+                        if was_browsing {
+                            if let Some(node_id) = browsing_node_id {
+                                let node_still_present = view.cluster.as_ref().is_some_and(
+                                    |cluster| {
+                                        cluster
+                                            .nodes
+                                            .iter()
+                                            .any(|node| node.node_id == node_id)
+                                    },
+                                );
+                                if node_still_present {
+                                    view.load_share_directory(ctx);
+                                }
+                            }
+                        }
+                        ctx.notify();
+                        ctx.spawn(
+                            async move {
+                                tokio::time::sleep(Duration::from_millis(2800)).await;
+                            },
+                            |view, _, ctx| {
+                                view.status_flash = None;
+                                ctx.notify();
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        view.cluster = None;
+                        view.cluster_syncing = false;
+                        view.cluster_error = Some(e);
+                        view.bootstrap_pending_since = None;
+                        ctx.notify();
+                    }
+                }
             },
         );
     }
@@ -812,6 +877,9 @@ impl DevicesView {
         if let Some(flash) = &self.status_flash {
             return flash.clone();
         }
+        if self.cluster_refresh_busy {
+            return "REFRESH · 正在同步集群终端…".to_string();
+        }
         if self.cluster_syncing {
             return "CLUSTER · SYNCING · 后台同步集群…".to_string();
         }
@@ -823,6 +891,48 @@ impl DevicesView {
             "CLUSTER · {n} NODE{} · E2E ENCRYPTED · 双击终端浏览共享文件夹",
             if n == 1 { "" } else { "S" }
         )
+    }
+
+    fn cluster_status_color(&self) -> ColorU {
+        if self.cluster_refresh_busy {
+            theme::accent_cool()
+        } else {
+            theme::muted()
+        }
+    }
+
+    fn cluster_refresh_button(&self) -> Box<dyn Element> {
+        let spinning = self.cluster_refresh_busy;
+        let opacity = if spinning { 0.75 } else { 1.0 };
+        let icon_color = theme::accent_cool();
+        let inner = Container::new(
+            ConstrainedBox::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_alignment(MainAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_child(icons::cluster_refresh_icon(spinning, icon_color, opacity))
+                    .finish(),
+            )
+            .with_width(icons::CLUSTER_REFRESH_BTN_SIZE)
+            .with_height(TOOLBAR_BTN_HEIGHT)
+            .finish(),
+        )
+        .with_background(theme::panel())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish();
+
+        if spinning {
+            inner
+        } else {
+            EventHandler::new(inner)
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(DevicesAction::Refresh);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        }
     }
 
     fn cluster_menu_divider() -> Box<dyn Element> {
@@ -1208,7 +1318,7 @@ impl DevicesView {
                     Container::new(
                         ConstrainedBox::new(
                             ui_text::cluster_status(self.cluster_status_text(cluster), self.mono)
-                                .with_color(theme::muted())
+                                .with_color(self.cluster_status_color())
                                 .finish(),
                         )
                         .with_height(TOOLBAR_BTN_HEIGHT)
@@ -1222,6 +1332,11 @@ impl DevicesView {
             return row.finish();
         }
         row.add_child(self.cluster_menu(cluster));
+        row.add_child(
+            Container::new(self.cluster_refresh_button())
+                .with_horizontal_margin(10.0)
+                .finish(),
+        );
         if Self::active_cluster_entry(cluster)
             .is_some_and(|entry| entry.role != "owner" && !entry.revoked)
         {
@@ -1243,7 +1358,7 @@ impl DevicesView {
                 Container::new(
                     ConstrainedBox::new(
                         ui_text::cluster_status(self.cluster_status_text(cluster), self.mono)
-                            .with_color(theme::muted())
+                            .with_color(self.cluster_status_color())
                             .finish(),
                     )
                     .with_height(TOOLBAR_BTN_HEIGHT)
@@ -2093,9 +2208,6 @@ impl DevicesView {
                         .with_vertical_margin(10.0)
                         .finish(),
                 );
-                if self.cluster_syncing {
-                    header.add_child(section_hint("CLUSTER · SYNCING", self.font));
-                }
             }
         } else {
             header.add_child(section_hint("CLUSTER · LOADING", self.font));
@@ -3307,7 +3419,7 @@ impl TypedActionView for DevicesView {
 
     fn handle_action(&mut self, action: &DevicesAction, ctx: &mut ViewContext<Self>) {
         match action {
-            DevicesAction::Refresh => self.refresh_cluster(ctx),
+            DevicesAction::Refresh => self.manual_refresh_cluster(ctx),
             DevicesAction::RetryDeviceBootstrap => self.retry_device_bootstrap(ctx),
             DevicesAction::OpenNode(node_id) => self.open_node(node_id.clone(), ctx),
             DevicesAction::BackToGrid => self.back_to_grid(ctx),

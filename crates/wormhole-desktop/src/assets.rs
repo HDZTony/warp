@@ -33,6 +33,7 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("share-sync.svg"),
     bundled_icon!("share-nav-back.svg"),
     bundled_icon!("share-nav-forward.svg"),
+    bundled_icon!("cluster-refresh.svg"),
     bundled_icon!("agent-more.svg"),
     bundled_icon!("agent-new.svg"),
     bundled_icon!("agent-search.svg"),
@@ -109,6 +110,7 @@ mod tests {
             "share-json.svg",
             "share-nav-back.svg",
             "share-nav-forward.svg",
+            "cluster-refresh.svg",
             "agent-search.svg",
             "agent-attach.svg",
         ] {

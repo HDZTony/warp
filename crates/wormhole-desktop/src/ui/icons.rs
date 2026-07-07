@@ -10,6 +10,7 @@ use warpui::Element;
 use crate::ui::app_shell::AppTab;
 use crate::ui::cluster_layout::CARD_MIN_WIDTH;
 use crate::ui::hud_effects::DeviceEnergyLines;
+use crate::ui::spinning_icon;
 use crate::ui::theme;
 
 pub const TAB_ICON_SIZE: f32 = 18.0;
@@ -24,6 +25,9 @@ pub const CHAT_COMPOSE_BTN: f32 = 40.0;
 pub const DEVICE_ICON_WIDTH: f32 = 56.0;
 pub const DEVICE_ICON_HEIGHT: f32 = 44.0;
 pub const DEVICE_THUMB_HEIGHT: f32 = 132.0;
+pub const CLUSTER_REFRESH_BTN_SIZE: f32 = 32.0;
+pub const CLUSTER_REFRESH_ICON_SIZE: f32 = 16.0;
+pub const CLUSTER_REFRESH_ICON_PATH: &str = "cluster-refresh.svg";
 
 pub fn icon(path: &'static str, size: f32, color: ColorU) -> Box<dyn Element> {
     ConstrainedBox::new(Icon::new(path, color).finish())
@@ -277,6 +281,14 @@ pub fn share_sync_icon(syncing: bool) -> Box<dyn Element> {
         theme::accent_cool()
     };
     icon("share-sync.svg", 12.0, color)
+}
+
+pub fn cluster_refresh_icon(spinning: bool, color: ColorU, opacity: f32) -> Box<dyn Element> {
+    if spinning {
+        spinning_icon::cluster_refresh_spin_icon(color, opacity, CLUSTER_REFRESH_ICON_SIZE)
+    } else {
+        icon(CLUSTER_REFRESH_ICON_PATH, CLUSTER_REFRESH_ICON_SIZE, color)
+    }
 }
 
 #[cfg(test)]
