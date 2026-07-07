@@ -250,14 +250,10 @@ impl DevicesView {
                             Some(format!("REFRESHED · {node_count} NODES · {timestamp}"));
                         if was_browsing {
                             if let Some(node_id) = browsing_node_id {
-                                let node_still_present = view.cluster.as_ref().is_some_and(
-                                    |cluster| {
-                                        cluster
-                                            .nodes
-                                            .iter()
-                                            .any(|node| node.node_id == node_id)
-                                    },
-                                );
+                                let node_still_present =
+                                    view.cluster.as_ref().is_some_and(|cluster| {
+                                        cluster.nodes.iter().any(|node| node.node_id == node_id)
+                                    });
                                 if node_still_present {
                                     view.load_share_directory(ctx);
                                 }

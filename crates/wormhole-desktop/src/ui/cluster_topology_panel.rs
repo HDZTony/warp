@@ -29,7 +29,9 @@ use crate::ui::icons;
 use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::cluster_commands::ClusterNodeDto;
+use wormhole_desktop_core::cluster_commands::{
+    ClusterNodeDto, NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
+};
 
 pub struct ClusterTopologyPanel {
     nodes: Vec<ClusterNodeDto>,
@@ -370,12 +372,7 @@ fn node_card(
     let hovered = node.node_id == hovered_node_id;
     let show_delete = !is_local && (hovered || selected);
     let display_label = node_display_label(node, is_local);
-    let status_text = if node.online { "在线" } else { "离线" };
-    let status_tone = if node.online {
-        StatusTone::Success
-    } else {
-        StatusTone::Placeholder
-    };
+    let (status_text, status_tone) = node_presence_label(node);
 
     let mut body = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     body.add_child(
@@ -526,6 +523,14 @@ fn node_card(
         .with_width(card_width)
         .with_height(card_h)
         .finish()
+}
+
+fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
+    match node.presence_status.as_str() {
+        NODE_PRESENCE_ONLINE => ("在线", StatusTone::Success),
+        NODE_PRESENCE_SIGNED_IN => ("已登录 · 连接中", StatusTone::Warn),
+        _ => ("离线", StatusTone::Placeholder),
+    }
 }
 
 fn dim_color(color: ColorU, factor: f32) -> ColorU {

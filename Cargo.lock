@@ -20233,6 +20233,7 @@ name = "wormhole-desktop-platform-windows"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "image",
  "reqwest 0.12.28",
  "rfd",
  "serde",
