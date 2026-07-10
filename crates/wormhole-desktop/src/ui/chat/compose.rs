@@ -125,7 +125,7 @@ impl ChatComposeView {
                 sent_at,
                 Vec::new(),
             );
-            state.message_tick = state.message_tick.saturating_add(1);
+            state.bump_message_tick();
         }
         ctx.notify();
 
@@ -153,7 +153,7 @@ impl ChatComposeView {
                 match output {
                     Ok(_) => {
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.message_tick = state.message_tick.saturating_add(1);
+                            state.bump_message_tick();
                         }
                     }
                     Err(e) => {
@@ -161,7 +161,7 @@ impl ChatComposeView {
                         view.status = format!("发送失败: {e}");
                         view.status_tone = StatusTone::Danger;
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.message_tick = state.message_tick.saturating_add(1);
+                            state.bump_message_tick();
                         }
                     }
                 }
@@ -214,7 +214,7 @@ impl ChatComposeView {
                     size,
                 }],
             );
-            state.message_tick = state.message_tick.saturating_add(1);
+            state.bump_message_tick();
         }
         ctx.notify();
 
@@ -244,14 +244,14 @@ impl ChatComposeView {
                 match output {
                     Ok(_) => {
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.message_tick = state.message_tick.saturating_add(1);
+                            state.bump_message_tick();
                         }
                     }
                     Err(e) => {
                         view.status = format!("附件发送失败: {e}");
                         view.status_tone = StatusTone::Danger;
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.message_tick = state.message_tick.saturating_add(1);
+                            state.bump_message_tick();
                         }
                     }
                 }

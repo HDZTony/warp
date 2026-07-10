@@ -5,6 +5,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
+use crate::ui::chat::labels::{conversation_device_title, find_cluster_node};
 use crate::ui::chat::header_menu::{header_button, header_menu_panel};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
@@ -124,24 +125,12 @@ impl ChatHeaderView {
                     .ok()
                     .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
                 if let Some(conv) = conv {
-                    let remark = cluster.as_ref().ok().and_then(|cluster| {
-                        cluster.nodes.iter().find_map(|node| {
-                            if node.chat_endpoint_id.as_deref()
-                                == Some(conv.peer_endpoint.as_str())
-                                || node.node_id == conv.peer_endpoint
-                            {
-                                remarks.get(&node.node_id).map(String::as_str)
-                            } else {
-                                None
-                            }
-                        })
+                    let cluster_ref = cluster.as_ref().ok();
+                    let remark = find_cluster_node(&conv, cluster_ref)
+                        .and_then(|node| remarks.get(&node.node_id).map(String::as_str));
+                    view.title = display_name_with_remark(remark, || {
+                        conversation_device_title(&conv, cluster_ref)
                     });
-                    let fallback = conv
-                        .title
-                        .clone()
-                        .or(conv.peer_display_name.clone())
-                        .unwrap_or_else(|| "未知设备".into());
-                    view.title = display_name_with_remark(remark, || fallback);
                     view.node_id = conv.peer_endpoint.clone();
                     let peer_online = cluster
                         .as_ref()

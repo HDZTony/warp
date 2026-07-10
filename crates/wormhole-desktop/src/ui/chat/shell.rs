@@ -5,13 +5,17 @@ use warpui::elements::{
     EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
+use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle};
 
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::header::{ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::sidebar::ChatSidebarView;
-use crate::ui::chat::shell_state::{new_shared_shell_state, SharedChatShellState};
+use crate::ui::chat::shell_state::{
+    chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
+};
+use wormhole_desktop_core::chat_commands::ChatEventDto;
+use wormhole_desktop_core::DesktopEventBus;
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::core_handle::CoreHandle;
@@ -95,7 +99,44 @@ impl ChatShellView {
             profile,
         };
         view.poll_gate(ctx);
+        view.start_chat_event_listener(ctx);
         view
+    }
+
+    fn start_chat_event_listener(&self, ctx: &mut ViewContext<Self>) {
+        let events = self.core.runtime().ctx.events.clone();
+        let shell_state = self.shell_state.clone();
+        let sidebar = self.sidebar.clone();
+        Self::poll_chat_event_once(ctx, events, shell_state, sidebar);
+    }
+
+    fn poll_chat_event_once(
+        ctx: &mut ViewContext<Self>,
+        events: DesktopEventBus,
+        shell_state: SharedChatShellState,
+        sidebar: ViewHandle<ChatSidebarView>,
+    ) {
+        let mut rx = events.subscribe();
+        ctx.spawn(async move { rx.recv().await }, move |_view, output, ctx| {
+            if let Ok(event) = output {
+                if event.name == "chat-event" {
+                    if let Ok(chat_event) =
+                        serde_json::from_value::<ChatEventDto>(event.payload.clone())
+                    {
+                        if chat_event_triggers_refresh(&chat_event.kind) {
+                            if let Ok(mut state) = shell_state.lock() {
+                                state.bump_message_tick();
+                            }
+                            ctx.update_view(&sidebar, |sidebar, ctx| {
+                                sidebar.refresh(ctx);
+                            });
+                            ctx.notify();
+                        }
+                    }
+                }
+            }
+            Self::poll_chat_event_once(ctx, events, shell_state, sidebar);
+        });
     }
 
     pub fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
