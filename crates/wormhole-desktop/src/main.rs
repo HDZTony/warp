@@ -190,20 +190,25 @@ fn main() -> Result<()> {
         "wormhole-desktop starting WarpUI shell"
     );
 
-    let coordinator_for_close = coordinator.clone();
-    let mut callbacks = AppCallbacks::default();
-    #[cfg(windows)]
-    {
-        callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
-            if ui::windows_shell::should_hide_main_window_to_tray(window_id, &coordinator_for_close)
-            {
-                ui::windows_shell::hide_main_window(window_id, ctx);
-                ApproveTerminateResult::Cancel
-            } else {
-                ApproveTerminateResult::Terminate
-            }
-        }));
-    }
+    let callbacks = {
+        let mut callbacks = AppCallbacks::default();
+        #[cfg(windows)]
+        {
+            let coordinator_for_close = coordinator.clone();
+            callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
+                if ui::windows_shell::should_hide_main_window_to_tray(
+                    window_id,
+                    &coordinator_for_close,
+                ) {
+                    ui::windows_shell::hide_main_window(window_id, ctx);
+                    ApproveTerminateResult::Cancel
+                } else {
+                    ApproveTerminateResult::Terminate
+                }
+            }));
+        }
+        callbacks
+    };
 
     let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
     let coordinator_for_shell = coordinator.clone();
