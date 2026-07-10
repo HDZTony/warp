@@ -7,6 +7,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::bubble::format_message_time_pub;
+use crate::ui::chat::labels::{conversation_device_title, conversation_preview};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
@@ -96,7 +97,7 @@ impl ChatSidebarView {
         view
     }
 
-    fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -192,14 +193,8 @@ impl ChatSidebarView {
     ) -> Vec<SidebarRow> {
         let mut rows = Vec::new();
         for conv in conversations {
-            let title = conv
-                .title
-                .or(conv.peer_display_name.clone())
-                .unwrap_or_else(|| "未知设备".to_string());
-            let preview = conv
-                .peer_display_name
-                .clone()
-                .unwrap_or_else(|| "等待消息…".to_string());
+            let title = conversation_device_title(&conv, cluster);
+            let preview = conversation_preview(&conv, cluster);
             let time = conv
                 .last_message_at
                 .map(format_message_time_pub)
@@ -633,6 +628,7 @@ mod tests {
             doc_ticket: String::new(),
             created_at: 0,
             last_message_at: None,
+            last_message_preview: None,
         }
     }
 

@@ -5,6 +5,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
+use crate::ui::chat::labels::conversation_device_title;
 use crate::ui::chat::header_menu::{header_button, header_menu_panel};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
@@ -122,11 +123,7 @@ impl ChatHeaderView {
                     .ok()
                     .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
                 if let Some(conv) = conv {
-                    view.title = conv
-                        .title
-                        .clone()
-                        .or(conv.peer_display_name.clone())
-                        .unwrap_or_else(|| "未知设备".into());
+                    view.title = conversation_device_title(&conv, cluster.as_ref().ok());
                     view.node_id = conv.peer_endpoint.clone();
                     let peer_online = cluster
                         .as_ref()

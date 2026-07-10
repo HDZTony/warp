@@ -247,3 +247,40 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(all(test, windows))]
+mod windows_icon_tests {
+    //! WarpUI taskbar icon is loaded as PE resource `0x101` (see `build.rs`).
+    use windows_sys::Win32::Foundation::HINSTANCE;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, LoadImageW, IMAGE_ICON, LR_DEFAULTSIZE,
+    };
+
+    /// Same ID as `warpui::windowing::winit::window::IDI_ICON` / Warp `app/build.rs`.
+    const IDI_ICON: usize = 0x101;
+
+    #[test]
+    fn pe_embeds_warpui_taskbar_icon_resource_0x101() {
+        let module: HINSTANCE = unsafe { GetModuleHandleW(std::ptr::null()) };
+        assert!(!module.is_null(), "GetModuleHandleW(null) failed");
+
+        let icon = unsafe {
+            LoadImageW(
+                module,
+                IDI_ICON as *const u16,
+                IMAGE_ICON,
+                0,
+                0,
+                LR_DEFAULTSIZE,
+            )
+        };
+        assert!(
+            !icon.is_null(),
+            "missing RT_GROUP_ICON id 0x101 — wormhole-desktop build.rs must embed icon.ico with set_icon_with_id(..., \"257\") to match WarpUI"
+        );
+        unsafe {
+            DestroyIcon(icon);
+        }
+    }
+}

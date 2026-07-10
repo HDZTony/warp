@@ -105,4 +105,37 @@ impl ChatShellState {
             .cloned()
             .collect()
     }
+
+    /// Bumps the thread refresh counter so [`super::thread::ChatThreadView`] refetches messages.
+    pub fn bump_message_tick(&mut self) {
+        self.message_tick = self.message_tick.saturating_add(1);
+    }
+}
+
+/// Whether a desktop `chat-event` payload should refresh the open thread and sidebar.
+pub fn chat_event_triggers_refresh(kind: &str) -> bool {
+    matches!(kind, "message_received" | "conversation_added")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bump_message_tick_increments() {
+        let mut state = ChatShellState::default();
+        assert_eq!(state.message_tick, 0);
+        state.bump_message_tick();
+        assert_eq!(state.message_tick, 1);
+        state.bump_message_tick();
+        assert_eq!(state.message_tick, 2);
+    }
+
+    #[test]
+    fn chat_event_triggers_refresh_for_known_kinds() {
+        assert!(chat_event_triggers_refresh("message_received"));
+        assert!(chat_event_triggers_refresh("conversation_added"));
+        assert!(!chat_event_triggers_refresh("typing_changed"));
+        assert!(!chat_event_triggers_refresh(""));
+    }
 }

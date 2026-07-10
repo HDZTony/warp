@@ -4,6 +4,7 @@ pub mod bubble;
 pub mod compose;
 pub mod header;
 pub mod header_menu;
+pub mod labels;
 pub mod layout;
 pub mod profile_panel;
 pub mod shell;
