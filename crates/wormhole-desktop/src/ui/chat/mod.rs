@@ -1,4 +1,5 @@
 pub mod agent_threads_sidebar;
+pub mod attach_panel;
 pub mod bubble;
 pub mod compose;
 pub mod header;

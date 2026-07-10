@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use warpui::elements::{
-    Border, ChildView, ConstrainedBox, Container, DispatchEventResult, EventHandler, Expanded,
-    Flex, MainAxisSize, ParentElement,
+    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
@@ -53,7 +53,12 @@ impl ChatShellView {
         let selection = Arc::new(Mutex::new(None));
         let shell_state = new_shared_shell_state();
         let sidebar = ctx.add_typed_action_view(|ctx| {
-            ChatSidebarView::new(ctx, core.clone(), selection.clone())
+            ChatSidebarView::new(
+                ctx,
+                core.clone(),
+                selection.clone(),
+                shell_state.clone(),
+            )
         });
         let header = ctx.add_typed_action_view(|ctx| {
             ChatHeaderView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
@@ -165,6 +170,7 @@ impl ChatShellView {
 
         let mut main_col = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
                 ConstrainedBox::new(ChildView::new(&self.header).finish())
                     .with_height(TG_HEADER_HEIGHT)

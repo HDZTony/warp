@@ -12,6 +12,7 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_SM_SIZE};
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::chat_commands::chat_list_conversations;
 use wormhole_desktop_core::cluster_commands::cluster_status;
 
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
@@ -92,24 +93,66 @@ impl ChatHeaderView {
             return;
         }
         let selected = selected.unwrap();
-        self.title = selected.clone();
         let core = self.core.clone();
         ctx.spawn(
             async move {
-                let state = core.runtime().state.clone();
-                cluster_status(&state).await
+                let runtime = core.runtime();
+                let app = runtime.ctx.as_ref();
+                let state = runtime.state.clone();
+                let conv_id = selected.clone();
+                let conversations = chat_list_conversations(app, &state).await;
+                let cluster = cluster_status(&state).await;
+                (conv_id, conversations, cluster)
             },
             |view, output, ctx| {
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());
                 let Some(selected) = selected else {
                     return;
                 };
+                let (conv_id, conversations, cluster) = output;
+                if conv_id != selected {
+                    return;
+                }
                 let remote_active = view
                     .shell_state
                     .lock()
                     .map(|state| state.remote_desktop_active)
                     .unwrap_or(false);
-                if let Ok(cluster) = output {
+                let conv = conversations
+                    .ok()
+                    .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
+                if let Some(conv) = conv {
+                    view.title = conv
+                        .title
+                        .clone()
+                        .or(conv.peer_display_name.clone())
+                        .unwrap_or_else(|| "未知设备".into());
+                    view.node_id = conv.peer_endpoint.clone();
+                    let peer_online = cluster
+                        .as_ref()
+                        .ok()
+                        .and_then(|cluster| {
+                            cluster.nodes.iter().find_map(|node| {
+                                if node.chat_endpoint_id.as_deref()
+                                    == Some(conv.peer_endpoint.as_str())
+                                    || node.node_id == conv.peer_endpoint
+                                {
+                                    Some(node.online)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .unwrap_or(false);
+                    view.online = peer_online;
+                    view.status = if remote_active {
+                        "远程桌面 · 已连接".into()
+                    } else if peer_online {
+                        "在线".into()
+                    } else {
+                        "离线".into()
+                    };
+                } else if let Ok(cluster) = cluster {
                     if let Some(node) = cluster.nodes.iter().find(|n| {
                         n.chat_endpoint_id.as_deref() == Some(selected.as_str())
                             || n.node_id == selected
@@ -125,7 +168,7 @@ impl ChatHeaderView {
                             "离线".into()
                         };
                     } else {
-                        view.title = "未知设备".into();
+                        view.title = selected.clone();
                         view.node_id = selected.clone();
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
@@ -185,57 +228,58 @@ impl View for ChatHeaderView {
             .map(|state| state.mute_flyout_open)
             .unwrap_or(false);
 
-        let info_clickable = EventHandler::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(tg_avatar(
-                    Self::avatar_initials(&self.title),
-                    self.font,
-                    TG_AVATAR_SM_SIZE,
-                ))
-                .with_child(
-                    Container::new({
-                        let mut text_col = Flex::column().with_main_axis_size(MainAxisSize::Min);
-                        text_col.add_child(
-                            ui_text::chat_header_title(self.title.clone(), self.font)
-                                .with_color(theme::text())
-                                .finish(),
-                        );
-                        let status_color = if self.online && !rdp_active {
-                            theme::success()
-                        } else {
-                            theme::muted()
-                        };
-                        text_col.add_child(
-                            Container::new(
-                                Flex::row()
-                                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                    .with_child(if self.online && !rdp_active {
-                                        Container::new(online_dot())
-                                            .with_horizontal_margin(4.0)
-                                            .finish()
-                                    } else {
-                                        Flex::row().finish()
-                                    })
-                                    .with_child(
-                                        ui_text::chat_header_status(
-                                            self.status.clone(),
-                                            self.font,
-                                        )
+        let info_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_child(tg_avatar(
+                Self::avatar_initials(&self.title),
+                self.font,
+                TG_AVATAR_SM_SIZE,
+            ))
+            .with_child(
+                Container::new({
+                    let mut text_col = Flex::column().with_main_axis_size(MainAxisSize::Min);
+                    text_col.add_child(
+                        ui_text::chat_header_title(self.title.clone(), self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    );
+                    let status_color = if self.online && !rdp_active {
+                        theme::success()
+                    } else {
+                        theme::muted()
+                    };
+                    text_col.add_child(
+                        Container::new(
+                            Flex::row()
+                                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                .with_child(if self.online && !rdp_active {
+                                    Container::new(online_dot())
+                                        .with_horizontal_margin(4.0)
+                                        .finish()
+                                } else {
+                                    Flex::row().finish()
+                                })
+                                .with_child(
+                                    ui_text::chat_header_status(self.status.clone(), self.font)
                                         .with_color(status_color)
                                         .finish(),
-                                    )
-                                    .finish(),
-                            )
-                            .with_margin_top(1.0)
-                            .finish(),
-                        );
-                        text_col.finish()
-                    })
-                    .with_margin_left(TG_HEADER_INFO_GAP)
-                    .finish(),
-                )
+                                )
+                                .finish(),
+                        )
+                        .with_margin_top(1.0)
+                        .finish(),
+                    );
+                    text_col.finish()
+                })
+                .with_margin_left(TG_HEADER_INFO_GAP)
+                .finish(),
+            )
+            .finish();
+
+        let info_clickable = EventHandler::new(
+            ConstrainedBox::new(info_row)
+                .with_min_height(TG_AVATAR_SM_SIZE)
                 .finish(),
         )
         .on_left_mouse_down(|ctx, _, _| {

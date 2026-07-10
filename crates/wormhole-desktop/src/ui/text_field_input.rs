@@ -287,6 +287,10 @@ pub fn render_field_with_caret(
     )
 }
 
+pub fn compose_should_show_placeholder(draft: &str, marked: &str) -> bool {
+    draft.is_empty() && marked.is_empty()
+}
+
 pub fn render_compose_field_with_caret(
     draft: &str,
     marked: &str,
@@ -296,6 +300,19 @@ pub fn render_compose_field_with_caret(
     disabled: bool,
     caret_blink: bool,
 ) -> Box<dyn Element> {
+    let show_caret = focused && !disabled;
+    if compose_should_show_placeholder(draft, marked) {
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(
+            warpui::elements::Text::new(placeholder.to_string(), font, ui_text::CHAT_COMPOSE_FONT_SIZE)
+                .with_color(theme::placeholder())
+                .finish(),
+        );
+        if show_caret {
+            row.add_child(render_caret(true, caret_blink));
+        }
+        return row.finish();
+    }
     render_field_with_caret_sized(
         draft,
         marked,
@@ -305,6 +322,41 @@ pub fn render_compose_field_with_caret(
         disabled,
         caret_blink,
         ui_text::CHAT_COMPOSE_FONT_SIZE,
+    )
+}
+
+/// Sidebar / thread search: keep placeholder visible when focused and empty (align AI search).
+pub fn render_search_field_with_caret(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    caret_blink: bool,
+) -> Box<dyn Element> {
+    let show_caret = focused && !disabled;
+    if compose_should_show_placeholder(draft, marked) {
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(
+            warpui::elements::Text::new(placeholder.to_string(), font, ui_text::BODY_SIZE)
+                .with_color(theme::placeholder())
+                .finish(),
+        );
+        if show_caret {
+            row.add_child(render_caret(true, caret_blink));
+        }
+        return row.finish();
+    }
+    render_field_with_caret_sized(
+        draft,
+        marked,
+        placeholder,
+        font,
+        focused,
+        disabled,
+        caret_blink,
+        ui_text::BODY_SIZE,
     )
 }
 
@@ -453,7 +505,10 @@ pub fn compose_input_height(draft: &str, marked: &str) -> f32 {
             measure.push_str(marked);
         }
     }
-    crate::ui::multiline_input::box_height(&measure, crate::ui::multiline_input::DEFAULT_COLS)
+    crate::ui::multiline_input::compose_box_height(
+        &measure,
+        crate::ui::multiline_input::DEFAULT_COLS,
+    )
 }
 
 type EditCallback = Rc<dyn Fn(&mut EventContext, TextFieldEditAction)>;
@@ -707,8 +762,8 @@ mod tests {
     #[test]
     fn compose_input_height_grows_with_newlines() {
         use super::compose_input_height;
-        assert_eq!(compose_input_height("", ""), 36.0);
-        assert!(compose_input_height("a\nb\nc", "") > 36.0);
+        assert_eq!(compose_input_height("", ""), 22.0);
+        assert!(compose_input_height("a\nb\nc", "") > 22.0);
     }
 
     #[test]
@@ -717,6 +772,14 @@ mod tests {
         assert!(should_show_placeholder(false, "", ""));
         assert!(!should_show_placeholder(true, "x", ""));
         assert!(!should_show_placeholder(false, "", "preedit"));
+    }
+
+    #[test]
+    fn compose_placeholder_visible_while_focused() {
+        use super::compose_should_show_placeholder;
+        assert!(compose_should_show_placeholder("", ""));
+        assert!(!compose_should_show_placeholder("x", ""));
+        assert!(!compose_should_show_placeholder("", "preedit"));
     }
 
     #[test]

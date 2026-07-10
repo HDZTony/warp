@@ -20156,6 +20156,7 @@ dependencies = [
  "pathfinder_geometry",
  "portable-pty",
  "resvg",
+ "rfd",
  "serde",
  "serde_json",
  "tiny-skia 0.12.0",

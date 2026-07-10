@@ -11,8 +11,8 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    cluster_status, cluster_status_fast, schedule_active_cluster_member_update_if_ready,
-    ClusterStatusDto, NODE_PRESENCE_SIGNED_IN,
+    cluster_status, cluster_status_fast, cluster_status_hud,
+    schedule_active_cluster_member_update_if_ready, ClusterStatusDto, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
@@ -94,7 +94,7 @@ pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, 
 
 pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {
     kick_device_bootstrap(state).await;
-    match cluster_status_fast(state).await {
+    match cluster_status_hud(state).await {
         Ok(status) => DeviceGateStatus::from_cluster(&status),
         Err(_) => DeviceGateStatus {
             loaded: true,

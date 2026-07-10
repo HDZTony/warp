@@ -1,10 +1,11 @@
 use warpui::elements::{
-    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
-    ParentElement, Radius,
+    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
+    Flex, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
+use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
@@ -24,6 +25,8 @@ use wormhole_desktop_core::{
 pub enum SettingsEvent {
     AccountChanged { authenticated: bool },
     OpenLogin,
+    RestoreArchivedSession(String),
+    DeleteArchivedSession(String),
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,9 @@ pub enum SettingsAction {
     ToggleDiagnosticUpload,
     UploadDiagnosticsNow,
     ClearDiagnosticQueue,
+    ToggleArchiveSection,
+    RestoreArchivedSession(String),
+    DeleteArchivedSession(String),
 }
 
 pub struct SettingsView {
@@ -56,6 +62,7 @@ pub struct SettingsView {
     diagnostic_message: String,
     diagnostic_tone: StatusTone,
     diagnostic_busy: bool,
+    archive_expanded: bool,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
 }
 
@@ -85,6 +92,7 @@ impl SettingsView {
             diagnostic_message: String::new(),
             diagnostic_tone: StatusTone::Placeholder,
             diagnostic_busy: false,
+            archive_expanded: false,
             agent_providers,
         };
         view.refresh(ctx);
@@ -460,6 +468,147 @@ impl SettingsView {
         }
         section_card(col.finish())
     }
+
+    fn archive_block(&self) -> Box<dyn Element> {
+        let data_dir = self.core.data_dir();
+        let snapshots = load_archived_snapshots(&data_dir);
+        let count = snapshots.len();
+        let expanded = self.archive_expanded;
+        let chevron = if expanded { "▼" } else { "▶" };
+
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("ARCHIVE · 历史对话归档", self.font));
+        col.add_child(section_hint(
+            "从智能体归档的对话会显示在这里，可恢复至项目或独立对话，或永久删除。",
+            self.font,
+        ));
+
+        let toggle_label = format!("{chevron} 已归档会话");
+        let toggle_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(
+                ui_text::body(toggle_label, self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_child(
+                Container::new(
+                    ui_text::mono(count.to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_uniform_padding(4.0)
+                .with_background(theme::accent_cool_bg(24))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+                .with_horizontal_margin(8.0)
+                .finish(),
+            );
+        let toggle = EventHandler::new(
+            Container::new(toggle_row.finish())
+                .with_uniform_padding(10.0)
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(SettingsAction::ToggleArchiveSection);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+        col.add_child(toggle);
+
+        if expanded {
+            let mut list_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            if snapshots.is_empty() {
+                list_col.add_child(
+                    Container::new(section_hint("暂无归档会话", self.font))
+                        .with_padding_top(4.0)
+                        .with_padding_bottom(4.0)
+                        .finish(),
+                );
+            } else {
+                for snapshot in snapshots {
+                    list_col.add_child(self.archived_session_row(snapshot));
+                }
+            }
+            col.add_child(
+                Container::new(list_col.finish())
+                    .with_margin_top(4.0)
+                    .with_uniform_padding(4.0)
+                    .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                    .finish(),
+            );
+        }
+
+        section_card(col.finish())
+    }
+
+    fn archived_session_row(&self, snapshot: ArchivedSessionSnapshot) -> Box<dyn Element> {
+        let session_id = snapshot.id.clone();
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        let mut label_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        label_col.add_child(
+            ui_text::body(snapshot.label, self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        label_col.add_child(
+            ui_text::mono(snapshot.time, self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        row.add_child(Expanded::new(1.0, label_col.finish()).finish());
+        row.add_child(
+            Container::new(
+                EventHandler::new(
+                    ui_text::body("恢复", self.font)
+                        .with_color(theme::accent_cool())
+                        .finish(),
+                )
+                .on_left_mouse_down({
+                    let id = session_id.clone();
+                    move |ctx, _, _| {
+                        ctx.dispatch_typed_action(SettingsAction::RestoreArchivedSession(
+                            id.clone(),
+                        ));
+                        DispatchEventResult::StopPropagation
+                    }
+                })
+                .finish(),
+            )
+            .with_horizontal_margin(4.0)
+            .finish(),
+        );
+        row.add_child(
+            Container::new(
+                EventHandler::new(
+                    ui_text::body("永久删除", self.font)
+                        .with_color(theme::danger())
+                        .finish(),
+                )
+                .on_left_mouse_down({
+                    let id = session_id.clone();
+                    move |ctx, _, _| {
+                        ctx.dispatch_typed_action(SettingsAction::DeleteArchivedSession(
+                            id.clone(),
+                        ));
+                        DispatchEventResult::StopPropagation
+                    }
+                })
+                .finish(),
+            )
+            .with_horizontal_margin(4.0)
+            .finish(),
+        );
+        Container::new(row.finish())
+            .with_uniform_padding(8.0)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish()
+    }
 }
 
 impl Entity for SettingsView {
@@ -477,6 +626,7 @@ impl View for SettingsView {
         col.add_child(self.account_block());
         col.add_child(self.diagnostics_block());
         col.add_child(self.shared_path_block());
+        col.add_child(self.archive_block());
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
                 .with_color(theme::placeholder())
@@ -666,6 +816,16 @@ impl TypedActionView for SettingsView {
                         ctx.notify();
                     },
                 );
+            }
+            SettingsAction::ToggleArchiveSection => {
+                self.archive_expanded = !self.archive_expanded;
+                ctx.notify();
+            }
+            SettingsAction::RestoreArchivedSession(id) => {
+                ctx.emit(SettingsEvent::RestoreArchivedSession(id.clone()));
+            }
+            SettingsAction::DeleteArchivedSession(id) => {
+                ctx.emit(SettingsEvent::DeleteArchivedSession(id.clone()));
             }
         }
     }

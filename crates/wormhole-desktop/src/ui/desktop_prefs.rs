@@ -42,14 +42,44 @@ impl Default for DesktopUiPrefs {
     }
 }
 
-pub fn format_account_balance(credits: i64) -> String {
-    let safe = credits.max(0).to_string();
-    format!("¥{}.00", group_digits(&safe))
+pub fn format_account_balance(credits_micro: i64) -> String {
+    format!("¥{}", format_yuan_from_micro(credits_micro.max(0)))
 }
 
-/// Formats redeem history amounts (`1 credit = 1元`) with a leading `+`.
-pub fn format_redeem_amount(amount_credits: i64) -> String {
-    format!("+{}", format_account_balance(amount_credits))
+/// Formats redeem history amounts (`1 credit = 1元 = 1_000_000 micro`) with a leading `+`.
+pub fn format_redeem_amount(amount_credits_micro: i64) -> String {
+    format!("+{}", format_account_balance(amount_credits_micro))
+}
+
+/// Prefer server-provided yuan string when present; otherwise format micro credits.
+pub fn format_balance_display(amount_yuan: Option<&str>, credits_micro: i64) -> String {
+    if let Some(raw) = amount_yuan.map(str::trim).filter(|value| !value.is_empty()) {
+        if raw.starts_with('¥') || raw.starts_with('+') {
+            return raw.to_string();
+        }
+        return format!("¥{raw}");
+    }
+    format_account_balance(credits_micro)
+}
+
+fn format_yuan_from_micro(micro: i64) -> String {
+    const MICRO_PER_CREDIT: i64 = 1_000_000;
+    let abs = micro.unsigned_abs();
+    let whole = abs / MICRO_PER_CREDIT as u64;
+    let frac = abs % MICRO_PER_CREDIT as u64;
+    let whole_grouped = group_digits(&whole.to_string());
+    if frac == 0 {
+        return format!("{whole_grouped}.00");
+    }
+    let frac_str = format!("{frac:06}");
+    let frac_trim = frac_str.trim_end_matches('0');
+    if frac_trim.len() == 1 {
+        return format!("{whole_grouped}.{frac_trim}0");
+    }
+    if frac_trim.len() == 2 {
+        return format!("{whole_grouped}.{frac_trim}");
+    }
+    format!("{whole_grouped}.{frac_trim}")
 }
 
 pub fn redeem_history_from_ledger(
@@ -190,16 +220,27 @@ mod tests {
 
     #[test]
     fn format_account_balance_groups_digits() {
-        assert_eq!(format_account_balance(37_550), "¥37,550.00");
-        assert_eq!(format_account_balance(100_000), "¥100,000.00");
+        assert_eq!(format_account_balance(37_550_000_000), "¥37,550.00");
+        assert_eq!(format_account_balance(100_000_000_000), "¥100,000.00");
         assert_eq!(format_account_balance(0), "¥0.00");
         assert_eq!(format_account_balance(-5), "¥0.00");
+        assert_eq!(format_account_balance(123_456), "¥0.123456");
+        assert_eq!(format_account_balance(1_230_000), "¥1.23");
+    }
+
+    #[test]
+    fn format_balance_display_prefers_server_yuan() {
+        assert_eq!(
+            format_balance_display(Some("12.345678"), 0),
+            "¥12.345678"
+        );
+        assert_eq!(format_balance_display(None, 5_000_000), "¥5.00");
     }
 
     #[test]
     fn format_redeem_amount_uses_yuan_credits() {
-        assert_eq!(format_redeem_amount(5), "+¥5.00");
-        assert_eq!(format_redeem_amount(5000), "+¥5,000.00");
+        assert_eq!(format_redeem_amount(5_000_000), "+¥5.00");
+        assert_eq!(format_redeem_amount(5_000_000_000), "+¥5,000.00");
         assert_eq!(format_redeem_amount(0), "+¥0.00");
     }
 

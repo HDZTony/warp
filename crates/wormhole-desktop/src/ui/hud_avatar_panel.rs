@@ -13,7 +13,9 @@ use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::app_shell::{AppShellAction, RedeemTab};
-use crate::ui::desktop_prefs::{format_account_balance, format_redeem_amount, RedeemHistoryEntry};
+use crate::ui::desktop_prefs::{
+    format_balance_display, format_redeem_amount, RedeemHistoryEntry,
+};
 use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
     render_field_with_caret, wrap_text_field_focus_on_click, TextFieldInput,
@@ -108,6 +110,7 @@ pub fn build_avatar_slot(
 pub fn build_avatar_panel(
     device_id: Option<&str>,
     balance_credits: i64,
+    balance_amount_yuan: Option<&str>,
     busy: bool,
     balance_feedback: Option<&str>,
     font: FamilyId,
@@ -116,7 +119,7 @@ pub fn build_avatar_panel(
     let balance_text = if busy {
         "同步中…".to_string()
     } else {
-        format_account_balance(balance_credits)
+        format_balance_display(balance_amount_yuan, balance_credits)
     };
     let user_label = device_id.unwrap_or("未登录").to_string();
 

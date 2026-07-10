@@ -1,10 +1,12 @@
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded,
-    Flex, MainAxisSize, ParentElement, Radius, Stack,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, Empty, EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Radius,
+    Stack,
 };
 use warpui::fonts::FamilyId;
-use warpui::Element;
+use warpui::{AppContext, Element, EventContext};
 
 use crate::ui::theme;
 use crate::ui_text;
@@ -28,6 +30,22 @@ pub const AGENT_ICON_BTN_RADIUS: f32 = 7.0;
 pub const AGENT_THREAD_MAX_WIDTH: f32 = 720.0;
 /// `.agent-thread` bottom padding — reserves space for overlay composer (HTML: 120px).
 pub const AGENT_THREAD_BOTTOM_PAD: f32 = 120.0;
+
+/// Position a popover / context menu at viewport coordinates (matches `devices_view`).
+pub fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
+    let panel = EventHandler::new(panel)
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+    Align::new(
+        Container::new(panel)
+            .with_margin_left(x.max(8.0))
+            .with_margin_top(y.max(8.0))
+            .finish(),
+    )
+    .top_left()
+    .finish()
+}
 
 pub fn truncate_middle(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
@@ -171,6 +189,168 @@ pub fn chat_sidebar_search_bg() -> ColorU {
     ColorU::new(20, 18, 26, 255)
 }
 
+/// Bordered search pill (`.chat-sidebar-search-wrap` / `.agent-search-wrap` / thread-search).
+///
+/// Parent must wrap the result in `Flex row Max` + `Expanded(1.0, …)` so the pill
+/// stretches to the available width; optional `ConstrainedBox::with_width` inside `Expanded`
+/// matches AI sidebar fixed width.
+pub fn chat_search_pill(
+    inner_row: Box<dyn Element>,
+    background: ColorU,
+    border: ColorU,
+    padding_v: f32,
+    padding_h: f32,
+    radius: f32,
+) -> Box<dyn Element> {
+    Container::new(inner_row)
+        .with_padding_left(padding_h)
+        .with_padding_right(padding_h)
+        .with_padding_top(padding_v)
+        .with_padding_bottom(padding_v)
+        .with_background(background)
+        .with_border(Border::all(1.0).with_border_fill(border))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(radius)))
+        .finish()
+}
+
+/// `.agent-add-panel .add-icon` / chat attach popover icon circle.
+pub const POPOVER_ICON_SIZE: f32 = 34.0;
+
+/// Floating popover shell (AI composer access/model + chat attach/header/sticker).
+pub fn popover_shell(width: f32, body: Box<dyn Element>) -> Box<dyn Element> {
+    EventHandler::new(
+        ConstrainedBox::new(
+            Container::new(body)
+                .with_background(theme::panel_elevated())
+                .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)))
+                .finish(),
+        )
+        .with_min_width(width)
+        .with_width(width)
+        .finish(),
+    )
+    .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+    .finish()
+}
+
+/// Muted section title inside a popover (`.agent-access-panel-label`).
+pub fn popover_menu_header(font: FamilyId, title: impl Into<String>) -> Box<dyn Element> {
+    Container::new(agent_sidebar_label(title.into(), font))
+        .with_padding_left(14.0)
+        .with_padding_right(14.0)
+        .with_padding_top(12.0)
+        .with_padding_bottom(8.0)
+        .finish()
+}
+
+/// Icon circle + title + hint row (`.agent-add-panel` / chat attach options).
+pub fn popover_icon_option<F>(
+    font: FamilyId,
+    icon: Box<dyn Element>,
+    title: impl Into<String>,
+    hint: impl Into<String>,
+    on_click: F,
+) -> Box<dyn Element>
+where
+    F: 'static
+        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+{
+    let title = title.into();
+    let hint = hint.into();
+    let text_col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_child(
+            ui_text::body(title, font)
+                .with_color(theme::text())
+                .finish(),
+        )
+        .with_child(
+            Container::new(section_hint(hint, font))
+                .with_padding_top(2.0)
+                .finish(),
+        )
+        .finish();
+    let row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(icon)
+        .with_child(
+            Container::new(text_col)
+                .with_margin_left(12.0)
+                .finish(),
+        )
+        .finish();
+    Container::new(
+        EventHandler::new(row)
+            .on_left_mouse_down(on_click)
+            .finish(),
+    )
+    .with_padding_left(14.0)
+    .with_padding_right(14.0)
+    .with_padding_top(10.0)
+    .with_padding_bottom(10.0)
+    .finish()
+}
+
+/// Single-line popover menu item (chat header / mute flyout).
+pub fn popover_plain_item<F>(
+    font: FamilyId,
+    label: &str,
+    danger: bool,
+    has_flyout: bool,
+    on_click: F,
+) -> Box<dyn Element>
+where
+    F: 'static
+        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+{
+    let color = if danger {
+        theme::danger()
+    } else {
+        theme::text()
+    };
+    let mut row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_main_axis_size(MainAxisSize::Max);
+    row.add_child(
+        ui_text::body(label.to_string(), font)
+            .with_color(color)
+            .finish(),
+    );
+    if has_flyout {
+        row.add_child(
+            Container::new(
+                ui_text::body("›", font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_left(8.0)
+            .finish(),
+        );
+    }
+    EventHandler::new(
+        Container::new(row.finish())
+            .with_uniform_padding(10.0)
+            .finish(),
+    )
+    .on_left_mouse_down(on_click)
+    .finish()
+}
+
+/// Horizontal rule inside a popover menu.
+pub fn popover_menu_separator() -> Box<dyn Element> {
+    ConstrainedBox::new(
+        Container::new(Flex::row().finish())
+            .with_vertical_margin(4.0)
+            .with_horizontal_margin(8.0)
+            .with_background(theme::border())
+            .finish(),
+    )
+    .with_height(1.0)
+    .finish()
+}
+
 /// `.tg-msg-row.in .tg-bubble` background.
 pub fn chat_bubble_in_bg() -> ColorU {
     theme::panel_elevated()
@@ -210,8 +390,8 @@ pub fn tg_avatar_glyph_size(diameter: f32) -> f32 {
 pub fn tg_avatar(initials: impl Into<String>, font: FamilyId, diameter: f32) -> Box<dyn Element> {
     let initials = initials.into();
     let glyph_size = tg_avatar_glyph_size(diameter);
-    Container::new(
-        ConstrainedBox::new(
+    let avatar = ConstrainedBox::new(
+        Container::new(
             Align::new(
                 ui_text::chat_avatar_glyph(initials, font, glyph_size)
                     .with_color(theme::accent_cool())
@@ -219,14 +399,15 @@ pub fn tg_avatar(initials: impl Into<String>, font: FamilyId, diameter: f32) -> 
             )
             .finish(),
         )
-        .with_width(diameter)
-        .with_height(diameter)
+        .with_background(tg_avatar_bg())
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(diameter / 2.0)))
+        .with_border(Border::all(1.0).with_border_fill(tg_avatar_border()))
         .finish(),
     )
-    .with_background(tg_avatar_bg())
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(diameter / 2.0)))
-    .with_border(Border::all(1.0).with_border_fill(tg_avatar_border()))
-    .finish()
+    .with_width(diameter)
+    .with_height(diameter)
+    .finish();
+    avatar
 }
 
 /// `.conv-device-status .dot` — online indicator.
@@ -280,6 +461,28 @@ pub enum StatusTone {
 #[cfg(test)]
 mod tests {
     use super::truncate_middle;
+    use super::{tg_avatar_glyph_size, TG_AVATAR_LG_SIZE, TG_AVATAR_SIZE, TG_AVATAR_SM_SIZE};
+    use crate::ui_text;
+
+    #[test]
+    fn tg_avatar_glyph_size_matches_design_diameters() {
+        assert_eq!(tg_avatar_glyph_size(TG_AVATAR_SIZE), ui_text::CHAT_AVATAR_GLYPH_SIZE);
+        assert_eq!(
+            tg_avatar_glyph_size(TG_AVATAR_SM_SIZE),
+            ui_text::CHAT_AVATAR_SM_GLYPH_SIZE
+        );
+        assert_eq!(
+            tg_avatar_glyph_size(TG_AVATAR_LG_SIZE),
+            ui_text::CHAT_AVATAR_LG_GLYPH_SIZE
+        );
+    }
+
+    #[test]
+    fn tg_avatar_design_diameters_are_square() {
+        assert_eq!(TG_AVATAR_SIZE, 46.0);
+        assert_eq!(TG_AVATAR_SM_SIZE, 40.0);
+        assert_eq!(TG_AVATAR_LG_SIZE, 72.0);
+    }
 
     #[test]
     fn truncate_middle_short_unchanged() {

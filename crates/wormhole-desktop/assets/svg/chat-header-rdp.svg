@@ -1,8 +1,8 @@
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect x="2" y="4" width="16" height="10" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
-<path d="M6 18h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-<path d="M10 14v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-<rect x="17" y="8" width="5" height="4" rx="0.5" stroke="currentColor" stroke-width="1.8"/>
-<path d="M19 6V4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-<path d="M17 10h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+<rect x="2" y="4" width="16" height="10" rx="1.5" stroke="white" stroke-width="1.8"/>
+<path d="M6 18h8" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M10 14v4" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+<rect x="17" y="8" width="5" height="4" rx="0.5" stroke="white" stroke-width="1.8"/>
+<path d="M19 6V4" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M17 10h5" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
 </svg>

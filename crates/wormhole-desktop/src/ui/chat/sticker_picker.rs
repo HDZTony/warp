@@ -1,10 +1,13 @@
-use warpui::elements::{Container, Flex, ParentElement};
+use warpui::elements::{Container, CrossAxisAlignment, Flex, ParentElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::{popover_menu_header, popover_shell, section_hint};
 use crate::ui_text;
 use wormhole_desktop_core::sticker_commands::{sticker_list_packs, StickerPackDto};
+
+const STICKER_POPOVER_WIDTH: f32 = 280.0;
 
 pub struct StickerPickerView {
     core: CoreHandle,
@@ -48,22 +51,31 @@ impl View for StickerPickerView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut col = Flex::column();
-        col.add_child(ui_text::body("贴纸", self.font).finish());
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(popover_menu_header(self.font, "贴纸"));
         for pack in &self.packs {
             col.add_child(
-                ui_text::mono(
+                Container::new(section_hint(
                     format!("{} ({} stickers)", pack.title, pack.stickers.len()),
                     self.font,
-                )
+                ))
+                .with_padding_left(14.0)
+                .with_padding_right(14.0)
+                .with_padding_top(8.0)
+                .with_padding_bottom(8.0)
                 .finish(),
             );
         }
         if self.packs.is_empty() {
-            col.add_child(ui_text::body("无贴纸包", self.font).finish());
+            col.add_child(
+                Container::new(ui_text::body("无贴纸包", self.font).finish())
+                    .with_padding_left(14.0)
+                    .with_padding_right(14.0)
+                    .with_padding_top(8.0)
+                    .with_padding_bottom(8.0)
+                    .finish(),
+            );
         }
-        Container::new(col.finish())
-            .with_uniform_padding(4.0)
-            .finish()
+        popover_shell(STICKER_POPOVER_WIDTH, col.finish())
     }
 }

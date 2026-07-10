@@ -43,6 +43,11 @@ pub const CHAT_AVATAR_SM_GLYPH_SIZE: f32 = 12.0;
 /// Matches profile `.tg-avatar` in `desktop-current.html`.
 pub const CHAT_AVATAR_LG_GLYPH_SIZE: f32 = 18.0;
 
+/// Matches `.cluster-join-dialog h3` in `desktop-current.html`.
+pub const MODAL_DIALOG_TITLE_SIZE: f32 = 18.0;
+/// Matches `.project-create-close` in `desktop-current.html`.
+pub const MODAL_CLOSE_GLYPH_SIZE: f32 = 20.0;
+
 pub fn body(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, BODY_SIZE)
 }
@@ -57,6 +62,14 @@ pub fn hud_title(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
 
 pub fn section_title(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
     Text::new(text, font, SECTION_TITLE_SIZE)
+}
+
+pub fn modal_dialog_title(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, MODAL_DIALOG_TITLE_SIZE)
+}
+
+pub fn modal_close_glyph(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {
+    Text::new(text, font, MODAL_CLOSE_GLYPH_SIZE)
 }
 
 pub fn cluster_ctrl(text: impl Into<Cow<'static, str>>, font: FamilyId) -> Text {

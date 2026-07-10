@@ -36,19 +36,29 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("cluster-refresh.svg"),
     bundled_icon!("agent-more.svg"),
     bundled_icon!("agent-new.svg"),
+    bundled_icon!("agent-new-project.svg"),
+    bundled_icon!("agent-edit.svg"),
+    bundled_icon!("agent-plus.svg"),
+    bundled_icon!("agent-send.svg"),
     bundled_icon!("agent-search.svg"),
     bundled_icon!("agent-folder.svg"),
     bundled_icon!("agent-attach.svg"),
     bundled_icon!("agent-warn.svg"),
     bundled_icon!("agent-chevron.svg"),
+    bundled_icon!("agent-chevron-down.svg"),
     bundled_icon!("agent-user.svg"),
     bundled_icon!("agent-copy.svg"),
     bundled_icon!("chat-compose-attach.svg"),
     bundled_icon!("chat-compose-emoji.svg"),
     bundled_icon!("chat-compose-send.svg"),
     bundled_icon!("chat-compose-mic.svg"),
+    bundled_icon!("chat-attach-media.svg"),
+    bundled_icon!("chat-attach-document.svg"),
+    bundled_icon!("chat-attach-location.svg"),
     bundled_icon!("chat-header-search.svg"),
     bundled_icon!("chat-header-phone.svg"),
+    bundled_icon!("chat-header-rdp.svg"),
+    bundled_icon!("chat-header-profile.svg"),
     bundled_icon!("chat-header-more.svg"),
     bundled_icon!("chat-sidebar-search.svg"),
 ];
@@ -92,13 +102,49 @@ mod tests {
             "chat-compose-emoji.svg",
             "chat-compose-send.svg",
             "chat-compose-mic.svg",
+            "chat-attach-media.svg",
+            "chat-attach-document.svg",
+            "chat-attach-location.svg",
             "chat-header-search.svg",
             "chat-header-phone.svg",
+            "chat-header-rdp.svg",
+            "chat-header-profile.svg",
             "chat-header-more.svg",
             "chat-sidebar-search.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+        }
+    }
+
+    #[test]
+    fn bundled_chat_icons_use_white_alpha_mask_not_current_color() {
+        let assets = WormholeAssets;
+        for name in [
+            "chat-compose-attach.svg",
+            "chat-compose-emoji.svg",
+            "chat-compose-send.svg",
+            "chat-compose-mic.svg",
+            "chat-attach-media.svg",
+            "chat-attach-document.svg",
+            "chat-attach-location.svg",
+            "chat-header-search.svg",
+            "chat-header-phone.svg",
+            "chat-header-rdp.svg",
+            "chat-header-profile.svg",
+            "chat-header-more.svg",
+            "chat-sidebar-search.svg",
+        ] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let markup = std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{name}: utf-8"));
+            assert!(
+                !markup.contains("currentColor"),
+                "{name} must not use currentColor (warpui Icon alpha mask needs white strokes/fills)"
+            );
+            assert!(
+                markup.contains("white"),
+                "{name} must use white strokes/fills for warpui Icon alpha mask"
+            );
         }
     }
 
@@ -113,9 +159,51 @@ mod tests {
             "cluster-refresh.svg",
             "agent-search.svg",
             "agent-attach.svg",
+            "agent-more.svg",
+            "agent-new-project.svg",
+            "agent-edit.svg",
+            "agent-plus.svg",
+            "agent-send.svg",
+            "agent-folder.svg",
+            "agent-chevron.svg",
+            "agent-chevron-down.svg",
+            "agent-warn.svg",
+            "agent-user.svg",
+            "agent-copy.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+        }
+    }
+
+    #[test]
+    fn bundled_agent_icons_use_white_alpha_mask_not_current_color() {
+        let assets = WormholeAssets;
+        for name in [
+            "agent-search.svg",
+            "agent-more.svg",
+            "agent-new-project.svg",
+            "agent-edit.svg",
+            "agent-plus.svg",
+            "agent-send.svg",
+            "agent-folder.svg",
+            "agent-chevron.svg",
+            "agent-chevron-down.svg",
+            "agent-attach.svg",
+            "agent-warn.svg",
+            "agent-user.svg",
+            "agent-copy.svg",
+        ] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let markup = std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{name}: utf-8"));
+            assert!(
+                !markup.contains("currentColor"),
+                "{name} must not use currentColor (warpui Icon alpha mask needs white strokes/fills)"
+            );
+            assert!(
+                markup.contains("white"),
+                "{name} must use white strokes/fills for warpui Icon alpha mask"
+            );
         }
     }
 }

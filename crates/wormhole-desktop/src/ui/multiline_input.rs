@@ -2,6 +2,8 @@
 
 pub const LINE_HEIGHT: f32 = 18.0;
 pub const BASE_HEIGHT: f32 = 36.0;
+/// Single-line inner height for chat compose (`.chat-compose-input { min-height: 22px }`).
+pub const COMPOSE_BASE_HEIGHT: f32 = 22.0;
 pub const MAX_LINES: usize = 8;
 pub const DEFAULT_COLS: usize = 48;
 
@@ -28,6 +30,11 @@ pub fn box_height(draft: &str, cols: usize) -> f32 {
     BASE_HEIGHT + (lines.saturating_sub(1) as f32) * LINE_HEIGHT
 }
 
+pub fn compose_box_height(draft: &str, cols: usize) -> f32 {
+    let lines = visible_line_count(draft, cols);
+    COMPOSE_BASE_HEIGHT + (lines.saturating_sub(1) as f32) * LINE_HEIGHT
+}
+
 pub fn display_draft(draft: &str, placeholder: &str) -> String {
     if draft.is_empty() {
         placeholder.to_string()
@@ -38,12 +45,13 @@ pub fn display_draft(draft: &str, placeholder: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{box_height, visible_line_count};
+    use super::{box_height, compose_box_height, visible_line_count};
 
     #[test]
     fn empty_is_one_line() {
         assert_eq!(visible_line_count("", 40), 1);
         assert_eq!(box_height("", 40), 36.0);
+        assert_eq!(compose_box_height("", 40), 22.0);
     }
 
     #[test]

@@ -92,7 +92,10 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
                 .with_height(14.0)
                 .finish(),
         )
-        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(super::AgentPanelAction::CopyUserPrompt);
+            DispatchEventResult::StopPropagation
+        })
         .finish(),
     )
     .with_uniform_padding(4.0)

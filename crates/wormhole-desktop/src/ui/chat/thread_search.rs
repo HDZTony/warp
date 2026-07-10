@@ -14,6 +14,7 @@ use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
     CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
+use crate::ui::panel_primitives::chat_search_pill;
 use crate::ui::theme;
 use crate::ui_text;
 
@@ -88,27 +89,18 @@ impl View for ChatThreadSearchView {
             ctx.dispatch_typed_action(ChatThreadSearchAction::ActivateQuery);
         });
 
-        let wrap = Container::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    Container::new(icons::chat_sidebar_search_icon(theme::muted()))
-                        .with_horizontal_margin(2.0)
-                        .finish(),
-                )
-                .with_child(Expanded::new(1.0, input).finish())
-                .finish(),
-        )
-        .with_padding_left(10.0)
-        .with_padding_right(10.0)
-        .with_padding_top(6.0)
-        .with_padding_bottom(6.0)
-        .with_background(theme::canvas())
-        .with_border(Border::all(1.0).with_border_fill(theme::border()))
-        .with_corner_radius(warpui::elements::CornerRadius::with_all(
-            warpui::elements::Radius::Pixels(999.0),
-        ))
-        .finish();
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Container::new(icons::chat_sidebar_search_icon(theme::muted()))
+                    .with_horizontal_margin(2.0)
+                    .finish(),
+            )
+            .with_child(Expanded::new(1.0, input).finish())
+            .finish();
+
+        let wrap = chat_search_pill(row, theme::canvas(), theme::border(), 6.0, 10.0, 999.0);
 
         let close_btn = EventHandler::new(
             ConstrainedBox::new(

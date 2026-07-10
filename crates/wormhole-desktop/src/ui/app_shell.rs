@@ -44,14 +44,13 @@ use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::WDriveView;
 #[cfg(windows)]
-use crate::ui::window_chrome::CcswitchInterceptToggle;
 use crate::ui::window_chrome::{
     self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
 };
 use crate::ui_text;
 use wormhole_desktop_core::cloud_auth_status;
 use wormhole_desktop_core::cloud_credits::{CloudCreditProductDto, CloudCreditRedeemRequest};
-use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_fast};
+use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_hud};
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
@@ -115,8 +114,6 @@ pub enum AppShellAction {
     ToggleMaximizeWindow,
     CloseWindow,
     OpenLogin,
-    #[cfg(windows)]
-    ToggleCcswitchIntercept,
     ToggleAvatarPanel,
     CloseAvatarPanel,
     PurchaseBalance,
@@ -159,6 +156,7 @@ pub struct AppShellView {
     device_ready: bool,
     avatar_panel_open: bool,
     balance_credits: i64,
+    balance_amount_yuan: Option<String>,
     balance_busy: bool,
     balance_feedback: Option<String>,
     purchase_modal_open: bool,
@@ -184,8 +182,6 @@ pub struct AppShellView {
     show_onboarding: bool,
     window_id: WindowId,
     traffic_light_mouse_states: TrafficLightMouseStates,
-    #[cfg(windows)]
-    ccswitch_intercept_enabled: bool,
     #[cfg(windows)]
     tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
 }
@@ -261,6 +257,28 @@ impl AppShellView {
                 SettingsEvent::OpenLogin => {
                     view.open_login_modal(ctx);
                 }
+                SettingsEvent::RestoreArchivedSession(id) => {
+                    let warp_handle = view.warp.clone();
+                    let session_id = id.clone();
+                    ctx.update_view(&warp_handle, |warp, ctx| {
+                        warp.restore_archived_session(session_id, ctx);
+                    });
+                    let settings_handle = view.settings.clone();
+                    ctx.update_view(&settings_handle, |_settings, ctx| {
+                        ctx.notify();
+                    });
+                }
+                SettingsEvent::DeleteArchivedSession(id) => {
+                    let warp_handle = view.warp.clone();
+                    let session_id = id.clone();
+                    ctx.update_view(&warp_handle, |warp, ctx| {
+                        warp.delete_archived_session(session_id, ctx);
+                    });
+                    let settings_handle = view.settings.clone();
+                    ctx.update_view(&settings_handle, |_settings, ctx| {
+                        ctx.notify();
+                    });
+                }
             }
             ctx.notify();
         });
@@ -282,13 +300,6 @@ impl AppShellView {
         }
         let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
         let window_id = ctx.window_id();
-        #[cfg(windows)]
-        let ccswitch_intercept_enabled = {
-            let settings = wormhole_desktop_core::agent_deeplink_settings::load_settings_blocking(
-                &core.data_dir(),
-            );
-            settings.ccswitch_intercept_enabled
-        };
         let view = Self {
             tab,
             hovered_tab: None,
@@ -315,6 +326,7 @@ impl AppShellView {
             device_ready: false,
             avatar_panel_open: false,
             balance_credits: 0,
+            balance_amount_yuan: None,
             balance_busy: false,
             balance_feedback: None,
             purchase_modal_open: false,
@@ -340,8 +352,6 @@ impl AppShellView {
             show_onboarding,
             window_id,
             traffic_light_mouse_states: TrafficLightMouseStates::default(),
-            #[cfg(windows)]
-            ccswitch_intercept_enabled,
             #[cfg(windows)]
             tray,
         };
@@ -401,7 +411,7 @@ impl AppShellView {
             async move {
                 let _ = waiter.recv().await;
                 let state = core_for_task.runtime().state.clone();
-                cluster_status_fast(&state).await
+                cluster_status_hud(&state).await
             },
             move |view, output, ctx| {
                 if let Ok(status) = output {
@@ -567,7 +577,7 @@ impl AppShellView {
             AppTab::Devices => "终端",
             AppTab::Display => "显示器",
             AppTab::Chat => "聊天",
-            AppTab::Warp => "智能体",
+            AppTab::Warp => "AI",
             AppTab::Toolbox => "工具箱",
             AppTab::Settings => "设置",
         }
@@ -757,6 +767,7 @@ impl AppShellView {
                 match output {
                     Ok(balance) => {
                         view.balance_credits = balance.balance_credits.max(0);
+                        view.balance_amount_yuan = balance.balance_amount_yuan;
                     }
                     Err(err) => {
                         view.balance_feedback = Some(format!("余额同步失败: {err}"));
@@ -1048,6 +1059,7 @@ impl AppShellView {
                             view.persist_redeem_code_override(card_key_id, &redeemed_code);
                         }
                         view.balance_credits = redeem.balance_credits.max(0);
+                        view.balance_amount_yuan = redeem.balance_amount_yuan.clone();
                         view.redeem_modal_open = false;
                         view.redeem_tab = RedeemTab::Redeem;
                         view.redeem_code_draft.clear();
@@ -1057,20 +1069,14 @@ impl AppShellView {
                         view.redeem_feedback_tone = StatusTone::Neutral;
                         view.balance_feedback = Some(format!(
                             "兑换成功 +{} · 当前 {}",
-                            redeem
-                                .amount_added_yuan
-                                .as_deref()
-                                .map(|value| format!("¥{value}"))
-                                .unwrap_or_else(|| {
-                                    desktop_prefs::format_account_balance(redeem.credits_added)
-                                }),
-                            redeem
-                                .balance_amount_yuan
-                                .as_deref()
-                                .map(|value| format!("¥{value}"))
-                                .unwrap_or_else(|| {
-                                    desktop_prefs::format_account_balance(redeem.balance_credits)
-                                })
+                            desktop_prefs::format_balance_display(
+                                redeem.amount_added_yuan.as_deref(),
+                                redeem.credits_added,
+                            ),
+                            desktop_prefs::format_balance_display(
+                                redeem.balance_amount_yuan.as_deref(),
+                                redeem.balance_credits,
+                            ),
                         ));
                         view.avatar_panel_open = true;
                     }
@@ -1248,13 +1254,13 @@ impl AppShellView {
                 .finish(),
         );
         col.add_child(section_hint(
-            "约 2 分钟：浏览终端共享、P2P 聊天、智能体任务。可随时跳过。",
+            "约 2 分钟：浏览终端共享、P2P 聊天、AI 任务。可随时跳过。",
             self.font,
         ));
         let mut steps = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         steps.add_child(self.onboarding_chip("1 · 终端", AppTab::Devices));
         steps.add_child(self.onboarding_chip("2 · 聊天", AppTab::Chat));
-        steps.add_child(self.onboarding_chip("3 · 智能体", AppTab::Warp));
+        steps.add_child(self.onboarding_chip("3 · AI", AppTab::Warp));
         steps.add_child(
             Container::new(
                 EventHandler::new(
@@ -1399,6 +1405,7 @@ impl View for AppShellView {
                 build_avatar_panel(
                     self.auth_device_id.as_deref(),
                     self.balance_credits,
+                    self.balance_amount_yuan.as_deref(),
                     self.balance_busy,
                     self.balance_feedback.as_deref(),
                     self.font,
@@ -1457,11 +1464,6 @@ impl View for AppShellView {
                         close: AppShellAction::CloseWindow,
                     },
                     self.font,
-                    #[cfg(windows)]
-                    Some(CcswitchInterceptToggle {
-                        enabled: self.ccswitch_intercept_enabled,
-                        toggle: AppShellAction::ToggleCcswitchIntercept,
-                    }),
                 ),
                 OffsetPositioning::offset_from_parent(
                     vec2f(0.0, 0.0),
@@ -1541,33 +1543,6 @@ impl TypedActionView for AppShellView {
                 self.open_login_modal(ctx);
                 ctx.notify();
             }
-            #[cfg(windows)]
-            AppShellAction::ToggleCcswitchIntercept => {
-                let previous = self.ccswitch_intercept_enabled;
-                self.ccswitch_intercept_enabled = !previous;
-                ctx.notify();
-                let data_dir = self.core.data_dir();
-                let intercept = self.ccswitch_intercept_enabled;
-                ctx.spawn(
-                    async move {
-                        wormhole_desktop_core::deeplink_commands::configure_agent_deeplink_settings(
-                            &data_dir,
-                            wormhole_desktop_core::agent_deeplink_settings::ConfigureAgentDeeplinkSettingsParams {
-                                ccswitch_intercept_enabled: Some(intercept),
-                                watch_shared_deeplink_bus: None,
-                            },
-                        )
-                        .await
-                    },
-                    move |view, output, ctx| {
-                        if let Err(err) = output {
-                            view.ccswitch_intercept_enabled = previous;
-                            tracing::warn!("无法保存 ccswitch 拦截设置: {err}");
-                            ctx.notify();
-                        }
-                    },
-                );
-            }
             AppShellAction::ToggleAvatarPanel => self.toggle_avatar_panel(ctx),
             AppShellAction::CloseAvatarPanel => self.close_avatar_panel(ctx),
             AppShellAction::PurchaseBalance => self.purchase_balance(ctx),
@@ -1609,15 +1584,6 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::OpenLogin => {
                 AccessibilityContent::new_without_help("打开登录", WarpA11yRole::ButtonRole)
-            }
-            #[cfg(windows)]
-            AppShellAction::ToggleCcswitchIntercept => {
-                let label = if self.ccswitch_intercept_enabled {
-                    "拦截 CC Switch 深链（已开启，不转发给 CC Switch）"
-                } else {
-                    "允许转发 ccswitch 深链给 CC Switch"
-                };
-                AccessibilityContent::new_without_help(label, WarpA11yRole::ButtonRole)
             }
             AppShellAction::ToggleAvatarPanel => AccessibilityContent::new_without_help(
                 "切换账户与余额面板",

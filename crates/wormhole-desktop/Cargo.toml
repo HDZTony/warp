@@ -62,7 +62,11 @@ owned_ttf_parser = "0.25.0"
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 computer-use = { path = "../../../../crates/computer-use" }
 
+[target.'cfg(not(windows))'.dependencies]
+rfd = "0.15"
+
 [target.'cfg(windows)'.dependencies]
+rfd = "0.15"
 wormhole-desktop-platform-windows = { path = "../../../../crates/wormhole-desktop-platform-windows" }
 windows-version = "0.1"
 windows-sys = { version = "0.61", features = [
