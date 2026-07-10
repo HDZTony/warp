@@ -24,6 +24,9 @@ use wormhole_desktop_core::chat_commands::{
     StartChatConversationParams,
 };
 use wormhole_desktop_core::cluster_commands::{cluster_status, ClusterStatusDto};
+use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
+
+use std::collections::BTreeMap;
 
 pub const TG_SIDEBAR_AVATAR: f32 = 46.0;
 /// Inner content width inside sidebar item horizontal padding (12px × 2 in 300px column).
@@ -59,6 +62,7 @@ pub struct ChatSidebarView {
     rows: Vec<SidebarRow>,
     conversations: Vec<ChatConversationDto>,
     cluster: Option<ClusterStatusDto>,
+    remarks: BTreeMap<String, String>,
     selecting: Option<String>,
     search: String,
     search_field: TextFieldState,
@@ -84,6 +88,7 @@ impl ChatSidebarView {
             rows: Vec::new(),
             conversations: Vec::new(),
             cluster: None,
+            remarks: BTreeMap::new(),
             selecting: None,
             search: String::new(),
             search_field: TextFieldState::new(),
@@ -106,16 +111,18 @@ impl ChatSidebarView {
                 let cfg = chat_config(app, &state).await;
                 let list = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status(&state).await;
-                (cfg, list, cluster)
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (cfg, list, cluster, remarks)
             },
             |view, output, ctx| {
-                let (cfg, list, cluster) = output;
+                let (cfg, list, cluster, remarks) = output;
                 if let Ok(c) = cfg {
                     view.status = c.display_name;
                 }
                 let conversations = list.unwrap_or_default();
                 view.conversations = conversations.clone();
                 view.cluster = cluster.ok();
+                view.remarks = remarks;
                 view.rows = view.build_rows(conversations, view.cluster.as_ref());
                 ctx.notify();
             },
@@ -192,10 +199,23 @@ impl ChatSidebarView {
     ) -> Vec<SidebarRow> {
         let mut rows = Vec::new();
         for conv in conversations {
-            let title = conv
+            let remark = cluster.and_then(|c| {
+                c.nodes.iter().find_map(|node| {
+                    if node.chat_endpoint_id.as_deref() == Some(conv.peer_endpoint.as_str())
+                        || node.node_id == conv.peer_endpoint
+                    {
+                        self.remarks.get(&node.node_id).map(String::as_str)
+                    } else {
+                        None
+                    }
+                })
+            });
+            let fallback = conv
                 .title
+                .clone()
                 .or(conv.peer_display_name.clone())
                 .unwrap_or_else(|| "未知设备".to_string());
+            let title = display_name_with_remark(remark, || fallback);
             let preview = conv
                 .peer_display_name
                 .clone()
@@ -216,7 +236,10 @@ impl ChatSidebarView {
         if rows.is_empty() {
             if let Some(cluster) = cluster {
                 for node in &cluster.nodes {
-                    let title = format!("{} · {}", node.os, node.hostname);
+                    let title = display_name_with_remark(
+                        self.remarks.get(&node.node_id).map(String::as_str),
+                        || format!("{} · {}", node.os, node.hostname),
+                    );
                     let id = node
                         .chat_endpoint_id
                         .clone()

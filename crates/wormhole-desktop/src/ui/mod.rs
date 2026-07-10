@@ -5,7 +5,6 @@ pub mod chat;
 pub mod clipboard;
 pub mod cluster_layout;
 pub mod cluster_topology_panel;
-pub mod codex_provider_import_model;
 pub mod core_handle;
 pub mod desktop_prefs;
 pub mod device_gate_view;

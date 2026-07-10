@@ -28,13 +28,15 @@ use wormhole_desktop_core::cluster_commands::{
     add_storage_volume, create_cluster as create_cluster_command, create_cluster_invite,
     delete_cluster, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
     open_share_entry, remote_open_share_entry, remove_cluster_device, remove_cluster_node,
-    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, ClusterNodeDto,
-    ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams, DeleteClusterParams,
-    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, LeaveClusterParams,
-    ListShareDirectoryParams, RemoveClusterDeviceParams, RemoveClusterNodeParams, ShareEntryDto,
-    SwitchActiveClusterParams,
+    remove_storage_volume, switch_active_cluster, sync_share_entry, AddStorageVolumeParams,
+    ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
+    DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
+    LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
+    RemoveClusterNodeParams, ShareEntryDto, SwitchActiveClusterParams,
 };
+use wormhole_desktop_core::device_remarks::load_device_remarks;
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +83,9 @@ pub struct DevicesView {
     share_scroll: ClippedScrollStateHandle,
     share_context_entry: Option<String>,
     share_context_pos: Option<(f32, f32)>,
+    share_unshare_volume_id: Option<String>,
+    share_unshare_name: Option<String>,
+    share_unshare_busy: bool,
     share_file_busy: bool,
     last_file_click: Option<(String, std::time::Instant)>,
     bootstrap_busy: bool,
@@ -95,6 +100,7 @@ pub struct DevicesView {
     last_node_click: Option<(String, Instant)>,
     stable_cluster_poll_scheduled: bool,
     cluster_refresh_busy: bool,
+    device_remarks: BTreeMap<String, String>,
 }
 
 const TOOLBAR_BTN_HEIGHT: f32 = 32.0;
@@ -146,6 +152,9 @@ impl DevicesView {
             share_scroll: ClippedScrollStateHandle::new(),
             share_context_entry: None,
             share_context_pos: None,
+            share_unshare_volume_id: None,
+            share_unshare_name: None,
+            share_unshare_busy: false,
             share_file_busy: false,
             last_file_click: None,
             bootstrap_busy: false,
@@ -160,6 +169,7 @@ impl DevicesView {
             last_node_click: None,
             stable_cluster_poll_scheduled: false,
             cluster_refresh_busy: false,
+            device_remarks: BTreeMap::new(),
         };
         view.refresh_cluster(ctx);
         view
@@ -206,10 +216,14 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                fetch_cluster_for_ui(&state).await
+                let status = fetch_cluster_for_ui(&state).await;
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (status, remarks)
             },
             move |view, output, ctx| {
-                match output {
+                let (status, remarks) = output;
+                view.device_remarks = remarks;
+                match status {
                     Ok(status) => view.apply_cluster_status(status, ctx),
                     Err(e) => {
                         view.cluster = None;
@@ -237,11 +251,15 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                fetch_cluster_for_ui(&state).await
+                let status = fetch_cluster_for_ui(&state).await;
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (status, remarks)
             },
             move |view, output, ctx| {
                 view.cluster_refresh_busy = false;
-                match output {
+                let (status, remarks) = output;
+                view.device_remarks = remarks;
+                match status {
                     Ok(status) => {
                         let node_count = status.nodes.len();
                         view.apply_cluster_status(status, ctx);
@@ -526,7 +544,7 @@ impl DevicesView {
     }
 
     fn open_share_add_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.browsing_local() || !self.share_path.is_empty() {
+        if !self.browsing_local() {
             return;
         }
         self.share_add_feedback = None;
@@ -2309,6 +2327,7 @@ impl DevicesView {
                                 selected_id,
                                 hovered_id,
                                 hub_index,
+                                self.device_remarks.clone(),
                                 self.mono,
                             ))
                             .with_min_height(280.0)
@@ -2819,6 +2838,23 @@ impl DevicesView {
             )
             .finish(),
         );
+        if entry.local && entry.volume_id.is_some() {
+            name_row.add_child(
+                Container::new(
+                    ui_text::cluster_ctrl("共享".to_string(), self.mono)
+                        .with_color(theme::accent_cool())
+                        .finish(),
+                )
+                .with_margin_left(8.0)
+                .with_padding_left(6.0)
+                .with_padding_right(6.0)
+                .with_padding_top(2.0)
+                .with_padding_bottom(2.0)
+                .with_background(theme::accent_cool_bg(28))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+                .finish(),
+            );
+        }
 
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2876,6 +2912,7 @@ impl DevicesView {
             .with_border(Border::all(1.0).with_border_fill(theme::border()))
             .finish();
 
+        let menu_name = name.clone();
         if is_folder {
             EventHandler::new(inner)
                 .on_left_mouse_down(move |ctx, _, _| {
@@ -2885,10 +2922,17 @@ impl DevicesView {
                     });
                     DispatchEventResult::StopPropagation
                 })
+                .on_right_mouse_down(move |ctx, _, position| {
+                    ctx.dispatch_typed_action(DevicesAction::OpenShareContextMenu {
+                        name: menu_name.clone(),
+                        x: position.x(),
+                        y: position.y(),
+                    });
+                    DispatchEventResult::StopPropagation
+                })
                 .finish()
         } else {
             let click_name = name.clone();
-            let menu_name = name.clone();
             EventHandler::new(inner)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::ShareFileClick(click_name.clone()));
@@ -2989,7 +3033,7 @@ impl DevicesView {
             )
             .finish(),
         );
-        if self.browsing_local() && self.share_path.is_empty() {
+        if self.browsing_local() {
             toolbar.add_child(
                 Container::new(self.toolbar_button(
                     "+ 共享文件夹",
@@ -3082,7 +3126,7 @@ impl DevicesView {
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "选择本机目录并发布到当前终端的集群共享空间。其他终端可浏览并同步其中的文件。",
+                    "选择本机目录并发布到当前终端的集群共享空间。显示名称将自动取自路径末段。",
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -3194,6 +3238,13 @@ impl DevicesView {
         };
         let entry = self.share_entries.iter().find(|entry| entry.name == name);
         let is_local = entry.map(|entry| entry.local).unwrap_or(true);
+        let can_unshare = self.browsing_local()
+            && entry
+                .map(|entry| entry.local && entry.volume_id.is_some())
+                .unwrap_or(false);
+        let is_folder = entry
+            .map(|entry| entry.kind.eq_ignore_ascii_case("folder"))
+            .unwrap_or(false);
 
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         menu.add_child(
@@ -3223,7 +3274,19 @@ impl DevicesView {
                 false,
             ));
         }
-        menu.add_child(self.share_context_item("删除", DevicesAction::ShareDeleteFile(name), true));
+        if can_unshare {
+            menu.add_child(self.share_context_item(
+                "取消共享",
+                DevicesAction::OpenShareUnshareModal(name.clone()),
+                true,
+            ));
+        } else if !is_folder || !is_local {
+            menu.add_child(self.share_context_item(
+                "删除",
+                DevicesAction::ShareDeleteFile(name),
+                true,
+            ));
+        }
 
         let panel = Container::new(
             ConstrainedBox::new(menu.finish())
@@ -3236,6 +3299,170 @@ impl DevicesView {
         .finish();
 
         positioned_context_menu(x, y, panel)
+    }
+
+    fn share_unshare_modal(&self) -> Box<dyn Element> {
+        let name = self.share_unshare_name.clone().unwrap_or_else(|| "—".into());
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("取消共享", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(
+                    "将从当前终端的集群共享中移除此项。其他终端将无法再浏览或同步其中的内容。",
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(
+                    "本机路径中的原始文件不会被删除，仅取消共享发布。同级其他共享项不受影响。",
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_margin_bottom(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::mono(name, self.mono)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(6.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        );
+
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            "返回",
+            DevicesAction::CloseShareUnshareModal,
+            false,
+            72.0,
+            !self.share_unshare_busy,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            if self.share_unshare_busy {
+                "处理中…"
+            } else {
+                "取消共享"
+            },
+            DevicesAction::ConfirmShareUnshare,
+            true,
+            96.0,
+            !self.share_unshare_busy,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(440.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseShareUnshareModal);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn open_share_unshare_modal(&mut self, name: String, ctx: &mut ViewContext<Self>) {
+        self.close_share_context_menu(ctx);
+        let entry = self.share_entries.iter().find(|entry| entry.name == name);
+        let Some(volume_id) = entry.and_then(|entry| entry.volume_id.clone()) else {
+            return;
+        };
+        if !self.browsing_local() {
+            return;
+        }
+        self.share_unshare_volume_id = Some(volume_id);
+        self.share_unshare_name = Some(name);
+        self.share_unshare_busy = false;
+        ctx.notify();
+    }
+
+    fn close_share_unshare_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.share_unshare_volume_id = None;
+        self.share_unshare_name = None;
+        self.share_unshare_busy = false;
+        ctx.notify();
+    }
+
+    fn confirm_share_unshare(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(volume_id) = self.share_unshare_volume_id.clone() else {
+            return;
+        };
+        if self.share_unshare_busy {
+            return;
+        }
+        let name = self.share_unshare_name.clone().unwrap_or_default();
+        self.share_unshare_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                remove_storage_volume(&state, volume_id).await
+            },
+            move |view, output, ctx| {
+                view.share_unshare_busy = false;
+                match output {
+                    Ok(_) => {
+                        view.close_share_unshare_modal(ctx);
+                        view.share_status = Some(format!("已取消共享 · {name} · 本机文件保留"));
+                        view.load_share_directory(ctx);
+                    }
+                    Err(e) => {
+                        view.share_error = Some(format!("取消共享失败: {e}"));
+                        view.close_share_unshare_modal(ctx);
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn share_context_item(
@@ -3266,7 +3493,9 @@ impl DevicesView {
     }
 
     fn files_shell(&self) -> Box<dyn Element> {
-        let has_overlay = self.share_add_modal_open || self.share_context_entry.is_some();
+        let has_overlay = self.share_add_modal_open
+            || self.share_context_entry.is_some()
+            || self.share_unshare_volume_id.is_some();
         if !has_overlay {
             return self.files_view();
         }
@@ -3288,6 +3517,9 @@ impl DevicesView {
             .finish();
             stack.add_child(scrim);
             stack.add_child(self.share_context_menu());
+        }
+        if self.share_unshare_volume_id.is_some() {
+            stack.add_child(self.share_unshare_modal());
         }
         let share_menu_open = self.share_context_entry.is_some();
         let body = stack.finish();
@@ -3474,6 +3706,11 @@ impl TypedActionView for DevicesView {
                 self.remote_open_share_file(name.clone(), ctx);
             }
             DevicesAction::ShareDeleteFile(name) => self.delete_share_file(name.clone(), ctx),
+            DevicesAction::OpenShareUnshareModal(name) => {
+                self.open_share_unshare_modal(name.clone(), ctx);
+            }
+            DevicesAction::CloseShareUnshareModal => self.close_share_unshare_modal(ctx),
+            DevicesAction::ConfirmShareUnshare => self.confirm_share_unshare(ctx),
             DevicesAction::OpenShareContextMenu { name, x, y } => {
                 self.share_context_entry = Some(name.clone());
                 self.share_context_pos = Some((*x, *y));

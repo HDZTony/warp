@@ -27,7 +27,6 @@ use coordinator::{CoordinatorState, CoordinatorView};
 use pathfinder_geometry::vector::vec2f;
 use tracing_subscriber::EnvFilter;
 use ui::app_shell::AppShellView;
-use ui::codex_provider_import_model::new_shared_import_model;
 use ui::core_handle::CoreHandle;
 use warpui::platform::{AppBuilder, AppCallbacks};
 use warpui_core::platform::app::ApproveTerminateResult;
@@ -141,11 +140,6 @@ fn main() -> Result<()> {
     }
 
     #[cfg(windows)]
-    let mut pending_deeplink: Option<String> = None;
-    #[cfg(not(windows))]
-    let pending_deeplink: Option<String> = None;
-
-    #[cfg(windows)]
     let tray = {
         use wormhole_desktop_platform_windows::{
             desktop_process_entry, handle_startup_args, DeepLinkState, DesktopProcessRole,
@@ -161,15 +155,12 @@ fn main() -> Result<()> {
             | DesktopProcessRole::SecondaryDuplicate => return Ok(()),
             DesktopProcessRole::Primary => {}
         }
-        pending_deeplink = deep_link.take_pending_url();
-        if let Some(ref url) = pending_deeplink {
-            pending_deeplink =
-                wormhole_desktop_core::deeplink_commands::process_incoming_deeplink(&data_dir, url);
-        }
+        // Consume any pending wormhole:// URL so it does not linger; provider import is removed.
+        let _ = deep_link.take_pending_url();
         if let Err(err) =
-            wormhole_desktop_core::deeplink_commands::sync_ccswitch_protocol_registration(&data_dir)
+            wormhole_desktop_core::deeplink_commands::sync_wormhole_protocol_registration(&data_dir)
         {
-            tracing::warn!("无法同步 ccswitch 协议注册: {err}");
+            tracing::warn!("无法同步 wormhole 协议注册: {err}");
         }
         Arc::new(TrayController::spawn("Wormhole")?)
     };
@@ -215,11 +206,8 @@ fn main() -> Result<()> {
     }
 
     let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
-    let import_model = new_shared_import_model();
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
-    let import_model_for_shell = import_model.clone();
-    let pending_for_shell = pending_deeplink;
     #[cfg(windows)]
     let tray_for_shell = tray.clone();
     let _ = app_builder.run(move |ctx| {
@@ -233,8 +221,6 @@ fn main() -> Result<()> {
                     view_ctx,
                     core_for_shell,
                     coordinator_for_shell,
-                    import_model_for_shell,
-                    pending_for_shell,
                     #[cfg(windows)]
                     tray_for_shell,
                 )

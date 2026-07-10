@@ -28,8 +28,8 @@ pub const AGENT_ROW_RADIUS: f32 = 10.0;
 pub const AGENT_ICON_BTN_RADIUS: f32 = 7.0;
 /// `.agent-composer` max content width.
 pub const AGENT_THREAD_MAX_WIDTH: f32 = 720.0;
-/// `.agent-thread` bottom padding — reserves space for overlay composer (HTML: 120px).
-pub const AGENT_THREAD_BOTTOM_PAD: f32 = 120.0;
+/// `.agent-thread` bottom padding — reserves space for overlay composer + folder bar (HTML: 220px).
+pub const AGENT_THREAD_BOTTOM_PAD: f32 = 220.0;
 
 /// Position a popover / context menu at viewport coordinates (matches `devices_view`).
 pub fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
@@ -218,12 +218,21 @@ pub const POPOVER_ICON_SIZE: f32 = 34.0;
 
 /// Floating popover shell (AI composer access/model + chat attach/header/sticker).
 pub fn popover_shell(width: f32, body: Box<dyn Element>) -> Box<dyn Element> {
+    popover_shell_with_radius(width, AGENT_ROW_RADIUS, body)
+}
+
+/// Popover shell with an explicit corner radius (chat attach uses 12px).
+pub fn popover_shell_with_radius(
+    width: f32,
+    radius: f32,
+    body: Box<dyn Element>,
+) -> Box<dyn Element> {
     EventHandler::new(
         ConstrainedBox::new(
             Container::new(body)
                 .with_background(theme::panel_elevated())
                 .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(radius)))
                 .finish(),
         )
         .with_min_width(width)
@@ -244,7 +253,7 @@ pub fn popover_menu_header(font: FamilyId, title: impl Into<String>) -> Box<dyn 
         .finish()
 }
 
-/// Icon circle + title + hint row (`.agent-add-panel` / chat attach options).
+/// Icon circle + title + hint row (`.agent-add-panel` options).
 pub fn popover_icon_option<F>(
     font: FamilyId,
     icon: Box<dyn Element>,
@@ -279,6 +288,43 @@ where
             Container::new(text_col)
                 .with_margin_left(12.0)
                 .finish(),
+        )
+        .finish();
+    Container::new(
+        EventHandler::new(row)
+            .on_left_mouse_down(on_click)
+            .finish(),
+    )
+    .with_padding_left(14.0)
+    .with_padding_right(14.0)
+    .with_padding_top(10.0)
+    .with_padding_bottom(10.0)
+    .finish()
+}
+
+/// Icon circle + single-line label (chat attach: no header / no subtitle).
+pub fn popover_icon_label_option<F>(
+    font: FamilyId,
+    icon: Box<dyn Element>,
+    label: impl Into<String>,
+    on_click: F,
+) -> Box<dyn Element>
+where
+    F: 'static
+        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+{
+    let row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(icon)
+        .with_child(
+            Container::new(
+                ui_text::body(label.into(), font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_margin_left(12.0)
+            .finish(),
         )
         .finish();
     Container::new(

@@ -1,5 +1,6 @@
 //! Cluster device grid + topology overlay; card width follows container (HTML `minmax(200px, 1fr)`).
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use pathfinder_color::ColorU;
@@ -32,6 +33,7 @@ use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
     ClusterNodeDto, NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
 };
+use wormhole_desktop_core::device_remarks::display_name_with_remark;
 
 pub struct ClusterTopologyPanel {
     nodes: Vec<ClusterNodeDto>,
@@ -39,6 +41,7 @@ pub struct ClusterTopologyPanel {
     selected_node_id: String,
     hovered_node_id: String,
     hub_index: usize,
+    remarks: BTreeMap<String, String>,
     mono: FamilyId,
     child: Box<dyn Element>,
     built_width: f32,
@@ -53,6 +56,7 @@ impl ClusterTopologyPanel {
         selected_node_id: String,
         hovered_node_id: String,
         hub_index: usize,
+        remarks: BTreeMap<String, String>,
         mono: FamilyId,
     ) -> Self {
         Self {
@@ -61,6 +65,7 @@ impl ClusterTopologyPanel {
             selected_node_id,
             hovered_node_id,
             hub_index,
+            remarks,
             mono,
             child: Flex::column().finish(),
             built_width: 0.0,
@@ -75,6 +80,7 @@ impl ClusterTopologyPanel {
         selected_node_id: String,
         hovered_node_id: String,
         hub_index: usize,
+        remarks: BTreeMap<String, String>,
         mono: FamilyId,
     ) -> Box<dyn Element> {
         Box::new(Self::new(
@@ -83,6 +89,7 @@ impl ClusterTopologyPanel {
             selected_node_id,
             hovered_node_id,
             hub_index,
+            remarks,
             mono,
         ))
     }
@@ -102,6 +109,7 @@ impl ClusterTopologyPanel {
         let local_node_id = self.local_node_id.clone();
         let selected_node_id = self.selected_node_id.clone();
         let hovered_node_id = self.hovered_node_id.clone();
+        let remarks = self.remarks.clone();
         for (idx, node) in nodes.iter().enumerate() {
             row.add_child(
                 Container::new(node_card(
@@ -109,6 +117,7 @@ impl ClusterTopologyPanel {
                     &local_node_id,
                     &selected_node_id,
                     &hovered_node_id,
+                    remarks.get(&node.node_id).map(String::as_str),
                     card_w,
                     self.mono,
                 ))
@@ -189,12 +198,14 @@ impl Element for ClusterTopologyPanel {
     }
 }
 
-fn node_display_label(node: &ClusterNodeDto, is_local: bool) -> String {
-    if is_local {
-        format!("{} · 本机", node.os)
-    } else {
-        format!("{} · {}", node.os, node.hostname)
-    }
+fn node_display_label(node: &ClusterNodeDto, is_local: bool, remark: Option<&str>) -> String {
+    display_name_with_remark(remark, || {
+        if is_local {
+            format!("{} · 本机", node.os)
+        } else {
+            format!("{} · {}", node.os, node.hostname)
+        }
+    })
 }
 
 fn blend_color(base: ColorU, accent: ColorU, amount: f32) -> ColorU {
@@ -359,6 +370,7 @@ fn node_card(
     local_node_id: &str,
     selected_node_id: &str,
     hovered_node_id: &str,
+    remark: Option<&str>,
     card_width: f32,
     mono: FamilyId,
 ) -> Box<dyn Element> {
@@ -371,7 +383,7 @@ fn node_card(
     let selected = node.node_id == selected_node_id;
     let hovered = node.node_id == hovered_node_id;
     let show_delete = !is_local && (hovered || selected);
-    let display_label = node_display_label(node, is_local);
+    let display_label = node_display_label(node, is_local, remark);
     let (status_text, status_tone) = node_presence_label(node);
 
     let mut body = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);

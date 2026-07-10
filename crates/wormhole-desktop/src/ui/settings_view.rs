@@ -7,7 +7,6 @@ use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, Vie
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::agent_providers_view::AgentProvidersView;
-use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, view_panel, StatusTone,
@@ -67,14 +66,10 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(
-        ctx: &mut ViewContext<Self>,
-        core: CoreHandle,
-        import_model: SharedCodexProviderImportModel,
-    ) -> Self {
+    pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let agent_providers = ctx
-            .add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
+        let agent_providers =
+            ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -139,11 +134,6 @@ impl SettingsView {
 
     pub fn agent_providers_view(&self) -> &warpui::ViewHandle<AgentProvidersView> {
         &self.agent_providers
-    }
-
-    pub fn open_deeplink_url(&mut self, url: String, ctx: &mut ViewContext<Self>) {
-        let agent = self.agent_providers.clone();
-        ctx.update_view(&agent, |view, ctx| view.open_deeplink_url(url, ctx));
     }
 
     fn refresh_diagnostics(&mut self, ctx: &mut ViewContext<Self>) {

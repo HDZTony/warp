@@ -1,5 +1,7 @@
+mod composer_add;
 mod composer_menus;
 mod project_create_modal;
+mod project_delete_modal;
 pub mod sidebar;
 mod transcript;
 
@@ -9,8 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use composer_add::{
+    ComposerAttachment, FilesModalState, MediaModalState, ADD_POPOVER_INSET_LEFT, DEMO_FILES,
+    DEMO_MEDIA,
+};
 use composer_menus::{access_label, composer_model_chip_label};
 use project_create_modal::{ProjectCreateState, ProjectCreateStep};
+use project_delete_modal::ProjectDeleteState;
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use pathfinder_color::ColorU;
 use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
@@ -65,6 +72,20 @@ pub enum AgentPanelAction {
     ToggleAccessMenu,
     SelectModelRate(AgentModelRate),
     ToggleModelMenu,
+    ToggleAddMenu,
+    OpenFilesModal,
+    CloseFilesModal,
+    SelectDemoFile(usize),
+    ConfirmFilesModal,
+    OpenMediaModal,
+    CloseMediaModal,
+    SelectDemoMedia(usize),
+    ConfirmMediaModal,
+    ToggleGoalMode,
+    TogglePlanMode,
+    ClearGoalMode,
+    ClearPlanMode,
+    RemoveAttachment(usize),
     DismissComposerMenus,
     SelectMode(InteractionMode),
     Send,
@@ -83,22 +104,21 @@ pub enum AgentPanelAction {
     OpenProjectCreateModal,
     CloseProjectCreateModal,
     ProjectCreateNext,
-    ProjectCreateBack,
     ProjectCreateUseExistingFolder,
-    ProjectCreatePickFolder,
     ProjectCreateSubmit,
     FocusProjectCreateName,
-    FocusProjectCreatePath,
     ProjectCreateNameEdit(TextFieldEditAction),
-    ProjectCreatePathEdit(TextFieldEditAction),
     OpenProjectRowMenu(String),
+    OpenProjectDeleteModal(String),
+    CloseProjectDeleteModal,
+    SetProjectDeleteMode(bool),
+    ConfirmDeleteProject,
     RenameProject(String),
     DeleteActiveStandaloneChat,
     FocusSidebarSearch,
     Stop,
     ToggleChatsMenu,
     DismissSidebarMenus,
-    DeleteProject(String),
     DeleteActiveProject,
     ArchiveSession(String),
     ArchiveActiveSession,
@@ -144,12 +164,20 @@ struct PanelState {
     archived_ids: HashSet<String>,
     expanded_project_ids: HashSet<String>,
     project_create: Option<ProjectCreateState>,
-    project_row_menu_target: Option<String>,
-    projects_menu_open: bool,
+    /// Project-row ⋯ menu target id — HTML `#agent-projects-menu` (in-tree anchor).
+    project_row_menu: Option<String>,
+    /// Delete confirmation — HTML `#project-delete-modal`.
+    project_delete: Option<ProjectDeleteState>,
     chats_menu_open: bool,
     session_context_menu: Option<(String, bool, f32, f32)>,
     access_menu_open: bool,
     model_menu_open: bool,
+    add_menu_open: bool,
+    plan_mode: bool,
+    goal_mode: bool,
+    attachments: Vec<ComposerAttachment>,
+    files_modal: Option<FilesModalState>,
+    media_modal: Option<MediaModalState>,
     field_state: TextFieldState,
     sidebar_hover: Option<String>,
     project_head_hover: Option<String>,
@@ -211,12 +239,18 @@ impl AgentPanelView {
                 archived_ids,
                 expanded_project_ids,
                 project_create: None,
-                project_row_menu_target: None,
-                projects_menu_open: false,
+                project_row_menu: None,
+                project_delete: None,
                 chats_menu_open: false,
                 session_context_menu: None,
                 access_menu_open: false,
                 model_menu_open: false,
+                add_menu_open: false,
+                plan_mode: false,
+                goal_mode: false,
+                attachments: Vec::new(),
+                files_modal: None,
+                media_modal: None,
                 field_state: TextFieldState::new(),
                 sidebar_hover: None,
                 project_head_hover: None,
@@ -751,14 +785,8 @@ impl AgentPanelView {
         let mut panel = state.lock().expect("agent panel state");
         if let Some(create) = panel.project_create.as_mut() {
             let focused_name = create.name_focused;
-            let focused_path = create.path_focused;
             match keystroke.key.as_str() {
-                "tab" => {
-                    if create.from_folder && create.step == ProjectCreateStep::Name {
-                        create.name_focused = !create.path_focused;
-                        create.path_focused = !create.name_focused;
-                    }
-                }
+                "tab" => {}
                 "enter" | "return" => {
                     drop(panel);
                     let _ = notify_tx.try_send(());
@@ -767,8 +795,6 @@ impl AgentPanelView {
                 "backspace" => {
                     if focused_name {
                         create.name.pop();
-                    } else if focused_path {
-                        create.path.pop();
                     }
                 }
                 key if key.len() == 1 => {
@@ -777,9 +803,6 @@ impl AgentPanelView {
                             if focused_name {
                                 create.name.push(ch);
                                 create.name_invalid = false;
-                            } else if focused_path {
-                                create.path.push(ch);
-                                create.path_invalid = false;
                             }
                         }
                     }
@@ -900,7 +923,7 @@ impl AgentPanelView {
     fn new_project(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
             panel.project_create = Some(ProjectCreateState::new_type_select());
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
         }
         ctx.notify();
     }
@@ -934,7 +957,8 @@ impl AgentPanelView {
     fn open_project_create_modal(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
             panel.project_create = Some(ProjectCreateState::new_type_select());
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
+            panel.project_delete = None;
         }
         ctx.notify();
     }
@@ -950,57 +974,31 @@ impl AgentPanelView {
         if let Ok(mut panel) = self.state.lock() {
             if let Some(create) = panel.project_create.as_mut() {
                 create.step = ProjectCreateStep::Name;
-                create.from_folder = false;
                 create.name_focused = true;
-                create.path_focused = false;
                 create.name_invalid = false;
-                create.path_invalid = false;
             }
         }
         ctx.notify();
     }
 
     fn project_create_use_existing_folder(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
-            if let Some(create) = panel.project_create.as_mut() {
-                create.step = ProjectCreateStep::Name;
-                create.from_folder = true;
-                create.name_focused = true;
-                create.path_focused = false;
-                if create.path.is_empty() {
-                    create.path = "D:\\Projects\\New project".into();
-                }
-            }
-        }
-        ctx.notify();
-    }
-
-    fn project_create_back(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
-            if let Some(create) = panel.project_create.as_mut() {
-                create.step = ProjectCreateStep::TypeSelect;
-                create.name_invalid = false;
-                create.path_invalid = false;
-            }
-        }
-        ctx.notify();
-    }
-
-    fn project_create_pick_folder(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(path) = Self::pick_project_folder("选择项目文件夹") {
+        let Some(path) = Self::pick_project_folder("选择项目文件夹") else {
+            return;
+        };
+        if !path.is_dir() {
             if let Ok(mut panel) = self.state.lock() {
-                if let Some(create) = panel.project_create.as_mut() {
-                    create.path = path.display().to_string();
-                    create.path_invalid = false;
-                    if create.name.trim().is_empty() {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            create.name = name.to_string();
-                        }
-                    }
-                }
+                panel.status = format!("项目目录不存在：{}", path.display());
             }
             ctx.notify();
+            return;
         }
+        let label = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("New project")
+            .to_string();
+        self.insert_created_project(label, path, ctx);
     }
 
     fn default_projects_parent(data_dir: &std::path::Path) -> PathBuf {
@@ -1013,54 +1011,20 @@ impl AgentPanelView {
         data_dir.join("Projects")
     }
 
-    fn project_create_submit(&mut self, ctx: &mut ViewContext<Self>) {
+    fn insert_created_project(
+        &mut self,
+        label: String,
+        folder_path: PathBuf,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let data_dir = self.core.data_dir();
-        {
-            let mut panel = self.state.lock().expect("agent panel state");
-            let Some(create) = panel.project_create.as_mut() else {
-                return;
-            };
-            let name = create.name.trim().to_string();
-            if name.is_empty() {
-                create.name_invalid = true;
-                drop(panel);
-                ctx.notify();
-                return;
-            }
-            let folder_path = if create.from_folder {
-                let path_val = create.path.trim().to_string();
-                if path_val.is_empty() {
-                    create.path_invalid = true;
-                    drop(panel);
-                    ctx.notify();
-                    return;
-                }
-                let path = PathBuf::from(&path_val);
-                if !path.is_dir() {
-                    create.path_invalid = true;
-                    panel.status = format!("项目目录不存在：{path_val}");
-                    drop(panel);
-                    ctx.notify();
-                    return;
-                }
-                path
-            } else {
-                let parent = Self::default_projects_parent(&data_dir);
-                let path = parent.join(&name);
-                if let Err(err) = std::fs::create_dir_all(&path) {
-                    panel.status = format!("无法创建项目目录：{err}");
-                    drop(panel);
-                    ctx.notify();
-                    return;
-                }
-                path
-            };
+        if let Ok(mut panel) = self.state.lock() {
             let id = format!("project-{}", Self::unix_now_secs());
             panel.projects.insert(
                 0,
                 sidebar::AgentProject {
                     id: id.clone(),
-                    label: name,
+                    label,
                     time: "刚刚".into(),
                     folder_path,
                 },
@@ -1072,6 +1036,33 @@ impl AgentPanelView {
             Self::persist_projects(&panel, &data_dir);
         }
         ctx.notify();
+    }
+
+    fn project_create_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        let data_dir = self.core.data_dir();
+        let (label, folder_path) = {
+            let mut panel = self.state.lock().expect("agent panel state");
+            let Some(create) = panel.project_create.as_mut() else {
+                return;
+            };
+            let name = create.name.trim().to_string();
+            if name.is_empty() {
+                create.name_invalid = true;
+                drop(panel);
+                ctx.notify();
+                return;
+            }
+            let parent = Self::default_projects_parent(&data_dir);
+            let path = parent.join(&name);
+            if let Err(err) = std::fs::create_dir_all(&path) {
+                panel.status = format!("无法创建项目目录：{err}");
+                drop(panel);
+                ctx.notify();
+                return;
+            }
+            (name, path)
+        };
+        self.insert_created_project(label, folder_path, ctx);
     }
 
     fn toggle_project_expanded(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
@@ -1089,13 +1080,75 @@ impl AgentPanelView {
 
     fn open_project_row_menu(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
-            panel.project_row_menu_target = Some(project_id.clone());
+            let next = if panel.project_row_menu.as_deref() == Some(project_id.as_str()) {
+                None
+            } else {
+                Some(project_id.clone())
+            };
             panel.active_project_id = project_id;
-            panel.projects_menu_open = true;
+            panel.project_row_menu = next;
             panel.chats_menu_open = false;
             panel.session_context_menu = None;
         }
         ctx.notify();
+    }
+
+    fn open_project_delete_modal(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            if panel.projects.len() <= 1 {
+                return;
+            }
+            if !panel.projects.iter().any(|p| p.id == project_id) {
+                return;
+            }
+            panel.project_row_menu = None;
+            panel.chats_menu_open = false;
+            panel.session_context_menu = None;
+            panel.project_delete = Some(ProjectDeleteState::new(project_id));
+        }
+        ctx.notify();
+    }
+
+    fn close_project_delete_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.project_delete = None;
+        }
+        ctx.notify();
+    }
+
+    fn set_project_delete_mode(&mut self, delete_local: bool, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            let project_id = match panel.project_delete.as_ref() {
+                Some(state) => state.project_id.clone(),
+                None => return,
+            };
+            if delete_local {
+                let has_path = panel
+                    .projects
+                    .iter()
+                    .find(|p| p.id == project_id)
+                    .map(|p| !p.folder_path.as_os_str().is_empty())
+                    .unwrap_or(false);
+                if !has_path {
+                    return;
+                }
+            }
+            if let Some(state) = panel.project_delete.as_mut() {
+                state.delete_local = delete_local;
+            }
+        }
+        ctx.notify();
+    }
+
+    fn confirm_delete_project(&mut self, ctx: &mut ViewContext<Self>) {
+        let (project_id, delete_local) = {
+            let panel = self.state.lock().expect("agent panel state");
+            let Some(state) = panel.project_delete.as_ref() else {
+                return;
+            };
+            (state.project_id.clone(), state.delete_local)
+        };
+        self.delete_project(project_id, delete_local, ctx);
     }
 
     fn rename_project(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
@@ -1129,8 +1182,8 @@ impl AgentPanelView {
     fn dismiss_sidebar_menus(&mut self, ctx: &mut ViewContext<Self>) {
         let mut changed = false;
         if let Ok(mut panel) = self.state.lock() {
-            if panel.projects_menu_open || panel.chats_menu_open {
-                panel.projects_menu_open = false;
+            if panel.project_row_menu.is_some() || panel.chats_menu_open {
+                panel.project_row_menu = None;
                 panel.chats_menu_open = false;
                 Self::clear_sidebar_hover(&mut panel);
                 changed = true;
@@ -1162,7 +1215,7 @@ impl AgentPanelView {
 
     fn toggle_chats_menu(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
             panel.session_context_menu = None;
             panel.chats_menu_open = !panel.chats_menu_open;
             panel.access_menu_open = false;
@@ -1392,7 +1445,12 @@ impl AgentPanelView {
         ctx.notify();
     }
 
-    fn delete_project(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
+    fn delete_project(
+        &mut self,
+        project_id: String,
+        delete_local: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let target_id = if project_id.is_empty() {
             self.state
                 .lock()
@@ -1404,6 +1462,45 @@ impl AgentPanelView {
         if target_id.is_empty() {
             return;
         }
+
+        let folder_path = {
+            let panel = self.state.lock().expect("agent panel state");
+            if panel.projects.len() <= 1 {
+                return;
+            }
+            panel
+                .projects
+                .iter()
+                .find(|p| p.id == target_id)
+                .map(|p| p.folder_path.clone())
+        };
+
+        let Some(folder_path) = folder_path else {
+            return;
+        };
+
+        if delete_local && !folder_path.as_os_str().is_empty() {
+            if folder_path.is_dir() {
+                if let Err(err) = std::fs::remove_dir_all(&folder_path) {
+                    if let Ok(mut panel) = self.state.lock() {
+                        panel.status = format!("无法删除本地文件夹：{err}");
+                        // Keep modal open so the user can retry or switch to unlink.
+                    }
+                    ctx.notify();
+                    return;
+                }
+            } else if folder_path.exists() {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.status = format!(
+                        "无法删除本地路径（不是文件夹）：{}",
+                        folder_path.display()
+                    );
+                }
+                ctx.notify();
+                return;
+            }
+        }
+
         let should_switch = {
             let mut panel = self.state.lock().expect("agent panel state");
             if panel.projects.len() <= 1 {
@@ -1415,11 +1512,18 @@ impl AgentPanelView {
                 .sidebar_sessions
                 .retain(|s| s.project_id.as_deref() != Some(target_id.as_str()));
             panel.expanded_project_ids.remove(&target_id);
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
+            panel.project_delete = None;
+            panel.status = if delete_local && !folder_path.as_os_str().is_empty() {
+                format!("已删除项目并移除本地文件夹 {}", folder_path.display())
+            } else {
+                "已去掉项目引用 · 本机文件保留".into()
+            };
             let data_dir = self.core.data_dir();
             Self::persist_projects(&panel, &data_dir);
             if was_active {
-                panel.active_project_id = panel.projects.first().map(|p| p.id.clone()).unwrap_or_default();
+                panel.active_project_id =
+                    panel.projects.first().map(|p| p.id.clone()).unwrap_or_default();
                 true
             } else {
                 false
@@ -1479,18 +1583,149 @@ impl AgentPanelView {
                 panel.model_menu_open = false;
                 changed = true;
             }
+            if panel.add_menu_open {
+                panel.add_menu_open = false;
+                changed = true;
+            }
         }
         if changed {
             ctx.notify();
         }
     }
 
+    fn toggle_add_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.project_row_menu = None;
+            panel.chats_menu_open = false;
+            panel.session_context_menu = None;
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.add_menu_open = !panel.add_menu_open;
+        }
+        ctx.notify();
+    }
+
+    fn open_files_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.add_menu_open = false;
+            panel.media_modal = None;
+            panel.files_modal = Some(FilesModalState::new());
+        }
+        ctx.notify();
+    }
+
+    fn close_files_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.files_modal = None;
+        }
+        ctx.notify();
+    }
+
+    fn select_demo_file(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            if let Some(modal) = panel.files_modal.as_mut() {
+                if index < DEMO_FILES.len() {
+                    modal.selected = index;
+                }
+            }
+        }
+        ctx.notify();
+    }
+
+    fn confirm_files_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            let Some(modal) = panel.files_modal.as_ref() else {
+                return;
+            };
+            let Some(item) = DEMO_FILES.get(modal.selected) else {
+                return;
+            };
+            let path = item.path.to_string();
+            if !panel.attachments.iter().any(|a| a.path == path) {
+                panel.attachments.push(ComposerAttachment {
+                    name: item.name.to_string(),
+                    path,
+                    size: item.size.to_string(),
+                    is_folder: item.is_folder,
+                });
+            }
+            panel.files_modal = None;
+        }
+        ctx.notify();
+    }
+
+    fn open_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.add_menu_open = false;
+            panel.files_modal = None;
+            panel.media_modal = Some(MediaModalState::new());
+        }
+        ctx.notify();
+    }
+
+    fn close_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.media_modal = None;
+        }
+        ctx.notify();
+    }
+
+    fn select_demo_media(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            if let Some(modal) = panel.media_modal.as_mut() {
+                if index < DEMO_MEDIA.len() {
+                    modal.selected = index;
+                }
+            }
+        }
+        ctx.notify();
+    }
+
+    fn confirm_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            let Some(modal) = panel.media_modal.as_ref() else {
+                return;
+            };
+            let Some(item) = DEMO_MEDIA.get(modal.selected) else {
+                return;
+            };
+            let path = item.name.to_string();
+            if !panel.attachments.iter().any(|a| a.path == path) {
+                panel.attachments.push(ComposerAttachment {
+                    name: item.name.to_string(),
+                    path,
+                    size: item.size.to_string(),
+                    is_folder: false,
+                });
+            }
+            panel.media_modal = None;
+        }
+        ctx.notify();
+    }
+
+    fn toggle_goal_mode(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.goal_mode = !panel.goal_mode;
+            panel.add_menu_open = false;
+        }
+        ctx.notify();
+    }
+
+    fn toggle_plan_mode(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.plan_mode = !panel.plan_mode;
+            panel.add_menu_open = false;
+        }
+        ctx.notify();
+    }
+
     fn toggle_access_menu(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
             panel.chats_menu_open = false;
             panel.session_context_menu = None;
             panel.model_menu_open = false;
+            panel.add_menu_open = false;
             panel.access_menu_open = !panel.access_menu_open;
         }
         ctx.notify();
@@ -1498,10 +1733,11 @@ impl AgentPanelView {
 
     fn toggle_model_menu(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
-            panel.projects_menu_open = false;
+            panel.project_row_menu = None;
             panel.chats_menu_open = false;
             panel.session_context_menu = None;
             panel.access_menu_open = false;
+            panel.add_menu_open = false;
             panel.model_menu_open = !panel.model_menu_open;
         }
         ctx.notify();
@@ -1511,6 +1747,7 @@ impl AgentPanelView {
         if let Ok(mut panel) = self.state.lock() {
             panel.access_menu_open = false;
             panel.model_menu_open = false;
+            panel.add_menu_open = false;
         }
         if self.access_mode == mode {
             ctx.notify();
@@ -2060,15 +2297,6 @@ impl AgentPanelView {
             .finish()
     }
 
-    fn composer_attach_chip(&self) -> Box<dyn Element> {
-        Container::new(icons::chat_compose_icon("chat-compose-attach.svg", theme::muted()))
-            .with_uniform_padding(8.0)
-            .with_corner_radius(warpui::elements::CornerRadius::with_all(
-                warpui::elements::Radius::Pixels(8.0),
-            ))
-            .finish()
-    }
-
     fn composer_icon_chip(
         &self,
         path: &'static str,
@@ -2159,9 +2387,14 @@ impl AgentPanelView {
             None,
             true,
         );
+        let add_btn = self.composer_icon_chip(
+            "agent-plus.svg",
+            theme::muted(),
+            Some(AgentPanelAction::ToggleAddMenu),
+        );
         let bar = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(self.composer_attach_chip())
+            .with_child(add_btn)
             .with_child(access_chip)
             .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
             .with_child(model_chip)
@@ -2233,12 +2466,60 @@ impl AgentPanelView {
         .finish()
     }
 
-    fn composer_bottom_layer(&self, inner: Box<dyn Element>) -> Box<dyn Element> {
-        let wrap = Container::new(center_composer_width(inner))
+    fn composer_bottom_layer(
+        &self,
+        folder: Option<(String, String)>,
+        inner: Box<dyn Element>,
+    ) -> Box<dyn Element> {
+        let mut col = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        if let Some((name, path)) = folder {
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max);
+            row.add_child(icons::agent_icon("agent-folder.svg", theme::accent_cool()));
+            row.add_child(
+                Container::new(
+                    ui_text::body(name, self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            let _ = path;
+            col.add_child(
+                ConstrainedBox::new(
+                    Container::new(row.finish())
+                        .with_padding_left(14.0)
+                        .with_padding_right(14.0)
+                        .with_padding_top(8.0)
+                        .with_padding_bottom(8.0)
+                        .with_background(theme::panel_elevated())
+                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                        .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                            warpui::elements::Radius::Pixels(12.0),
+                        ))
+                        .finish(),
+                )
+                .with_max_width(AGENT_THREAD_MAX_WIDTH)
+                .with_width(AGENT_THREAD_MAX_WIDTH)
+                .with_min_height(40.0)
+                .finish(),
+            );
+            col.add_child(
+                Container::new(Flex::column().finish())
+                    .with_vertical_margin(4.0)
+                    .finish(),
+            );
+        }
+        col.add_child(inner);
+        let wrap = Container::new(center_composer_width(col.finish()))
             .with_padding_left(24.0)
             .with_padding_right(24.0)
             .with_padding_top(8.0)
-            .with_padding_bottom(20.0)
+            .with_padding_bottom(16.0)
             .finish();
         Align::new(wrap).bottom_center().finish()
     }
@@ -2259,6 +2540,9 @@ impl AgentPanelView {
         model_rate: AgentModelRate,
         access_menu_open: bool,
         model_menu_open: bool,
+        add_menu_open: bool,
+        goal_mode: bool,
+        plan_mode: bool,
     ) -> Box<dyn Element> {
         let mut stack = Stack::new();
         self.push_composer_popover_aligns(
@@ -2267,13 +2551,13 @@ impl AgentPanelView {
             model_rate,
             access_menu_open,
             model_menu_open,
+            add_menu_open,
+            goal_mode,
+            plan_mode,
         );
-        self.composer_bottom_layer(stack.finish())
+        self.composer_bottom_layer(None, stack.finish())
     }
 
-    /// Idle (centered) popovers: same chip-relative `bottom_*` anchors as the bottom
-    /// path, but on a separate same-size centered box so menus never share Stack
-    /// measurement with the composer card (which would push the menu to the right).
     fn render_idle_composer_popovers(
         &self,
         card_height: f32,
@@ -2281,9 +2565,11 @@ impl AgentPanelView {
         model_rate: AgentModelRate,
         access_menu_open: bool,
         model_menu_open: bool,
+        add_menu_open: bool,
+        goal_mode: bool,
+        plan_mode: bool,
     ) -> Box<dyn Element> {
         let mut stack = Stack::new();
-        // Sized placeholder so ConstrainedBox height is real; menus Align-overflow upward.
         stack.add_child(Empty::new().finish());
         self.push_composer_popover_aligns(
             &mut stack,
@@ -2291,6 +2577,9 @@ impl AgentPanelView {
             model_rate,
             access_menu_open,
             model_menu_open,
+            add_menu_open,
+            goal_mode,
+            plan_mode,
         );
         let anchor = ConstrainedBox::new(stack.finish())
             .with_width(AGENT_THREAD_MAX_WIDTH)
@@ -2306,7 +2595,24 @@ impl AgentPanelView {
         model_rate: AgentModelRate,
         access_menu_open: bool,
         model_menu_open: bool,
+        add_menu_open: bool,
+        goal_mode: bool,
+        plan_mode: bool,
     ) {
+        if add_menu_open {
+            stack.add_child(
+                Align::new(
+                    Container::new(composer_add::render_add_menu(
+                        self.font, goal_mode, plan_mode,
+                    ))
+                    .with_margin_left(ADD_POPOVER_INSET_LEFT)
+                    .with_margin_bottom(COMPOSER_BAR_LIFT)
+                    .finish(),
+                )
+                .bottom_left()
+                .finish(),
+            );
+        }
         if access_menu_open {
             stack.add_child(
                 Align::new(
@@ -2466,6 +2772,12 @@ impl View for AgentPanelView {
         let thinking = state.busy && state.polling_session;
         let access_menu_open = state.access_menu_open;
         let model_menu_open = state.model_menu_open;
+        let add_menu_open = state.add_menu_open;
+        let plan_mode = state.plan_mode;
+        let goal_mode = state.goal_mode;
+        let attachments = state.attachments.clone();
+        let files_modal = state.files_modal.clone();
+        let media_modal = state.media_modal.clone();
         let access_mode = self.access_mode;
         let model_rate = self.model_rate;
         let projects = state.projects.clone();
@@ -2477,10 +2789,11 @@ impl View for AgentPanelView {
         let sidebar_search = state.sidebar_search.clone();
         let sidebar_search_focused = state.sidebar_search_focused;
         let archived_ids = state.archived_ids.clone();
-        let projects_menu_open = state.projects_menu_open;
+        let project_row_menu = state.project_row_menu.clone();
         let chats_menu_open = state.chats_menu_open;
         let session_context_menu = state.session_context_menu.clone();
         let project_create = state.project_create.clone();
+        let project_delete = state.project_delete.clone();
         let sidebar_hover = state.sidebar_hover.clone();
         let project_head_hover = state.project_head_hover.clone();
         drop(state);
@@ -2506,54 +2819,57 @@ impl View for AgentPanelView {
             thinking,
         };
 
-        let composer_inner = Container::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(
-                    ConstrainedBox::new(
-                        Container::new(
-                            EventHandler::new(self.agent_composer_input(
-                                &draft,
-                                &marked,
-                                input_focused,
-                                caret_blink,
-                                busy,
-                                placeholder,
-                            ))
-                            .on_left_mouse_down(|ctx, _, _| {
-                                ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
-                                DispatchEventResult::StopPropagation
-                            })
-                            .finish(),
-                        )
-                        .with_padding_left(16.0)
-                        .with_padding_right(16.0)
-                        .with_padding_top(14.0)
-                        .with_padding_bottom(8.0)
-                        .finish(),
-                    )
-                    .with_min_width(0.0)
-                    .with_height(input_height)
-                    .with_max_height(multiline_input::box_height(
-                        &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
-                        multiline_input::DEFAULT_COLS,
+        let mut composer_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if let Some(chips) =
+            composer_add::render_composer_chips(self.font, plan_mode, goal_mode, &attachments)
+        {
+            composer_col.add_child(chips);
+        }
+        composer_col.add_child(
+            ConstrainedBox::new(
+                Container::new(
+                    EventHandler::new(self.agent_composer_input(
+                        &draft,
+                        &marked,
+                        input_focused,
+                        caret_blink,
+                        busy,
+                        placeholder,
                     ))
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                        DispatchEventResult::StopPropagation
+                    })
                     .finish(),
                 )
-                .with_child(self.composer_bar(
-                    busy,
-                    draft.trim().is_empty(),
-                    access_mode,
-                    model_rate,
-                ))
+                .with_padding_left(16.0)
+                .with_padding_right(16.0)
+                .with_padding_top(14.0)
+                .with_padding_bottom(8.0)
                 .finish(),
-        )
-        .with_background(theme::panel())
-        .with_border(Border::all(1.0).with_border_color(input_border))
-        .with_corner_radius(warpui::elements::CornerRadius::with_all(
-            warpui::elements::Radius::Pixels(16.0),
-        ))
-        .finish();
+            )
+            .with_min_width(0.0)
+            .with_height(input_height)
+            .with_max_height(multiline_input::box_height(
+                &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
+                multiline_input::DEFAULT_COLS,
+            ))
+            .finish(),
+        );
+        composer_col.add_child(self.composer_bar(
+            busy,
+            draft.trim().is_empty(),
+            access_mode,
+            model_rate,
+        ));
+
+        let composer_inner = Container::new(composer_col.finish())
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_color(input_border))
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(16.0),
+            ))
+            .finish();
 
         let composer_card = ConstrainedBox::new(composer_inner)
             .with_max_width(AGENT_THREAD_MAX_WIDTH)
@@ -2561,6 +2877,26 @@ impl View for AgentPanelView {
             .finish();
 
         let idle_composer = Self::is_idle_composer_state(&active_sidebar_session_id);
+        let composer_folder = if idle_composer {
+            None
+        } else {
+            sidebar_sessions
+                .iter()
+                .find(|s| s.id == active_sidebar_session_id)
+                .and_then(|s| s.project_id.as_ref())
+                .and_then(|pid| projects.iter().find(|p| p.id == *pid))
+                .map(|p| {
+                    let name = p
+                        .folder_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(p.label.as_str())
+                        .to_string();
+                    let path = p.folder_path.display().to_string();
+                    (name, path)
+                })
+        };
         let composer_surface = composer_card;
 
         let mut main_stack = Stack::new();
@@ -2575,14 +2911,22 @@ impl View for AgentPanelView {
                 )
                 .finish();
             main_stack.add_child(idle_body);
-            if access_menu_open || model_menu_open {
-                let card_height = input_height + COMPOSER_CHROME_HEIGHT;
+            if access_menu_open || model_menu_open || add_menu_open {
+                let chips_extra = if plan_mode || goal_mode || !attachments.is_empty() {
+                    40.0
+                } else {
+                    0.0
+                };
+                let card_height = input_height + COMPOSER_CHROME_HEIGHT + chips_extra;
                 main_stack.add_child(self.render_idle_composer_popovers(
                     card_height,
                     access_mode,
                     model_rate,
                     access_menu_open,
                     model_menu_open,
+                    add_menu_open,
+                    goal_mode,
+                    plan_mode,
                 ));
             }
         } else {
@@ -2614,13 +2958,16 @@ impl View for AgentPanelView {
                 .finish();
 
             main_stack.add_child(thread_column);
-            main_stack.add_child(self.composer_bottom_layer(composer_surface));
-            if access_menu_open || model_menu_open {
+            main_stack.add_child(self.composer_bottom_layer(composer_folder, composer_surface));
+            if access_menu_open || model_menu_open || add_menu_open {
                 main_stack.add_child(self.render_composer_popovers(
                     access_mode,
                     model_rate,
                     access_menu_open,
                     model_menu_open,
+                    add_menu_open,
+                    goal_mode,
+                    plan_mode,
                 ));
             }
         }
@@ -2643,8 +2990,8 @@ impl View for AgentPanelView {
                     &sidebar_search,
                     sidebar_search_focused,
                     &archived_ids,
-                    projects_menu_open,
                     chats_menu_open,
+                    project_row_menu.as_deref(),
                     sidebar_hover.as_deref(),
                     project_head_hover.as_deref(),
                 ))
@@ -2665,10 +3012,12 @@ impl View for AgentPanelView {
             .with_background(theme::canvas())
             .finish();
 
-        let overlay_open = projects_menu_open
-            || chats_menu_open
+        // Project-row menu is in-tree (no scrim) so the dropdown stays clickable.
+        // Files/media modals bring their own scrim.
+        let overlay_open = chats_menu_open
             || session_context_menu.is_some()
-            || project_create.is_some();
+            || project_create.is_some()
+            || project_delete.is_some();
 
         let mut root_stack = Stack::new();
         root_stack.add_child(panel);
@@ -2679,6 +3028,33 @@ impl View for AgentPanelView {
             root_stack.add_child(project_create_modal::render_project_create_modal(
                 self.font, create,
             ));
+        }
+        if let Some(delete) = &project_delete {
+            let (label, path) = projects
+                .iter()
+                .find(|p| p.id == delete.project_id)
+                .map(|p| {
+                    (
+                        p.label.clone(),
+                        p.folder_path.display().to_string(),
+                    )
+                })
+                .unwrap_or_else(|| ("—".into(), String::new()));
+            root_stack.add_child(project_delete_modal::render_project_delete_modal(
+                self.font,
+                self.mono,
+                delete,
+                &label,
+                &path,
+            ));
+        }
+        if let Some(files) = &files_modal {
+            root_stack.add_child(composer_add::render_files_modal(
+                self.font, self.mono, files,
+            ));
+        }
+        if let Some(media) = &media_modal {
+            root_stack.add_child(composer_add::render_media_modal(self.font, media));
         }
         if let Some((session_id, archived, x, y)) = session_context_menu {
             root_stack.add_child(sidebar::render_session_context_menu(
@@ -2704,6 +3080,9 @@ impl View for AgentPanelView {
                     let notify_tx = self.generation_notify_tx.clone();
                     move |ctx, _, keystroke| {
                         if keystroke.key == "escape" {
+                            ctx.dispatch_typed_action(AgentPanelAction::CloseFilesModal);
+                            ctx.dispatch_typed_action(AgentPanelAction::CloseMediaModal);
+                            ctx.dispatch_typed_action(AgentPanelAction::CloseProjectDeleteModal);
                             ctx.dispatch_typed_action(AgentPanelAction::CloseProjectCreateModal);
                             ctx.dispatch_typed_action(AgentPanelAction::CloseSessionContextMenu);
                             ctx.dispatch_typed_action(AgentPanelAction::DismissSidebarMenus);
@@ -2774,6 +3153,37 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::ToggleAccessMenu => self.toggle_access_menu(ctx),
             AgentPanelAction::SelectModelRate(rate) => self.select_model_rate(*rate, ctx),
             AgentPanelAction::ToggleModelMenu => self.toggle_model_menu(ctx),
+            AgentPanelAction::ToggleAddMenu => self.toggle_add_menu(ctx),
+            AgentPanelAction::OpenFilesModal => self.open_files_modal(ctx),
+            AgentPanelAction::CloseFilesModal => self.close_files_modal(ctx),
+            AgentPanelAction::SelectDemoFile(i) => self.select_demo_file(*i, ctx),
+            AgentPanelAction::ConfirmFilesModal => self.confirm_files_modal(ctx),
+            AgentPanelAction::OpenMediaModal => self.open_media_modal(ctx),
+            AgentPanelAction::CloseMediaModal => self.close_media_modal(ctx),
+            AgentPanelAction::SelectDemoMedia(i) => self.select_demo_media(*i, ctx),
+            AgentPanelAction::ConfirmMediaModal => self.confirm_media_modal(ctx),
+            AgentPanelAction::ToggleGoalMode => self.toggle_goal_mode(ctx),
+            AgentPanelAction::TogglePlanMode => self.toggle_plan_mode(ctx),
+            AgentPanelAction::ClearGoalMode => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.goal_mode = false;
+                }
+                ctx.notify();
+            }
+            AgentPanelAction::ClearPlanMode => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.plan_mode = false;
+                }
+                ctx.notify();
+            }
+            AgentPanelAction::RemoveAttachment(i) => {
+                if let Ok(mut panel) = self.state.lock() {
+                    if *i < panel.attachments.len() {
+                        panel.attachments.remove(*i);
+                    }
+                }
+                ctx.notify();
+            }
             AgentPanelAction::DismissComposerMenus => self.dismiss_composer_menus(ctx),
             AgentPanelAction::SelectMode(mode) => self.select_mode(*mode, ctx),
             AgentPanelAction::Send => self.send_message(ctx),
@@ -2800,26 +3210,14 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::OpenProjectCreateModal => self.open_project_create_modal(ctx),
             AgentPanelAction::CloseProjectCreateModal => self.close_project_create_modal(ctx),
             AgentPanelAction::ProjectCreateNext => self.project_create_next(ctx),
-            AgentPanelAction::ProjectCreateBack => self.project_create_back(ctx),
             AgentPanelAction::ProjectCreateUseExistingFolder => {
                 self.project_create_use_existing_folder(ctx)
             }
-            AgentPanelAction::ProjectCreatePickFolder => self.project_create_pick_folder(ctx),
             AgentPanelAction::ProjectCreateSubmit => self.project_create_submit(ctx),
             AgentPanelAction::FocusProjectCreateName => {
                 if let Ok(mut panel) = self.state.lock() {
                     if let Some(create) = panel.project_create.as_mut() {
                         create.name_focused = true;
-                        create.path_focused = false;
-                    }
-                }
-                ctx.notify();
-            }
-            AgentPanelAction::FocusProjectCreatePath => {
-                if let Ok(mut panel) = self.state.lock() {
-                    if let Some(create) = panel.project_create.as_mut() {
-                        create.name_focused = false;
-                        create.path_focused = true;
                     }
                 }
                 ctx.notify();
@@ -2835,18 +3233,17 @@ impl TypedActionView for AgentPanelView {
                 }
                 ctx.notify();
             }
-            AgentPanelAction::ProjectCreatePathEdit(edit) => {
-                if let Ok(mut panel) = self.state.lock() {
-                    if let Some(create) = panel.project_create.as_mut() {
-                        let mut field = TextFieldState::new();
-                        field.apply(&mut create.path, edit);
-                        create.path_invalid = false;
-                        create.path_focused = true;
-                    }
-                }
-                ctx.notify();
+            AgentPanelAction::OpenProjectRowMenu(id) => {
+                self.open_project_row_menu(id.clone(), ctx)
             }
-            AgentPanelAction::OpenProjectRowMenu(id) => self.open_project_row_menu(id.clone(), ctx),
+            AgentPanelAction::OpenProjectDeleteModal(id) => {
+                self.open_project_delete_modal(id.clone(), ctx)
+            }
+            AgentPanelAction::CloseProjectDeleteModal => self.close_project_delete_modal(ctx),
+            AgentPanelAction::SetProjectDeleteMode(delete_local) => {
+                self.set_project_delete_mode(*delete_local, ctx)
+            }
+            AgentPanelAction::ConfirmDeleteProject => self.confirm_delete_project(ctx),
             AgentPanelAction::RenameProject(id) => self.rename_project(id.clone(), ctx),
             AgentPanelAction::DeleteActiveStandaloneChat => {
                 self.delete_active_standalone_chat(ctx)
@@ -2861,8 +3258,16 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::ToggleChatsMenu => self.toggle_chats_menu(ctx),
             AgentPanelAction::DismissSidebarMenus => self.dismiss_sidebar_menus(ctx),
-            AgentPanelAction::DeleteProject(id) => self.delete_project(id.clone(), ctx),
-            AgentPanelAction::DeleteActiveProject => self.delete_project(String::new(), ctx),
+            AgentPanelAction::DeleteActiveProject => {
+                let id = self
+                    .state
+                    .lock()
+                    .map(|p| p.active_project_id.clone())
+                    .unwrap_or_default();
+                if !id.is_empty() {
+                    self.open_project_delete_modal(id, ctx);
+                }
+            }
             AgentPanelAction::ArchiveSession(id) => self.archive_session(id.clone(), ctx),
             AgentPanelAction::ArchiveActiveSession => {
                 let id = self
@@ -2878,7 +3283,7 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DeleteSession(id) => self.delete_session(id.clone(), ctx),
             AgentPanelAction::OpenSessionContextMenu { id, archived, x, y } => {
                 if let Ok(mut panel) = self.state.lock() {
-                    panel.projects_menu_open = false;
+                    panel.project_row_menu = None;
                     panel.chats_menu_open = false;
                     panel.session_context_menu = Some((id.clone(), *archived, *x, *y));
                 }
@@ -2978,6 +3383,22 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::ToggleAccessMenu => {
                 AccessibilityContent::new_without_help("访问权限菜单", WarpA11yRole::ButtonRole)
             }
+            AgentPanelAction::ToggleAddMenu
+            | AgentPanelAction::OpenFilesModal
+            | AgentPanelAction::CloseFilesModal
+            | AgentPanelAction::SelectDemoFile(_)
+            | AgentPanelAction::ConfirmFilesModal
+            | AgentPanelAction::OpenMediaModal
+            | AgentPanelAction::CloseMediaModal
+            | AgentPanelAction::SelectDemoMedia(_)
+            | AgentPanelAction::ConfirmMediaModal
+            | AgentPanelAction::ToggleGoalMode
+            | AgentPanelAction::TogglePlanMode
+            | AgentPanelAction::ClearGoalMode
+            | AgentPanelAction::ClearPlanMode
+            | AgentPanelAction::RemoveAttachment(_) => {
+                AccessibilityContent::new_without_help("添加", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::SelectModelRate(rate) => AccessibilityContent::new_without_help(
                 rate.chip_label(),
                 WarpA11yRole::MenuItemRole,
@@ -3017,8 +3438,7 @@ impl TypedActionView for AgentPanelView {
             | AgentPanelAction::NewStandaloneChat
             | AgentPanelAction::NewProjectThread(_)
             | AgentPanelAction::OpenProjectCreateModal
-            | AgentPanelAction::ProjectCreateSubmit
-            | AgentPanelAction::ProjectCreatePickFolder => {
+            | AgentPanelAction::ProjectCreateSubmit => {
                 AccessibilityContent::new_without_help("新建侧栏项", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::ToggleProjectExpanded(_)
@@ -3028,13 +3448,17 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::CloseProjectCreateModal
             | AgentPanelAction::ProjectCreateNext
-            | AgentPanelAction::ProjectCreateBack
             | AgentPanelAction::ProjectCreateUseExistingFolder
             | AgentPanelAction::FocusProjectCreateName
-            | AgentPanelAction::FocusProjectCreatePath
-            | AgentPanelAction::ProjectCreateNameEdit(_)
-            | AgentPanelAction::ProjectCreatePathEdit(_) => {
+            | AgentPanelAction::ProjectCreateNameEdit(_) => {
                 AccessibilityContent::new_without_help("创建项目", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::OpenProjectDeleteModal(_)
+            | AgentPanelAction::CloseProjectDeleteModal
+            | AgentPanelAction::SetProjectDeleteMode(_)
+            | AgentPanelAction::ConfirmDeleteProject
+            | AgentPanelAction::DeleteActiveProject => {
+                AccessibilityContent::new_without_help("删除项目", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::DeleteActiveStandaloneChat => {
                 AccessibilityContent::new_without_help("删除独立对话", WarpA11yRole::MenuItemRole)
@@ -3048,9 +3472,7 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DismissSidebarMenus | AgentPanelAction::CloseSessionContextMenu => {
                 return ActionAccessibilityContent::Empty;
             }
-            AgentPanelAction::DeleteProject(_)
-            | AgentPanelAction::DeleteActiveProject
-            | AgentPanelAction::ArchiveSession(_)
+            AgentPanelAction::ArchiveSession(_)
             | AgentPanelAction::ArchiveActiveSession
             | AgentPanelAction::RestoreSession(_)
             | AgentPanelAction::DeleteSession(_) => {
@@ -3129,12 +3551,18 @@ mod tests {
             archived_ids: HashSet::new(),
             expanded_project_ids: HashSet::new(),
             project_create: None,
-            project_row_menu_target: None,
-            projects_menu_open: false,
+            project_row_menu: None,
+            project_delete: None,
             chats_menu_open: false,
             session_context_menu: None,
             access_menu_open: false,
             model_menu_open: false,
+            add_menu_open: false,
+            plan_mode: false,
+            goal_mode: false,
+            attachments: Vec::new(),
+            files_modal: None,
+            media_modal: None,
             field_state: TextFieldState::new(),
             sidebar_hover: None,
             project_head_hover: None,

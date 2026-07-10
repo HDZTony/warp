@@ -21,7 +21,6 @@ use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
-use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
 use crate::ui::devices_view::DevicesView;
@@ -191,8 +190,6 @@ impl AppShellView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
-        import_model: SharedCodexProviderImportModel,
-        pending_deeplink: Option<String>,
         #[cfg(windows)] tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
@@ -219,8 +216,7 @@ impl AppShellView {
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
         let toolbox = ctx
             .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
-        let settings =
-            ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
+        let settings = ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone()));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
             match event {
@@ -291,14 +287,7 @@ impl AppShellView {
         if matches!(tab, AppTab::WDrive | AppTab::Sync | AppTab::Display) {
             tab = AppTab::Devices;
         }
-        if let Some(ref url) = pending_deeplink {
-            tab = AppTab::Settings;
-            let settings_handle = settings.clone();
-            ctx.update_view(&settings_handle, |view, ctx| {
-                view.open_deeplink_url(url.clone(), ctx)
-            });
-        }
-        let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
+        let show_onboarding = !prefs.onboarding_dismissed;
         let window_id = ctx.window_id();
         let view = Self {
             tab,
@@ -358,7 +347,7 @@ impl AppShellView {
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.refresh_auth_status(ctx);
-        view.start_deeplink_listener(ctx);
+        view.start_event_listener(ctx);
         #[cfg(windows)]
         view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
@@ -444,13 +433,13 @@ impl AppShellView {
         );
     }
 
-    fn start_deeplink_listener(&self, ctx: &mut ViewContext<Self>) {
+    fn start_event_listener(&self, ctx: &mut ViewContext<Self>) {
         let events = self.core.runtime().ctx.events.clone();
         let settings = self.settings.clone();
-        Self::poll_deeplink_once(ctx, events, settings);
+        Self::poll_events_once(ctx, events, settings);
     }
 
-    fn poll_deeplink_once(
+    fn poll_events_once(
         ctx: &mut ViewContext<Self>,
         events: wormhole_desktop_core::DesktopEventBus,
         settings: ViewHandle<SettingsView>,
@@ -459,14 +448,6 @@ impl AppShellView {
         ctx.spawn(async move { rx.recv().await }, move |view, output, ctx| {
             if let Ok(event) = output {
                 match event.name.as_str() {
-                    "deeplink-import" => {
-                        if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
-                            let url = url.to_string();
-                            ctx.update_view(&settings, |view, ctx| {
-                                view.open_deeplink_url(url, ctx);
-                            });
-                        }
-                    }
                     "cloud-auth-changed" => {
                         view.refresh_auth_status(ctx);
                         view.refresh_auth_gated_views(ctx);
@@ -478,7 +459,7 @@ impl AppShellView {
                     _ => {}
                 }
             }
-            Self::poll_deeplink_once(ctx, events, settings);
+            Self::poll_events_once(ctx, events, settings);
         });
     }
 

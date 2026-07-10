@@ -3,8 +3,8 @@
 use pathfinder_color::ColorU;
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize,
-    ParentElement, Radius, Shrinkable, Stack,
+    DispatchEventResult, EventHandler, Flex, MainAxisAlignment, MainAxisSize, ParentElement,
+    Radius, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -22,26 +22,18 @@ pub enum ProjectCreateStep {
 #[derive(Debug, Clone)]
 pub struct ProjectCreateState {
     pub step: ProjectCreateStep,
-    pub from_folder: bool,
     pub name: String,
-    pub path: String,
     pub name_focused: bool,
-    pub path_focused: bool,
     pub name_invalid: bool,
-    pub path_invalid: bool,
 }
 
 impl ProjectCreateState {
     pub fn new_type_select() -> Self {
         Self {
             step: ProjectCreateStep::TypeSelect,
-            from_folder: false,
             name: "New project".into(),
-            path: String::new(),
             name_focused: false,
-            path_focused: false,
             name_invalid: false,
-            path_invalid: false,
         }
     }
 }
@@ -65,39 +57,6 @@ fn submit_button(font: FamilyId, label: &str, action: AgentPanelAction) -> Box<d
             .finish(),
         )
         .with_height(34.0)
-        .finish(),
-    )
-    .on_left_mouse_down(move |ctx, _, _| {
-        ctx.dispatch_typed_action(action.clone());
-        DispatchEventResult::StopPropagation
-    })
-    .finish()
-}
-
-fn modal_button(
-    font: FamilyId,
-    label: &str,
-    primary: bool,
-    action: AgentPanelAction,
-) -> Box<dyn Element> {
-    let (bg, fg) = if primary {
-        (theme::accent_cool(), theme::canvas())
-    } else {
-        (theme::panel_elevated(), theme::text())
-    };
-    EventHandler::new(
-        Container::new(
-            Align::new(
-                ui_text::body(label.to_string(), font)
-                    .with_color(fg)
-                    .finish(),
-            )
-            .finish(),
-        )
-        .with_uniform_padding(10.0)
-        .with_background(bg)
-        .with_border(Border::all(1.0).with_border_fill(theme::border()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
         .finish(),
     )
     .on_left_mouse_down(move |ctx, _, _| {
@@ -298,78 +257,19 @@ fn name_step(font: FamilyId, state: &ProjectCreateState) -> Box<dyn Element> {
         state.name_focused,
         AgentPanelAction::FocusProjectCreateName,
     ));
-    if state.from_folder {
-        col.add_child(
-            Container::new(field_label(font, "项目路径"))
-                .with_padding_top(12.0)
-                .finish(),
-        );
-        col.add_child(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    Expanded::new(
-                        1.0,
-                        text_field(
-                            font,
-                            &state.path,
-                            "D:\\Projects\\my-app",
-                            state.path_invalid,
-                            state.path_focused,
-                            AgentPanelAction::FocusProjectCreatePath,
-                        ),
-                    )
-                    .finish(),
-                )
-                .with_child(
-                    Container::new(modal_button(
-                        font,
-                        "浏览…",
-                        false,
-                        AgentPanelAction::ProjectCreatePickFolder,
-                    ))
-                    .with_padding_left(8.0)
-                    .finish(),
-                )
-                .finish(),
-        );
-        col.add_child(
-            Container::new(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_child(modal_button(
-                        font,
-                        "上一步",
-                        false,
-                        AgentPanelAction::ProjectCreateBack,
-                    ))
-                    .with_child(submit_button(
-                        font,
-                        "创建",
-                        AgentPanelAction::ProjectCreateSubmit,
-                    ))
-                    .finish(),
-            )
-            .with_padding_top(16.0)
+    col.add_child(
+        Container::new(
+            Align::new(submit_button(
+                font,
+                "创建",
+                AgentPanelAction::ProjectCreateSubmit,
+            ))
+            .right()
             .finish(),
-        );
-    } else {
-        col.add_child(
-            Container::new(
-                Align::new(submit_button(
-                    font,
-                    "创建",
-                    AgentPanelAction::ProjectCreateSubmit,
-                ))
-                .right()
-                .finish(),
-            )
-            .with_padding_top(16.0)
-            .finish(),
-        );
-    }
+        )
+        .with_padding_top(16.0)
+        .finish(),
+    );
     col.finish()
 }
 

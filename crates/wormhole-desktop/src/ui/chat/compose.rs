@@ -18,8 +18,7 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{
-    popover_icon_option, popover_menu_header, popover_shell, status_line, StatusTone,
-    POPOVER_ICON_SIZE,
+    popover_icon_label_option, popover_shell_with_radius, status_line, StatusTone,
 };
 use crate::ui::text_field_input::{
     compose_input_height, render_compose_field_with_caret, sync_caret_blink, CaretBlink,
@@ -31,8 +30,10 @@ use wormhole_desktop_core::chat_commands::{
 };
 
 const TG_COMPOSE_GAP: f32 = 6.0;
-const ATTACH_POPOVER_WIDTH: f32 = 280.0;
-const ATTACH_ICON_GLYPH: f32 = 17.0;
+const ATTACH_POPOVER_WIDTH: f32 = 196.0;
+const ATTACH_POPOVER_RADIUS: f32 = 12.0;
+const ATTACH_ICON_SIZE: f32 = 36.0;
+const ATTACH_ICON_GLYPH: f32 = 18.0;
 
 #[derive(Debug, Clone)]
 pub enum ChatComposeAction {
@@ -349,35 +350,33 @@ impl ChatComposeView {
                     .with_child(icons::icon(kind.icon_path(), ATTACH_ICON_GLYPH, icon_tint))
                     .finish(),
             )
-            .with_width(POPOVER_ICON_SIZE)
-            .with_height(POPOVER_ICON_SIZE)
+            .with_width(ATTACH_ICON_SIZE)
+            .with_height(ATTACH_ICON_SIZE)
             .finish(),
         )
         .with_background(icon_bg)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(POPOVER_ICON_SIZE / 2.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ATTACH_ICON_SIZE / 2.0)))
         .finish()
     }
 
     fn attach_panel(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(popover_menu_header(self.font, "附件"));
         for kind in [
             AttachKind::Media,
             AttachKind::Document,
             AttachKind::Location,
         ] {
-            col.add_child(popover_icon_option(
+            col.add_child(popover_icon_label_option(
                 self.font,
                 self.attach_kind_icon(kind),
                 kind.label(),
-                kind.desc(),
                 move |ctx, _, _| {
                     ctx.dispatch_typed_action(ChatComposeAction::PickAttachment(kind));
                     DispatchEventResult::StopPropagation
                 },
             ));
         }
-        popover_shell(ATTACH_POPOVER_WIDTH, col.finish())
+        popover_shell_with_radius(ATTACH_POPOVER_WIDTH, ATTACH_POPOVER_RADIUS, col.finish())
     }
 
     fn attach_button(&self) -> Box<dyn Element> {

@@ -14,6 +14,7 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;
 use wormhole_desktop_core::cluster_commands::cluster_status;
+use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
 const TG_HEADER_BTN: f32 = 36.0;
@@ -102,14 +103,15 @@ impl ChatHeaderView {
                 let conv_id = selected.clone();
                 let conversations = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status(&state).await;
-                (conv_id, conversations, cluster)
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (conv_id, conversations, cluster, remarks)
             },
             |view, output, ctx| {
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());
                 let Some(selected) = selected else {
                     return;
                 };
-                let (conv_id, conversations, cluster) = output;
+                let (conv_id, conversations, cluster, remarks) = output;
                 if conv_id != selected {
                     return;
                 }
@@ -122,11 +124,24 @@ impl ChatHeaderView {
                     .ok()
                     .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
                 if let Some(conv) = conv {
-                    view.title = conv
+                    let remark = cluster.as_ref().ok().and_then(|cluster| {
+                        cluster.nodes.iter().find_map(|node| {
+                            if node.chat_endpoint_id.as_deref()
+                                == Some(conv.peer_endpoint.as_str())
+                                || node.node_id == conv.peer_endpoint
+                            {
+                                remarks.get(&node.node_id).map(String::as_str)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    let fallback = conv
                         .title
                         .clone()
                         .or(conv.peer_display_name.clone())
                         .unwrap_or_else(|| "未知设备".into());
+                    view.title = display_name_with_remark(remark, || fallback);
                     view.node_id = conv.peer_endpoint.clone();
                     let peer_online = cluster
                         .as_ref()
@@ -157,7 +172,10 @@ impl ChatHeaderView {
                         n.chat_endpoint_id.as_deref() == Some(selected.as_str())
                             || n.node_id == selected
                     }) {
-                        view.title = format!("{} · {}", node.os, node.hostname);
+                        view.title = display_name_with_remark(
+                            remarks.get(&node.node_id).map(String::as_str),
+                            || format!("{} · {}", node.os, node.hostname),
+                        );
                         view.online = node.online;
                         view.node_id = node.node_id.clone();
                         view.status = if remote_active {
