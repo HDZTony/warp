@@ -607,7 +607,6 @@ fn project_row_more_btn(
     sidebar_hover: Option<&str>,
     project_id: String,
     menu_open: bool,
-    can_delete: bool,
 ) -> Box<dyn Element> {
     let hovered = sidebar_hover == Some(hover_key.as_str());
     let icon_color = if hovered {
@@ -664,7 +663,7 @@ fn project_row_more_btn(
     if menu_open {
         stack.add_child(
             Align::new(
-                Container::new(project_row_menu_panel(font, &project_id, can_delete))
+                Container::new(project_row_menu_panel(font, &project_id))
                     .with_margin_top(PROJECT_HEAD_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP)
                     .finish(),
             )
@@ -684,7 +683,6 @@ fn project_tree_block(
     expanded: bool,
     search: &str,
     archived_ids: &HashSet<String>,
-    can_delete_project: bool,
     project_row_menu: Option<&str>,
     sidebar_hover: Option<&str>,
     project_head_hover: Option<&str>,
@@ -778,7 +776,6 @@ fn project_tree_block(
                     sidebar_hover,
                     project.id.clone(),
                     menu_open,
-                    can_delete_project,
                 ))
                 .with_child(agent_sidebar_icon_btn_dynamic(
                     new_thread_hover_key,
@@ -966,10 +963,10 @@ pub fn render_session_context_menu(
 }
 
 /// Project-row ⋯ dropdown panel — HTML `#agent-projects-menu` (anchored in-tree).
-fn project_row_menu_panel(font: FamilyId, project_id: &str, can_delete: bool) -> Box<dyn Element> {
+fn project_row_menu_panel(font: FamilyId, project_id: &str) -> Box<dyn Element> {
     let items = vec![(
         "删除项目",
-        !can_delete,
+        false,
         true,
         AgentPanelAction::OpenProjectDeleteModal(project_id.to_string()),
     )];
@@ -1014,7 +1011,6 @@ pub fn render_sidebar(
         .finish(),
     );
 
-    let can_delete_project = projects.len() > 1;
     if projects.is_empty() {
         scroll_col.add_child(
             Container::new(section_hint("暂无项目，点击新建", font))
@@ -1035,7 +1031,6 @@ pub fn render_sidebar(
                     expanded,
                     search,
                     archived_ids,
-                    can_delete_project,
                     project_row_menu,
                     sidebar_hover,
                     project_head_hover,

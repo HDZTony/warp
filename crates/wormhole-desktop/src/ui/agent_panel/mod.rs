@@ -58,6 +58,9 @@ const COMPOSER_BAR_LIFT: f32 = 44.0;
 const ACCESS_POPOVER_INSET_LEFT: f32 = 46.0;
 /// composer_bar: padding_top 6 + padding_bottom 10 + 32px controls.
 const COMPOSER_CHROME_HEIGHT: f32 = 48.0;
+/// `#agent-composer-folder` min-height (HTML) + wrap `gap: 8px`.
+const COMPOSER_FOLDER_BAR_HEIGHT: f32 = 40.0;
+const COMPOSER_FOLDER_GAP: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionMode {
@@ -1095,9 +1098,6 @@ impl AgentPanelView {
 
     fn open_project_delete_modal(&mut self, project_id: String, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
-            if panel.projects.len() <= 1 {
-                return;
-            }
             if !panel.projects.iter().any(|p| p.id == project_id) {
                 return;
             }
@@ -1465,9 +1465,6 @@ impl AgentPanelView {
 
         let folder_path = {
             let panel = self.state.lock().expect("agent panel state");
-            if panel.projects.len() <= 1 {
-                return;
-            }
             panel
                 .projects
                 .iter()
@@ -1503,9 +1500,6 @@ impl AgentPanelView {
 
         let should_switch = {
             let mut panel = self.state.lock().expect("agent panel state");
-            if panel.projects.len() <= 1 {
-                return;
-            }
             let was_active = panel.active_project_id == target_id;
             panel.projects.retain(|p| p.id != target_id);
             panel
@@ -2471,9 +2465,11 @@ impl AgentPanelView {
         folder: Option<(String, String)>,
         inner: Box<dyn Element>,
     ) -> Box<dyn Element> {
+        // HTML `.agent-composer-wrap`: composer card first, then `#agent-composer-folder`.
         let mut col = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
+        col.add_child(inner);
         if let Some((name, path)) = folder {
             let mut row = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2490,6 +2486,11 @@ impl AgentPanelView {
             );
             let _ = path;
             col.add_child(
+                ConstrainedBox::new(Empty::new().finish())
+                    .with_height(COMPOSER_FOLDER_GAP)
+                    .finish(),
+            );
+            col.add_child(
                 ConstrainedBox::new(
                     Container::new(row.finish())
                         .with_padding_left(14.0)
@@ -2505,16 +2506,10 @@ impl AgentPanelView {
                 )
                 .with_max_width(AGENT_THREAD_MAX_WIDTH)
                 .with_width(AGENT_THREAD_MAX_WIDTH)
-                .with_min_height(40.0)
+                .with_min_height(COMPOSER_FOLDER_BAR_HEIGHT)
                 .finish(),
             );
-            col.add_child(
-                Container::new(Flex::column().finish())
-                    .with_vertical_margin(4.0)
-                    .finish(),
-            );
         }
-        col.add_child(inner);
         let wrap = Container::new(center_composer_width(col.finish()))
             .with_padding_left(24.0)
             .with_padding_right(24.0)
@@ -2534,6 +2529,8 @@ impl AgentPanelView {
 
     /// Access / model popovers for the bottom composer (selected session).
     /// Anchors with `composer_bottom_layer` + `bottom_*` so menus sit above chips.
+    /// When `folder_below` is set, lift menus by the folder bar + gap so they still
+    /// align to the composer bar (HTML: folder sits under the card).
     fn render_composer_popovers(
         &self,
         access_mode: AgentAccessMode,
@@ -2543,7 +2540,13 @@ impl AgentPanelView {
         add_menu_open: bool,
         goal_mode: bool,
         plan_mode: bool,
+        folder_below: bool,
     ) -> Box<dyn Element> {
+        let bar_lift = if folder_below {
+            COMPOSER_BAR_LIFT + COMPOSER_FOLDER_BAR_HEIGHT + COMPOSER_FOLDER_GAP
+        } else {
+            COMPOSER_BAR_LIFT
+        };
         let mut stack = Stack::new();
         self.push_composer_popover_aligns(
             &mut stack,
@@ -2554,6 +2557,7 @@ impl AgentPanelView {
             add_menu_open,
             goal_mode,
             plan_mode,
+            bar_lift,
         );
         self.composer_bottom_layer(None, stack.finish())
     }
@@ -2580,6 +2584,7 @@ impl AgentPanelView {
             add_menu_open,
             goal_mode,
             plan_mode,
+            COMPOSER_BAR_LIFT,
         );
         let anchor = ConstrainedBox::new(stack.finish())
             .with_width(AGENT_THREAD_MAX_WIDTH)
@@ -2598,6 +2603,7 @@ impl AgentPanelView {
         add_menu_open: bool,
         goal_mode: bool,
         plan_mode: bool,
+        bar_lift: f32,
     ) {
         if add_menu_open {
             stack.add_child(
@@ -2606,7 +2612,7 @@ impl AgentPanelView {
                         self.font, goal_mode, plan_mode,
                     ))
                     .with_margin_left(ADD_POPOVER_INSET_LEFT)
-                    .with_margin_bottom(COMPOSER_BAR_LIFT)
+                    .with_margin_bottom(bar_lift)
                     .finish(),
                 )
                 .bottom_left()
@@ -2618,7 +2624,7 @@ impl AgentPanelView {
                 Align::new(
                     Container::new(composer_menus::render_access_menu(self.font, access_mode))
                         .with_margin_left(ACCESS_POPOVER_INSET_LEFT)
-                        .with_margin_bottom(COMPOSER_BAR_LIFT)
+                        .with_margin_bottom(bar_lift)
                         .finish(),
                 )
                 .bottom_left()
@@ -2629,7 +2635,7 @@ impl AgentPanelView {
             stack.add_child(
                 Align::new(
                     Container::new(composer_menus::render_model_rate_menu(self.font, model_rate))
-                        .with_margin_bottom(COMPOSER_BAR_LIFT)
+                        .with_margin_bottom(bar_lift)
                         .finish(),
                 )
                 .bottom_right()
@@ -2958,7 +2964,7 @@ impl View for AgentPanelView {
                 .finish();
 
             main_stack.add_child(thread_column);
-            main_stack.add_child(self.composer_bottom_layer(composer_folder, composer_surface));
+            main_stack.add_child(self.composer_bottom_layer(composer_folder.clone(), composer_surface));
             if access_menu_open || model_menu_open || add_menu_open {
                 main_stack.add_child(self.render_composer_popovers(
                     access_mode,
@@ -2968,6 +2974,7 @@ impl View for AgentPanelView {
                     add_menu_open,
                     goal_mode,
                     plan_mode,
+                    composer_folder.is_some(),
                 ));
             }
         }
