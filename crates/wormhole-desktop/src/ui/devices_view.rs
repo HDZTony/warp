@@ -888,7 +888,7 @@ impl DevicesView {
             || Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role_stale)
         {
             return Some(
-                "MEMBERSHIP · 成员资格未确认 · 请刷新；若仍失败请重新加入或创建集群",
+                "MEMBERSHIP · 控面成员状态未同步 · 请刷新；若仍失败请重新加入或创建集群",
             );
         }
         if !Self::active_cluster_can_invite(cluster)
@@ -948,8 +948,9 @@ impl DevicesView {
             return gate.to_string();
         }
         let n = cluster.nodes.len();
+        let online = cluster.nodes.iter().filter(|node| node.online).count();
         format!(
-            "CLUSTER · {n} NODE{} · E2E ENCRYPTED · 双击终端浏览共享文件夹",
+            "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 双击终端浏览共享文件夹",
             if n == 1 { "" } else { "S" }
         )
     }
