@@ -13,7 +13,7 @@ use crate::ui::chat::attach_panel::{
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingAttachment, SharedChatShellState};
-use crate::ui::chat::sticker_picker::StickerPickerView;
+use crate::ui::chat::sticker_picker::{StickerPickerEvent, StickerPickerView};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
@@ -72,7 +72,18 @@ impl ChatComposeView {
         shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let sticker_picker = ctx.add_view(|ctx| StickerPickerView::new(ctx, core.clone()));
+        let sticker_picker =
+            ctx.add_typed_action_view(|ctx| StickerPickerView::new(ctx, core.clone()));
+        ctx.subscribe_to_view(&sticker_picker, |view, _, event, ctx| {
+            let StickerPickerEvent::InsertEmoji(emoji) = event;
+            view.field_state.apply(
+                &mut view.draft,
+                &TextFieldEditAction::TypedCharacters(emoji.clone()),
+            );
+            view.input_focused = true;
+            sync_caret_blink(view, ctx);
+            ctx.notify();
+        });
         Self {
             core,
             selection,
