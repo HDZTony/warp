@@ -433,27 +433,33 @@ pub fn tg_avatar_glyph_size(diameter: f32) -> f32 {
 }
 
 /// Matches `.tg-avatar` / `.tg-avatar.sm` / profile avatar sizes.
+///
+/// Locks width/height with min+max so flex parents cannot stretch into an oval.
+/// Do not wrap in `Shrinkable` — warpui `Shrinkable(factor)` allocates a fraction of
+/// parent width (`0.0` → zero size → paint panic in sidebar scroll).
 pub fn tg_avatar(initials: impl Into<String>, font: FamilyId, diameter: f32) -> Box<dyn Element> {
     let initials = initials.into();
     let glyph_size = tg_avatar_glyph_size(diameter);
-    let avatar = ConstrainedBox::new(
-        Container::new(
-            Align::new(
-                ui_text::chat_avatar_glyph(initials, font, glyph_size)
-                    .with_color(theme::accent_cool())
-                    .finish(),
-            )
-            .finish(),
+    let inner = Container::new(
+        Align::new(
+            ui_text::chat_avatar_glyph(initials, font, glyph_size)
+                .with_color(theme::accent_cool())
+                .finish(),
         )
-        .with_background(tg_avatar_bg())
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(diameter / 2.0)))
-        .with_border(Border::all(1.0).with_border_fill(tg_avatar_border()))
         .finish(),
     )
-    .with_width(diameter)
-    .with_height(diameter)
+    .with_background(tg_avatar_bg())
+    .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.0)))
+    .with_border(Border::all(1.0).with_border_fill(tg_avatar_border()))
     .finish();
-    avatar
+    ConstrainedBox::new(inner)
+        .with_width(diameter)
+        .with_height(diameter)
+        .with_min_width(diameter)
+        .with_max_width(diameter)
+        .with_min_height(diameter)
+        .with_max_height(diameter)
+        .finish()
 }
 
 /// `.conv-device-status .dot` — online indicator.

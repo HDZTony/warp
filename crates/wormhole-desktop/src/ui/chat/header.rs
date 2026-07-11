@@ -191,6 +191,9 @@ impl ChatHeaderView {
     }
 
     fn avatar_initials(title: &str) -> String {
+        if title == "选择左侧终端" {
+            return "WH".to_string();
+        }
         let compact: String = title
             .chars()
             .filter(|c| !c.is_whitespace())

@@ -32,6 +32,7 @@ use warpui::platform::{AppBuilder, AppCallbacks};
 use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
 use wormhole_desktop_core::shutdown_desktop;
+use wormhole_desktop_core::MAIN_WINDOW_TITLE;
 
 #[derive(Debug, Parser)]
 #[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
@@ -220,7 +221,7 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         ctx.add_singleton_model(crate::ui::window_chrome::WindowsSymbolFontState::new);
         ctx.add_window(
-            ui::window_options::desktop_window_options("Wormhole", vec2f(1280.0, 840.0)),
+            ui::window_options::desktop_window_options(MAIN_WINDOW_TITLE, vec2f(1280.0, 840.0)),
             move |view_ctx| {
                 AppShellView::new(
                     view_ctx,

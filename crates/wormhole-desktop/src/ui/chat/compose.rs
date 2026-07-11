@@ -1,9 +1,10 @@
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
     DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize,
-    ParentElement, Radius, Stack,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -391,27 +392,11 @@ impl ChatComposeView {
     }
 
     fn attach_button(&self) -> Box<dyn Element> {
-        let btn = Self::compose_plain_btn(
+        Self::compose_plain_btn(
             "chat-compose-attach.svg",
             theme::muted(),
             ChatComposeAction::ToggleAttachPanel,
-        );
-        if !self.attach_open {
-            return btn;
-        }
-
-        let mut stack = Stack::new();
-        stack.add_child(btn);
-        stack.add_child(
-            Align::new(
-                Container::new(self.attach_panel())
-                    .with_margin_bottom(CHAT_COMPOSE_BTN + 8.0)
-                    .finish(),
-            )
-            .bottom_left()
-            .finish(),
-        );
-        stack.finish()
+        )
     }
 
     fn input_pill(&self, input_height: f32) -> Box<dyn Element> {
@@ -585,18 +570,22 @@ impl View for ChatComposeView {
             .finish();
 
         if self.sticker_open || self.attach_open {
+            // Positioned overlays do not contribute to Stack size — input bar stays put.
+            let above_compose = OffsetPositioning::offset_from_parent(
+                vec2f(12.0, -8.0),
+                ParentOffsetBounds::Unbounded,
+                ParentAnchor::TopLeft,
+                ChildAnchor::BottomLeft,
+            );
             let mut stack = Stack::new();
             stack.add_child(compose_body);
+            if self.attach_open {
+                stack.add_positioned_overlay_child(self.attach_panel(), above_compose.clone());
+            }
             if self.sticker_open {
-                stack.add_child(
-                    Align::new(
-                        Container::new(ChildView::new(&self.sticker_picker).finish())
-                            .with_margin_left(12.0)
-                            .with_margin_bottom(56.0)
-                            .finish(),
-                    )
-                    .bottom_left()
-                    .finish(),
+                stack.add_positioned_overlay_child(
+                    ChildView::new(&self.sticker_picker).finish(),
+                    above_compose,
                 );
             }
             stack.finish()
