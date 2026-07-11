@@ -856,9 +856,49 @@ impl DevicesView {
         cluster.clusters.iter().find(|c| c.active)
     }
 
+    fn active_cluster_membership_fresh(cluster: &ClusterStatusDto) -> bool {
+        !cluster.role_stale
+            && Self::active_cluster_entry(cluster)
+                .is_some_and(|entry| !entry.role_stale && !entry.revoked)
+    }
+
+    fn active_cluster_can_invite(cluster: &ClusterStatusDto) -> bool {
+        Self::active_cluster_membership_fresh(cluster)
+            && Self::active_cluster_entry(cluster)
+                .is_some_and(|entry| matches!(entry.role.as_str(), "owner" | "admin"))
+    }
+
     fn active_cluster_is_owner(cluster: &ClusterStatusDto) -> bool {
-        Self::active_cluster_entry(cluster)
-            .is_some_and(|entry| entry.role == "owner" && !entry.revoked)
+        Self::active_cluster_membership_fresh(cluster)
+            && Self::active_cluster_entry(cluster)
+                .is_some_and(|entry| entry.role == "owner")
+    }
+
+    fn active_cluster_can_leave(cluster: &ClusterStatusDto) -> bool {
+        Self::active_cluster_membership_fresh(cluster)
+            && Self::active_cluster_entry(cluster)
+                .is_some_and(|entry| entry.role != "owner")
+    }
+
+    fn membership_gate_message(cluster: &ClusterStatusDto) -> Option<&'static str> {
+        if cluster.clusters.is_empty() {
+            return None;
+        }
+        if cluster.role_stale
+            || Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role_stale)
+        {
+            return Some(
+                "MEMBERSHIP · 成员资格未确认 · 请刷新；若仍失败请重新加入或创建集群",
+            );
+        }
+        if !Self::active_cluster_can_invite(cluster)
+            && Self::active_cluster_entry(cluster).is_some_and(|entry| !entry.revoked)
+        {
+            return Some(
+                "MEMBERSHIP · 当前设备不是可管理成员 · 请用原设备操作或重新加入",
+            );
+        }
+        None
     }
 
     fn active_cluster_folder_name(cluster: &ClusterStatusDto) -> String {
@@ -904,6 +944,9 @@ impl DevicesView {
         if cluster.clusters.is_empty() {
             return "CLUSTER · EMPTY · 创建或加入集群开始同步".to_string();
         }
+        if let Some(gate) = Self::membership_gate_message(cluster) {
+            return gate.to_string();
+        }
         let n = cluster.nodes.len();
         format!(
             "CLUSTER · {n} NODE{} · E2E ENCRYPTED · 双击终端浏览共享文件夹",
@@ -914,6 +957,13 @@ impl DevicesView {
     fn cluster_status_color(&self) -> ColorU {
         if self.cluster_refresh_busy {
             theme::accent_cool()
+        } else if self
+            .cluster
+            .as_ref()
+            .and_then(Self::membership_gate_message)
+            .is_some()
+        {
+            theme::danger()
         } else {
             theme::muted()
         }
@@ -1199,13 +1249,30 @@ impl DevicesView {
         }
         if Self::active_cluster_id(cluster).is_some() {
             menu.add_child(Self::cluster_menu_divider());
-            menu.add_child(self.cluster_menu_action(
-                self.copy_invite_label(),
-                DevicesAction::CopyInvite,
-                false,
-                !self.copy_invite_busy,
-                false,
-            ));
+            if Self::active_cluster_can_invite(cluster) {
+                menu.add_child(self.cluster_menu_action(
+                    self.copy_invite_label(),
+                    DevicesAction::CopyInvite,
+                    false,
+                    !self.copy_invite_busy,
+                    false,
+                ));
+            } else {
+                menu.add_child(self.cluster_menu_action(
+                    "复制邀请码（需先确认成员）",
+                    DevicesAction::CopyInvite,
+                    false,
+                    false,
+                    false,
+                ));
+                menu.add_child(self.cluster_menu_action(
+                    "重新加入集群",
+                    DevicesAction::OpenJoinModal,
+                    true,
+                    true,
+                    false,
+                ));
+            }
         }
         menu.add_child(Self::cluster_menu_divider());
         menu.add_child(self.cluster_menu_action(
@@ -1355,14 +1422,27 @@ impl DevicesView {
                 .with_horizontal_margin(10.0)
                 .finish(),
         );
-        if Self::active_cluster_entry(cluster)
-            .is_some_and(|entry| entry.role != "owner" && !entry.revoked)
-        {
+        if Self::active_cluster_can_leave(cluster) {
             row.add_child(
                 Container::new(self.toolbar_button(
                     "退出集群",
                     DevicesAction::LeaveCluster,
                     false,
+                    104.0,
+                    true,
+                ))
+                .with_horizontal_margin(10.0)
+                .finish(),
+            );
+        } else if Self::active_cluster_id(cluster).is_some()
+            && !Self::active_cluster_can_invite(cluster)
+            && !Self::active_cluster_is_owner(cluster)
+        {
+            row.add_child(
+                Container::new(self.toolbar_button(
+                    "重新加入",
+                    DevicesAction::OpenJoinModal,
+                    true,
                     104.0,
                     true,
                 ))
@@ -1426,6 +1506,20 @@ impl DevicesView {
     fn copy_invite(&mut self, ctx: &mut ViewContext<Self>) {
         if self.copy_invite_busy {
             return;
+        }
+        if let Some(cluster) = self.cluster.as_ref() {
+            if !Self::active_cluster_can_invite(cluster) {
+                self.status_flash = Some(
+                    Self::membership_gate_message(cluster)
+                        .unwrap_or(
+                            "当前设备不是该集群成员，请用原设备操作或重新加入",
+                        )
+                        .to_string(),
+                );
+                self.cluster_picker_open = false;
+                ctx.notify();
+                return;
+            }
         }
         if let Some(invite) = self.local_invite.clone() {
             match write_clipboard_text(&invite) {
@@ -1725,19 +1819,16 @@ impl DevicesView {
         let is_owner = self
             .cluster
             .as_ref()
-            .and_then(|cluster| {
-                cluster_id.as_ref().and_then(|id| {
-                    cluster
-                        .clusters
-                        .iter()
-                        .find(|entry| entry.cluster_id == *id)
-                        .map(|entry| entry.role == "owner" && !entry.revoked)
-                })
-            })
-            .unwrap_or(false);
+            .is_some_and(Self::active_cluster_is_owner);
         if !is_owner {
             self.delete_modal_cluster_id = None;
-            self.status_flash = Some("只有集群创建者可以删除集群；成员请使用退出集群".into());
+            self.status_flash = Some(
+                self.cluster
+                    .as_ref()
+                    .and_then(Self::membership_gate_message)
+                    .unwrap_or("只有集群创建者可以删除集群；成员请使用退出集群")
+                    .to_string(),
+            );
             ctx.notify();
             return;
         }

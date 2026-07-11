@@ -124,6 +124,7 @@ mod tests {
             auth_required: false,
             device_bootstrap_required: false,
             device_bootstrap_error: None,
+            role_stale: false,
         }
     }
 

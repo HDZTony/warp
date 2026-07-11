@@ -709,6 +709,7 @@ mod tests {
             auth_required: false,
             device_bootstrap_required: false,
             device_bootstrap_error: None,
+            role_stale: false,
         };
         let target = resolve_select_target("chat-endpoint", &[], Some(&cluster));
         assert_eq!(
