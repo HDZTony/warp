@@ -33,7 +33,8 @@ use wormhole_desktop_core::chat_commands::{
 use wormhole_desktop_core::chat_ui_prefs::{
     load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
 };
-use wormhole_desktop_core::cluster_commands::{cluster_status, ClusterStatusDto};
+use wormhole_desktop_core::cluster_commands::{cluster_status_hud, ClusterStatusDto};
+use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 use std::collections::BTreeMap;
@@ -100,6 +101,7 @@ pub struct ChatSidebarView {
     scroll: ClippedScrollStateHandle,
     context_menu: Option<(String, f32, f32)>,
     last_prefs_tick: u64,
+    refresh_in_flight: bool,
 }
 
 impl ChatSidebarView {
@@ -131,6 +133,7 @@ impl ChatSidebarView {
             scroll: ClippedScrollStateHandle::new(),
             context_menu: None,
             last_prefs_tick: 0,
+            refresh_in_flight: false,
         };
         view.refresh(ctx);
         view.start_prefs_poll(ctx);
@@ -174,6 +177,10 @@ impl ChatSidebarView {
     }
 
     pub(crate) fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.refresh_in_flight {
+            return;
+        }
+        self.refresh_in_flight = true;
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -182,12 +189,13 @@ impl ChatSidebarView {
                 let state = runtime.state.clone();
                 let cfg = chat_config(app, &state).await;
                 let list = chat_list_conversations(app, &state).await;
-                let cluster = cluster_status(&state).await;
+                let cluster = cluster_status_hud(&state).await;
                 let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
                 let ui_prefs = load_chat_ui_prefs(&state.data_dir).await.unwrap_or_default();
                 (cfg, list, cluster, remarks, ui_prefs)
             },
             |view, output, ctx| {
+                view.refresh_in_flight = false;
                 let (cfg, list, cluster, remarks, ui_prefs) = output;
                 if let Ok(c) = cfg {
                     view.status = c.display_name;
@@ -448,7 +456,7 @@ impl ChatSidebarView {
                 let app = runtime.ctx.as_ref();
                 let state = runtime.state.clone();
                 let list = chat_list_conversations(app, &state).await;
-                let cluster = cluster_status(&state).await?;
+                let cluster = fetch_cluster_for_ui(&state).await?;
                 Ok::<_, String>((list.unwrap_or_default(), cluster, node_id, stale_peer))
             },
             |view, output, ctx| {

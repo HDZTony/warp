@@ -11,8 +11,8 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    cluster_status, cluster_status_fast, cluster_status_hud,
-    schedule_active_cluster_member_update_if_ready, ClusterStatusDto, NODE_PRESENCE_SIGNED_IN,
+    active_cluster_gossip_is_ready, cluster_status, cluster_status_fast, cluster_status_hud,
+    schedule_active_cluster_member_update_if_ready, ClusterStatusDto,
 };
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
@@ -78,15 +78,8 @@ pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, 
     if !status.configured {
         return Ok(status);
     }
-    if status.nodes.iter().any(|node| {
-        node.server_member_confirmed
-            && !node.online
-            && node.presence_status == NODE_PRESENCE_SIGNED_IN
-    }) {
-        coordinator.mark_not_ready();
-    }
     coordinator.ensure_background(state.clone());
-    if !coordinator.is_gossip_ready() {
+    if !active_cluster_gossip_is_ready(state).await {
         status.syncing = true;
     }
     Ok(status)

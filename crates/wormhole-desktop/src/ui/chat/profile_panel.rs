@@ -20,7 +20,7 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{chat_set_peer_display_name, SetChatPeerDisplayNameParams};
-use wormhole_desktop_core::cluster_commands::cluster_status;
+use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::{
     display_name_with_remark, load_device_remarks, set_device_remark,
 };
@@ -60,6 +60,7 @@ pub struct ChatProfilePanelView {
     remark_focused: bool,
     remark_dirty: bool,
     caret_blink: CaretBlink,
+    refresh_in_flight: bool,
 }
 
 impl ChatProfilePanelView {
@@ -88,6 +89,7 @@ impl ChatProfilePanelView {
             remark_focused: false,
             remark_dirty: false,
             caret_blink: CaretBlink::new(),
+            refresh_in_flight: false,
         };
         view.start_poll(ctx);
         view
@@ -118,6 +120,11 @@ impl ChatProfilePanelView {
         if self.remark_focused || self.remark_dirty {
             return;
         }
+        if self.refresh_in_flight {
+            return;
+        }
+        self.refresh_in_flight = true;
+        ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -126,12 +133,14 @@ impl ChatProfilePanelView {
                 let state = runtime.state.clone();
                 let conversations =
                     wormhole_desktop_core::chat_commands::chat_list_conversations(app, &state).await;
-                let cluster = cluster_status(&state).await;
+                let cluster = cluster_status_hud(&state).await;
                 let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
                 (conversations, cluster, remarks)
             },
             |view, output, ctx| {
+                view.refresh_in_flight = false;
                 if view.remark_focused || view.remark_dirty {
+                    ctx.notify();
                     return;
                 }
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());

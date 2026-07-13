@@ -16,7 +16,7 @@ use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_S
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;
-use wormhole_desktop_core::cluster_commands::cluster_status;
+use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
@@ -151,7 +151,7 @@ impl ChatHeaderView {
                 let state = runtime.state.clone();
                 let conv_id = selected.clone();
                 let conversations = chat_list_conversations(app, &state).await;
-                let cluster = cluster_status(&state).await;
+                let cluster = cluster_status_hud(&state).await;
                 let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
                 (conv_id, conversations, cluster, remarks)
             },
