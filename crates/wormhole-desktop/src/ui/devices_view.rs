@@ -907,7 +907,7 @@ impl DevicesView {
             && Self::active_cluster_entry(cluster).is_some_and(|entry| !entry.revoked)
         {
             return Some(
-                "MEMBERSHIP · 当前设备不是可管理成员 · 请用原设备操作或重新加入",
+                "MEMBERSHIP · 当前设备不是可管理成员 · 跨账号成员需管理员提升，或重新加入",
             );
         }
         None

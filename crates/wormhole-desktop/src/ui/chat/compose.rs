@@ -102,15 +102,38 @@ impl ChatComposeView {
         }
     }
 
+    /// Resolve the active conversation id for send paths. Distinguishes pending open
+    /// and open failures from a true "no session selected" state.
+    fn require_selected_conversation(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
+        if let Some(id) = self.selection.lock().ok().and_then(|g| g.clone()) {
+            return Some(id);
+        }
+        let (pending, open_error) = self
+            .shell_state
+            .lock()
+            .map(|state| (state.pending_open.is_some(), state.open_error.clone()))
+            .unwrap_or((false, None));
+        if pending {
+            self.status = "正在打开会话…".into();
+            self.status_tone = StatusTone::Warn;
+            ctx.notify();
+            return None;
+        }
+        if let Some(err) = open_error {
+            self.status = err;
+            self.status_tone = StatusTone::Danger;
+            ctx.notify();
+            return None;
+        }
+        self.status = "请先选择会话".into();
+        self.status_tone = StatusTone::Warn;
+        ctx.notify();
+        None
+    }
+
     fn send(&mut self, ctx: &mut ViewContext<Self>) {
-        let conv_id = match self.selection.lock().ok().and_then(|g| g.clone()) {
-            Some(id) => id,
-            None => {
-                self.status = "请先选择会话".into();
-                self.status_tone = StatusTone::Warn;
-                ctx.notify();
-                return;
-            }
+        let Some(conv_id) = self.require_selected_conversation(ctx) else {
+            return;
         };
         let body = self.draft.trim().to_string();
         if body.is_empty() {
@@ -187,14 +210,8 @@ impl ChatComposeView {
         kind: String,
         ctx: &mut ViewContext<Self>,
     ) {
-        let conv_id = match self.selection.lock().ok().and_then(|g| g.clone()) {
-            Some(id) => id,
-            None => {
-                self.status = "请先选择会话".into();
-                self.status_tone = StatusTone::Warn;
-                ctx.notify();
-                return;
-            }
+        let Some(conv_id) = self.require_selected_conversation(ctx) else {
+            return;
         };
         let name = path
             .file_name()
@@ -353,20 +370,22 @@ impl ChatComposeView {
             AttachKind::Document => theme::accent_bg(30),
             AttachKind::Location => ColorU::new(70, 120, 90, 36),
         };
-        Container::new(
-            ConstrainedBox::new(
+        // Match compose_plain_btn: Flex Max fills the circle so the glyph is centered.
+        ConstrainedBox::new(
+            Container::new(
                 Flex::row()
                     .with_main_axis_alignment(MainAxisAlignment::Center)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max)
                     .with_child(icons::icon(kind.icon_path(), ATTACH_ICON_GLYPH, icon_tint))
                     .finish(),
             )
-            .with_width(ATTACH_ICON_SIZE)
-            .with_height(ATTACH_ICON_SIZE)
+            .with_background(icon_bg)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ATTACH_ICON_SIZE / 2.0)))
             .finish(),
         )
-        .with_background(icon_bg)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ATTACH_ICON_SIZE / 2.0)))
+        .with_width(ATTACH_ICON_SIZE)
+        .with_height(ATTACH_ICON_SIZE)
         .finish()
     }
 

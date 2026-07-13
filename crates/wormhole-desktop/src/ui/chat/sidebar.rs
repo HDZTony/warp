@@ -210,6 +210,7 @@ impl ChatSidebarView {
         self.selecting = None;
         if let Ok(mut state) = self.shell_state.lock() {
             state.clear_pending_open();
+            state.clear_open_error();
             state.bump_selection_tick();
         }
         ctx.emit(ChatSidebarEvent::Selected(conv_id));
@@ -270,7 +271,9 @@ impl ChatSidebarView {
                     Err(err) => {
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.clear_pending_open();
-                            state.show_toast(format!("无法开始会话: {err}"), StatusTone::Danger);
+                            let message = format!("无法开始会话: {err}");
+                            state.set_open_error(message.clone());
+                            state.show_toast(message, StatusTone::Danger);
                         }
                         ctx.notify();
                     }
@@ -281,6 +284,17 @@ impl ChatSidebarView {
     }
 
     fn row_is_active(&self, row: &SidebarRow, selected: Option<&str>) -> bool {
+        if let Some(selecting) = self.selecting.as_deref() {
+            if row.id == selecting {
+                return true;
+            }
+            if self.conversations.iter().any(|conv| {
+                (conv.peer_endpoint == selecting || conv.id == selecting)
+                    && (conv.peer_endpoint == row.id || conv.id == row.id)
+            }) {
+                return true;
+            }
+        }
         let Some(selected) = selected else {
             return false;
         };
@@ -919,6 +933,13 @@ impl TypedActionView for ChatSidebarView {
                     } => {
                         self.start_conversation_for_peer(peer, display_name, bootstrap_addrs, ctx);
                     }
+                    SelectTarget::MissingChatEndpoint => {
+                        if let Ok(mut state) = self.shell_state.lock() {
+                            state.set_open_error("该终端尚无聊天地址");
+                            state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                        }
+                        ctx.notify();
+                    }
                 }
             }
             ChatSidebarAction::FocusSearch => {
@@ -966,6 +987,13 @@ impl TypedActionView for ChatSidebarView {
                         bootstrap_addrs,
                     } => {
                         self.start_conversation_for_peer(peer, display_name, bootstrap_addrs, ctx);
+                    }
+                    SelectTarget::MissingChatEndpoint => {
+                        if let Ok(mut state) = self.shell_state.lock() {
+                            state.set_open_error("该终端尚无聊天地址");
+                            state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                        }
+                        ctx.notify();
                     }
                 }
             }
@@ -1065,6 +1093,8 @@ enum SelectTarget {
         display_name: Option<String>,
         bootstrap_addrs: Vec<String>,
     },
+    /// Cluster node is known but has no usable chat endpoint yet.
+    MissingChatEndpoint,
 }
 
 fn resolve_select_target(
@@ -1085,10 +1115,13 @@ fn resolve_select_target(
         if let Some(node) = cluster.nodes.iter().find(|node| {
             node.chat_endpoint_id.as_deref() == Some(id) || node.node_id == id
         }) {
-            let peer = node
+            let Some(peer) = node
                 .chat_endpoint_id
                 .clone()
-                .unwrap_or_else(|| node.node_id.clone());
+                .filter(|endpoint| !endpoint.trim().is_empty())
+            else {
+                return SelectTarget::MissingChatEndpoint;
+            };
             let display_name = format!("{} · {}", node.os, node.hostname);
             return SelectTarget::StartWithPeer {
                 peer,
@@ -1239,6 +1272,53 @@ mod tests {
                 bootstrap_addrs: vec!["bootstrap-1".into()],
             }
         );
+    }
+
+    #[test]
+    fn resolve_select_target_cluster_node_without_endpoint_is_missing() {
+        let cluster = ClusterStatusDto {
+            configured: true,
+            cluster_id: None,
+            clusters: Vec::new(),
+            joined_at: None,
+            device_id: None,
+            local_node_id: String::new(),
+            transport: String::new(),
+            nodes: vec![ClusterNodeDto {
+                node_id: "node-1".into(),
+                device_id: None,
+                chat_endpoint_id: None,
+                chat_bootstrap_addrs: Vec::new(),
+                hostname: "host".into(),
+                os: "Windows".into(),
+                roles: Vec::new(),
+                online: false,
+                presence_status: String::new(),
+                cpu_cores: 0,
+                memory_total: 0,
+                storage_total: 0,
+                storage_free: 0,
+                billing_node_score: None,
+                billing_expired: false,
+                role: String::new(),
+                removable: false,
+                revoked: false,
+                server_member_confirmed: false,
+            }],
+            storage_volumes: Vec::new(),
+            normal_replica_target: 0,
+            photo_video_replica_target: 0,
+            build_cache_replica_target: 0,
+            normal_replica_degraded: false,
+            photo_video_replica_degraded: false,
+            syncing: false,
+            auth_required: false,
+            device_bootstrap_required: false,
+            device_bootstrap_error: None,
+            role_stale: false,
+        };
+        let target = resolve_select_target("node-1", &[], Some(&cluster));
+        assert_eq!(target, SelectTarget::MissingChatEndpoint);
     }
 
     fn sample_node(node_id: &str, endpoint: Option<&str>, local: bool) -> ClusterNodeDto {

@@ -42,6 +42,8 @@ pub struct ChatShellState {
     /// Bumped when chat UI prefs (mute/hide) change so sidebar rebuilds.
     pub prefs_tick: u64,
     pub pending_open: Option<PendingOpenChat>,
+    /// Last failure from opening a placeholder conversation (shown under compose).
+    pub open_error: Option<String>,
     pub pending_outgoing: Vec<PendingOutgoingMessage>,
 }
 
@@ -60,6 +62,7 @@ impl Default for ChatShellState {
             selection_tick: 0,
             prefs_tick: 0,
             pending_open: None,
+            open_error: None,
             pending_outgoing: Vec::new(),
         }
     }
@@ -136,12 +139,24 @@ impl ChatShellState {
     }
 
     pub fn set_pending_open(&mut self, title: String, os: String, online: bool) {
+        self.open_error = None;
         self.pending_open = Some(PendingOpenChat { title, os, online });
         self.bump_selection_tick();
     }
 
     pub fn clear_pending_open(&mut self) {
         if self.pending_open.take().is_some() {
+            self.bump_selection_tick();
+        }
+    }
+
+    pub fn set_open_error(&mut self, err: impl Into<String>) {
+        self.open_error = Some(err.into());
+        self.bump_selection_tick();
+    }
+
+    pub fn clear_open_error(&mut self) {
+        if self.open_error.take().is_some() {
             self.bump_selection_tick();
         }
     }
@@ -172,5 +187,15 @@ mod tests {
         assert!(chat_event_triggers_refresh("conversation_added"));
         assert!(!chat_event_triggers_refresh("typing_changed"));
         assert!(!chat_event_triggers_refresh(""));
+    }
+
+    #[test]
+    fn open_error_clears_on_pending_open() {
+        let mut state = ChatShellState::default();
+        state.set_open_error("无法开始会话: offline");
+        assert!(state.open_error.is_some());
+        state.set_pending_open("PC · host".into(), "Windows".into(), false);
+        assert!(state.open_error.is_none());
+        assert!(state.pending_open.is_some());
     }
 }
