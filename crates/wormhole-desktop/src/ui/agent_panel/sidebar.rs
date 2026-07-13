@@ -18,7 +18,8 @@ use super::AgentPanelAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
     agent_row_active_bg, agent_sidebar_bg, agent_sidebar_label, chat_search_pill,
-    positioned_context_menu, section_hint, AGENT_ICON_BTN_RADIUS, AGENT_ROW_RADIUS, SECTION_PADDING,
+    positioned_context_menu, section_hint, AGENT_ICON_BTN_RADIUS, AGENT_ROW_RADIUS,
+    SECTION_PADDING,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -90,7 +91,9 @@ pub fn standalone_chats<'a>(
 ) -> Vec<&'a AgentSession> {
     sessions
         .iter()
-        .filter(|s| is_standalone(s) && !archived_ids.contains(&s.id) && session_matches_query(s, query))
+        .filter(|s| {
+            is_standalone(s) && !archived_ids.contains(&s.id) && session_matches_query(s, query)
+        })
         .collect()
 }
 
@@ -189,11 +192,7 @@ pub fn load_projects_state(data_dir: &Path) -> (Vec<AgentProject>, HashSet<Strin
     }
 }
 
-pub fn save_projects_state(
-    data_dir: &Path,
-    projects: &[AgentProject],
-    expanded: &HashSet<String>,
-) {
+pub fn save_projects_state(data_dir: &Path, projects: &[AgentProject], expanded: &HashSet<String>) {
     let path = data_dir.join(PROJECTS_FILE);
     let mut expanded_list: Vec<&String> = expanded.iter().collect();
     expanded_list.sort();
@@ -248,9 +247,7 @@ fn agent_sidebar_icon_btn(
             None,
         )
         .on_mouse_out(move |ctx, _, _| {
-            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(
-                hover_key_out.clone(),
-            ));
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(hover_key_out.clone()));
             DispatchEventResult::PropagateToParent
         })
         .on_left_mouse_down(move |ctx, _, _| {
@@ -299,9 +296,7 @@ fn agent_sidebar_icon_btn_dynamic(
             None,
         )
         .on_mouse_out(move |ctx, _, _| {
-            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(
-                hover_key_out.clone(),
-            ));
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(hover_key_out.clone()));
             DispatchEventResult::PropagateToParent
         })
         .on_left_mouse_down(move |ctx, _, _| {
@@ -391,11 +386,7 @@ fn render_sidebar_empty_menu() -> Box<dyn Element> {
         .finish()
 }
 
-fn search_box(
-    font: FamilyId,
-    search: &str,
-    search_focused: bool,
-) -> Box<dyn Element> {
+fn search_box(font: FamilyId, search: &str, search_focused: bool) -> Box<dyn Element> {
     let search_border = if search_focused {
         theme::accent_cool()
     } else {
@@ -500,7 +491,9 @@ fn row_delete_button(
         .with_height(26.0)
         .finish(),
     )
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ICON_BTN_RADIUS)))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+        AGENT_ICON_BTN_RADIUS,
+    )))
     .finish();
 
     EventHandler::new(btn)
@@ -573,9 +566,7 @@ fn row_with_delete(
     delete_enabled: bool,
     session_id: String,
 ) -> Box<dyn Element> {
-    let inner = row_item_inner(
-        font, label, time, active, show_spinner, archived, nested,
-    );
+    let inner = row_item_inner(font, label, time, active, show_spinner, archived, nested);
     let select = select_action.clone();
     let main = EventHandler::new(inner)
         .on_left_mouse_down(move |ctx, _, _| {
@@ -596,7 +587,9 @@ fn row_with_delete(
     Stack::new()
         .with_child(main)
         .with_child(
-            Align::new(row_delete_button(font, delete_action, delete_enabled, true)).right().finish(),
+            Align::new(row_delete_button(font, delete_action, delete_enabled, true))
+                .right()
+                .finish(),
         )
         .finish()
 }
@@ -647,9 +640,7 @@ fn project_row_more_btn(
             None,
         )
         .on_mouse_out(move |ctx, _, _| {
-            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(
-                hover_key_out.clone(),
-            ));
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(hover_key_out.clone()));
             DispatchEventResult::PropagateToParent
         })
         .on_left_mouse_down(move |ctx, _, _| {
@@ -711,12 +702,10 @@ fn project_tree_block(
     let toggle_id = project.id.clone();
     let toggle = EventHandler::new(
         Container::new(
-            ConstrainedBox::new(
-                Align::new(icons::icon(chevron_path, 12.0, toggle_color)).finish(),
-            )
-            .with_width(22.0)
-            .with_height(28.0)
-            .finish(),
+            ConstrainedBox::new(Align::new(icons::icon(chevron_path, 12.0, toggle_color)).finish())
+                .with_width(22.0)
+                .with_height(28.0)
+                .finish(),
         )
         .finish(),
     )
@@ -790,9 +779,13 @@ fn project_tree_block(
         .right()
         .finish()
     } else {
-        Align::new(ConstrainedBox::new(Flex::row().finish()).with_width(52.0).finish())
-            .right()
-            .finish()
+        Align::new(
+            ConstrainedBox::new(Flex::row().finish())
+                .with_width(52.0)
+                .finish(),
+        )
+        .right()
+        .finish()
     };
 
     let head_hover_id = project.id.clone();
@@ -1155,7 +1148,8 @@ mod tests {
 
     #[test]
     fn projects_state_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("wormhole-agent-projects-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wormhole-agent-projects-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let projects = vec![AgentProject {
             id: "p1".into(),

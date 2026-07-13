@@ -1,14 +1,14 @@
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Expanded, Flex, MainAxisSize, ParentElement, Stack,
+    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
+use crate::ui::chat::header_menu::{header_button, header_menu_panel};
 use crate::ui::chat::labels::{
     chat_avatar_for_os, conversation_device_title, conversation_os_label, find_cluster_node,
 };
-use crate::ui::chat::header_menu::{header_button, header_menu_panel};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
@@ -152,7 +152,9 @@ impl ChatHeaderView {
                 let conv_id = selected.clone();
                 let conversations = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status_hud(&state).await;
-                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                let remarks = load_device_remarks(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
                 (conv_id, conversations, cluster, remarks)
             },
             |view, output, ctx| {
@@ -291,11 +293,7 @@ impl View for ChatHeaderView {
         let info_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
-            .with_child(tg_avatar(
-                self.avatar_label(),
-                self.font,
-                TG_AVATAR_SM_SIZE,
-            ))
+            .with_child(tg_avatar(self.avatar_label(), self.font, TG_AVATAR_SM_SIZE))
             .with_child(
                 Container::new({
                     let mut text_col = Flex::column().with_main_axis_size(MainAxisSize::Min);
@@ -622,10 +620,8 @@ impl TypedActionView for ChatHeaderView {
                         }
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast(
-                                    format!("无法删除对话: {err}"),
-                                    StatusTone::Danger,
-                                );
+                                state
+                                    .show_toast(format!("无法删除对话: {err}"), StatusTone::Danger);
                             }
                             ctx.notify();
                         }

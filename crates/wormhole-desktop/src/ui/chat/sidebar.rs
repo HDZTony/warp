@@ -1,3 +1,4 @@
+use pathfinder_color::ColorU;
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
     CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
@@ -5,7 +6,6 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
-use pathfinder_color::ColorU;
 
 use crate::ui::chat::bubble::format_message_time_pub;
 use crate::ui::chat::labels::{
@@ -15,6 +15,7 @@ use crate::ui::chat::labels::{
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
     chat_item_active_bg, chat_search_pill, chat_sidebar_search_bg, positioned_context_menu,
@@ -34,7 +35,6 @@ use wormhole_desktop_core::chat_ui_prefs::{
     load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
 };
 use wormhole_desktop_core::cluster_commands::{cluster_status_hud, ClusterStatusDto};
-use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 use std::collections::BTreeMap;
@@ -168,7 +168,9 @@ impl ChatSidebarView {
             async move {
                 let runtime = core.runtime();
                 let state = runtime.state.clone();
-                load_chat_ui_prefs(&state.data_dir).await.unwrap_or_default()
+                load_chat_ui_prefs(&state.data_dir)
+                    .await
+                    .unwrap_or_default()
             },
             |view, prefs, ctx| {
                 view.ui_prefs = prefs;
@@ -193,8 +195,12 @@ impl ChatSidebarView {
                 let cfg = chat_config(app, &state).await;
                 let list = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status_hud(&state).await;
-                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
-                let ui_prefs = load_chat_ui_prefs(&state.data_dir).await.unwrap_or_default();
+                let remarks = load_device_remarks(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
+                let ui_prefs = load_chat_ui_prefs(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
                 (cfg, list, cluster, remarks, ui_prefs)
             },
             |view, output, ctx| {
@@ -253,7 +259,10 @@ impl ChatSidebarView {
             .as_ref()
             .and_then(|cluster| {
                 cluster.nodes.iter().find_map(|node| {
-                    let endpoint = node.chat_endpoint_id.as_deref().unwrap_or(node.node_id.as_str());
+                    let endpoint = node
+                        .chat_endpoint_id
+                        .as_deref()
+                        .unwrap_or(node.node_id.as_str());
                     if endpoint == peer.as_str() || node.node_id == peer {
                         Some((node.os.clone(), node.online))
                     } else {
@@ -320,9 +329,9 @@ impl ChatSidebarView {
         if row.id == selected {
             return true;
         }
-        self.conversations.iter().any(|conv| {
-            conv.id == selected && (conv.peer_endpoint == row.id || conv.id == row.id)
-        })
+        self.conversations
+            .iter()
+            .any(|conv| conv.id == selected && (conv.peer_endpoint == row.id || conv.id == row.id))
     }
 
     fn build_rows(
@@ -337,9 +346,8 @@ impl ChatSidebarView {
             }
             let remark = find_cluster_node(conv, cluster)
                 .and_then(|node| self.remarks.get(&node.node_id).map(String::as_str));
-            let title = display_name_with_remark(remark, || {
-                conversation_device_title(conv, cluster)
-            });
+            let title =
+                display_name_with_remark(remark, || conversation_device_title(conv, cluster));
             let preview = conversation_preview(conv, cluster);
             let time = conv
                 .last_message_at
@@ -414,9 +422,13 @@ impl ChatSidebarView {
                 return;
             }
             if let Some(node) = cluster.nodes.iter().find(|node| {
-                node.node_id == node_id || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
+                node.node_id == node_id
+                    || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
             }) {
-                let Some(peer) = node.chat_endpoint_id.clone().filter(|id| !id.trim().is_empty())
+                let Some(peer) = node
+                    .chat_endpoint_id
+                    .clone()
+                    .filter(|id| !id.trim().is_empty())
                 else {
                     if let Ok(mut state) = self.shell_state.lock() {
                         state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
@@ -447,7 +459,8 @@ impl ChatSidebarView {
         // Cluster cache miss: refresh then open.
         let stale_peer = self.cluster.as_ref().and_then(|cluster| {
             cluster.nodes.iter().find_map(|node| {
-                if node.node_id == node_id || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
+                if node.node_id == node_id
+                    || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
                 {
                     node.chat_endpoint_id.clone()
                 } else {
@@ -493,9 +506,7 @@ impl ChatSidebarView {
                                 view.apply_selection(conv_id, ctx);
                                 return;
                             }
-                            if let Some(peer) =
-                                stale_peer.filter(|id| !id.trim().is_empty())
-                            {
+                            if let Some(peer) = stale_peer.filter(|id| !id.trim().is_empty()) {
                                 if let Some(conv) = view
                                     .conversations
                                     .iter()
@@ -511,8 +522,10 @@ impl ChatSidebarView {
                             ctx.notify();
                             return;
                         };
-                        let Some(peer) =
-                            node.chat_endpoint_id.clone().filter(|id| !id.trim().is_empty())
+                        let Some(peer) = node
+                            .chat_endpoint_id
+                            .clone()
+                            .filter(|id| !id.trim().is_empty())
                         else {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
@@ -635,11 +648,7 @@ impl ChatSidebarView {
                 self.font,
                 TG_SIDEBAR_AVATAR,
             ))
-            .with_child(
-                Container::new(col.finish())
-                    .with_margin_left(10.0)
-                    .finish(),
-            )
+            .with_child(Container::new(col.finish()).with_margin_left(10.0).finish())
             .finish();
 
         let interactive = EventHandler::new(
@@ -1124,10 +1133,8 @@ impl TypedActionView for ChatSidebarView {
                         }
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast(
-                                    format!("无法删除对话: {err}"),
-                                    StatusTone::Danger,
-                                );
+                                state
+                                    .show_toast(format!("无法删除对话: {err}"), StatusTone::Danger);
                             }
                             ctx.notify();
                         }
@@ -1159,16 +1166,15 @@ fn resolve_select_target(
     if conversations.iter().any(|conv| conv.id == id) {
         return SelectTarget::Conversation(id.to_string());
     }
-    if let Some(conv) = conversations
-        .iter()
-        .find(|conv| conv.peer_endpoint == id)
-    {
+    if let Some(conv) = conversations.iter().find(|conv| conv.peer_endpoint == id) {
         return SelectTarget::Conversation(conv.id.clone());
     }
     if let Some(cluster) = cluster {
-        if let Some(node) = cluster.nodes.iter().find(|node| {
-            node.chat_endpoint_id.as_deref() == Some(id) || node.node_id == id
-        }) {
+        if let Some(node) = cluster
+            .nodes
+            .iter()
+            .find(|node| node.chat_endpoint_id.as_deref() == Some(id) || node.node_id == id)
+        {
             let Some(peer) = node
                 .chat_endpoint_id
                 .clone()
@@ -1226,9 +1232,7 @@ fn find_conversation_for_node_ref(
                     let name = name.trim();
                     name.eq_ignore_ascii_case(&label)
                         || name.eq_ignore_ascii_case(&node.hostname)
-                        || name
-                            .to_lowercase()
-                            .contains(&node.hostname.to_lowercase())
+                        || name.to_lowercase().contains(&node.hostname.to_lowercase())
                 })
             }) {
                 return Some(conv.id.clone());
@@ -1314,20 +1318,14 @@ mod tests {
     fn resolve_select_target_uses_existing_conv_id() {
         let convs = vec![sample_conv("conv-hash", "peer-endpoint")];
         let target = resolve_select_target("conv-hash", &convs, None);
-        assert_eq!(
-            target,
-            SelectTarget::Conversation("conv-hash".to_string())
-        );
+        assert_eq!(target, SelectTarget::Conversation("conv-hash".to_string()));
     }
 
     #[test]
     fn resolve_select_target_maps_peer_endpoint_to_conv_id() {
         let convs = vec![sample_conv("conv-hash", "peer-endpoint")];
         let target = resolve_select_target("peer-endpoint", &convs, None);
-        assert_eq!(
-            target,
-            SelectTarget::Conversation("conv-hash".to_string())
-        );
+        assert_eq!(target, SelectTarget::Conversation("conv-hash".to_string()));
     }
 
     #[test]

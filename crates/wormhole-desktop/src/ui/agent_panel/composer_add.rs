@@ -120,10 +120,7 @@ pub struct FilesModalState {
 
 impl FilesModalState {
     pub fn new() -> Self {
-        let selected = DEMO_FILES
-            .iter()
-            .position(|f| !f.is_folder)
-            .unwrap_or(0);
+        let selected = DEMO_FILES.iter().position(|f| !f.is_folder).unwrap_or(0);
         Self { selected }
     }
 }
@@ -248,7 +245,12 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
     popover_shell_with_radius(ADD_POPOVER_WIDTH, ADD_POPOVER_RADIUS, col.finish())
 }
 
-fn mode_chip(font: FamilyId, icon: &'static str, label: &str, remove: AgentPanelAction) -> Box<dyn Element> {
+fn mode_chip(
+    font: FamilyId,
+    icon: &'static str,
+    label: &str,
+    remove: AgentPanelAction,
+) -> Box<dyn Element> {
     let remove_action = remove.clone();
     EventHandler::new(
         Container::new(
@@ -298,11 +300,7 @@ fn mode_chip(font: FamilyId, icon: &'static str, label: &str, remove: AgentPanel
     .finish()
 }
 
-fn attach_chip(
-    font: FamilyId,
-    item: &ComposerAttachment,
-    index: usize,
-) -> Box<dyn Element> {
+fn attach_chip(font: FamilyId, item: &ComposerAttachment, index: usize) -> Box<dyn Element> {
     let icon = if item.is_folder {
         "agent-folder.svg"
     } else {
@@ -540,7 +538,11 @@ fn file_list_row(
         .finish()
 }
 
-pub fn render_files_modal(font: FamilyId, mono: FamilyId, state: &FilesModalState) -> Box<dyn Element> {
+pub fn render_files_modal(
+    font: FamilyId,
+    mono: FamilyId,
+    state: &FilesModalState,
+) -> Box<dyn Element> {
     let selected = DEMO_FILES.get(state.selected).unwrap_or(&DEMO_FILES[0]);
     let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     list.add_child(
@@ -559,12 +561,9 @@ pub fn render_files_modal(font: FamilyId, mono: FamilyId, state: &FilesModalStat
     let mut preview = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     preview.add_child(
         Container::new(
-            ui_text::mono(
-                format!("{} · {}", selected.path, selected.size),
-                mono,
-            )
-            .with_color(theme::accent_cool())
-            .finish(),
+            ui_text::mono(format!("{} · {}", selected.path, selected.size), mono)
+                .with_color(theme::accent_cool())
+                .finish(),
         )
         .with_padding_bottom(8.0)
         .finish(),
@@ -766,12 +765,9 @@ pub fn render_media_modal(font: FamilyId, state: &MediaModalState) -> Box<dyn El
     );
     preview.add_child(
         Container::new(
-            ui_text::body(
-                format!("{} · {}", selected.name, selected.size),
-                font,
-            )
-            .with_color(theme::muted())
-            .finish(),
+            ui_text::body(format!("{} · {}", selected.name, selected.size), font)
+                .with_color(theme::muted())
+                .finish(),
         )
         .with_padding_top(10.0)
         .finish(),

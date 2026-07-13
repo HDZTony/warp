@@ -13,9 +13,7 @@ use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::app_shell::{AppShellAction, RedeemTab};
-use crate::ui::desktop_prefs::{
-    format_balance_display, format_redeem_amount, RedeemHistoryEntry,
-};
+use crate::ui::desktop_prefs::{format_balance_display, format_redeem_amount, RedeemHistoryEntry};
 use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
     render_field_with_caret, wrap_text_field_focus_on_click, TextFieldInput,

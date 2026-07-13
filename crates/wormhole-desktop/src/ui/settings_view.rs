@@ -1,6 +1,6 @@
 use warpui::elements::{
-    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded,
-    Flex, MainAxisSize, ParentElement, Radius,
+    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler,
+    Expanded, Flex, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
@@ -182,9 +182,7 @@ impl SettingsView {
                     Ok(s) => {
                         view.storage = Some(s);
                         if view.status.is_empty() {
-                            view.status =
-                                "点击「浏览…」可选择新位置并迁移共享文件。"
-                                    .into();
+                            view.status = "点击「浏览…」可选择新位置并迁移共享文件。".into();
                             view.status_tone = StatusTone::Placeholder;
                         }
                     }
@@ -527,7 +525,8 @@ impl SettingsView {
         col.add_child(toggle);
 
         if expanded {
-            let mut list_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            let mut list_col =
+                Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             if snapshots.is_empty() {
                 list_col.add_child(
                     Container::new(section_hint("暂无归档会话", self.font))
@@ -802,9 +801,7 @@ impl TypedActionView for SettingsView {
                     async move {
                         #[cfg(windows)]
                         let picked = tokio::task::spawn_blocking(|| {
-                            wormhole_desktop_platform_windows::pick_folder(
-                                "选择共享文件存放位置",
-                            )
+                            wormhole_desktop_platform_windows::pick_folder("选择共享文件存放位置")
                         })
                         .await
                         .ok()
@@ -825,8 +822,7 @@ impl TypedActionView for SettingsView {
                         view.busy = false;
                         match output {
                             Ok(Some(info)) => {
-                                view.status =
-                                    format!("已迁移共享文件至 {}", info.sync_entry_path);
+                                view.status = format!("已迁移共享文件至 {}", info.sync_entry_path);
                                 view.storage = Some(info);
                                 view.status_tone = StatusTone::Success;
                             }

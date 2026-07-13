@@ -230,10 +230,7 @@ mod tests {
 
     #[test]
     fn format_balance_display_prefers_server_yuan() {
-        assert_eq!(
-            format_balance_display(Some("12.345678"), 0),
-            "¥12.345678"
-        );
+        assert_eq!(format_balance_display(Some("12.345678"), 0), "¥12.345678");
         assert_eq!(format_balance_display(None, 5_000_000), "¥5.00");
     }
 

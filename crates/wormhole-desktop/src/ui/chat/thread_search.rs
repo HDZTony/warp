@@ -1,20 +1,18 @@
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Expanded, Flex, MainAxisSize, ParentElement,
+    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::{
-    AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext,
-};
+use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::icons;
+use crate::ui::panel_primitives::chat_search_pill;
 use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
     CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
-use crate::ui::panel_primitives::chat_search_pill;
 use crate::ui::theme;
 use crate::ui_text;
 

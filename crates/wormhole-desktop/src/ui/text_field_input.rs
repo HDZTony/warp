@@ -304,9 +304,13 @@ pub fn render_compose_field_with_caret(
     if compose_should_show_placeholder(draft, marked) {
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         row.add_child(
-            warpui::elements::Text::new(placeholder.to_string(), font, ui_text::CHAT_COMPOSE_FONT_SIZE)
-                .with_color(theme::placeholder())
-                .finish(),
+            warpui::elements::Text::new(
+                placeholder.to_string(),
+                font,
+                ui_text::CHAT_COMPOSE_FONT_SIZE,
+            )
+            .with_color(theme::placeholder())
+            .finish(),
         );
         if show_caret {
             row.add_child(render_caret(true, caret_blink));
@@ -414,7 +418,15 @@ pub fn render_field_text(
     focused: bool,
     disabled: bool,
 ) -> Box<dyn Element> {
-    render_field_text_sized(draft, marked, placeholder, font, focused, disabled, ui_text::BODY_SIZE)
+    render_field_text_sized(
+        draft,
+        marked,
+        placeholder,
+        font,
+        focused,
+        disabled,
+        ui_text::BODY_SIZE,
+    )
 }
 
 fn render_field_text_sized(

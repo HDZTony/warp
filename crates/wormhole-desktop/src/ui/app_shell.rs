@@ -180,7 +180,9 @@ pub struct AppShellView {
     show_onboarding: bool,
     window_id: WindowId,
     traffic_light_mouse_states: TrafficLightMouseStates,
-    desktop_event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
+    desktop_event_rx: Arc<
+        tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>,
+    >,
     #[cfg(windows)]
     tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
 }
@@ -203,42 +205,38 @@ impl AppShellView {
         let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
         let chat = ctx.add_typed_action_view(|ctx| ChatShellView::new(ctx, core.clone()));
-        ctx.subscribe_to_view(&chat, |view, _, event, ctx| {
-            match event {
-                ChatShellEvent::BrowseNodeShares(node_id) => {
-                    view.tab = AppTab::Devices;
-                    let devices = view.devices.clone();
-                    ctx.update_view(&devices, |devices, ctx| {
-                        devices.open_node_from_chat(node_id.clone(), ctx);
-                    });
-                    ctx.notify();
-                }
-                ChatShellEvent::OpenRemoteDesktop { peer } => {
-                    view.open_remote_desktop_for_peer(peer, ctx);
-                }
+        ctx.subscribe_to_view(&chat, |view, _, event, ctx| match event {
+            ChatShellEvent::BrowseNodeShares(node_id) => {
+                view.tab = AppTab::Devices;
+                let devices = view.devices.clone();
+                ctx.update_view(&devices, |devices, ctx| {
+                    devices.open_node_from_chat(node_id.clone(), ctx);
+                });
+                ctx.notify();
+            }
+            ChatShellEvent::OpenRemoteDesktop { peer } => {
+                view.open_remote_desktop_for_peer(peer, ctx);
             }
         });
-        ctx.subscribe_to_view(&devices, |view, _, event, ctx| {
-            match event {
-                DevicesEvent::OpenChat { node_id } => {
-                    let warp_handle = view.warp.clone();
-                    ctx.update_view(&warp_handle, |panel, ctx| {
-                        panel.set_tab_visible(false, ctx);
-                    });
-                    view.tab = AppTab::Chat;
-                    view.tab_focus = AppTab::Chat;
-                    view.persist_last_tab();
-                    view.prompt_login_if_needed(ctx);
-                    let chat = view.chat.clone();
-                    let node_id = node_id.clone();
-                    ctx.update_view(&chat, |chat, ctx| {
-                        chat.open_chat_for_cluster_node(node_id, ctx);
-                    });
-                    ctx.notify();
-                }
-                DevicesEvent::OpenRemoteDesktop { node_id } => {
-                    view.open_remote_desktop_for_peer(node_id, ctx);
-                }
+        ctx.subscribe_to_view(&devices, |view, _, event, ctx| match event {
+            DevicesEvent::OpenChat { node_id } => {
+                let warp_handle = view.warp.clone();
+                ctx.update_view(&warp_handle, |panel, ctx| {
+                    panel.set_tab_visible(false, ctx);
+                });
+                view.tab = AppTab::Chat;
+                view.tab_focus = AppTab::Chat;
+                view.persist_last_tab();
+                view.prompt_login_if_needed(ctx);
+                let chat = view.chat.clone();
+                let node_id = node_id.clone();
+                ctx.update_view(&chat, |chat, ctx| {
+                    chat.open_chat_for_cluster_node(node_id, ctx);
+                });
+                ctx.notify();
+            }
+            DevicesEvent::OpenRemoteDesktop { node_id } => {
+                view.open_remote_desktop_for_peer(node_id, ctx);
             }
         });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
@@ -468,12 +466,23 @@ impl AppShellView {
     fn start_event_listener(&self, ctx: &mut ViewContext<Self>) {
         let event_rx = Arc::clone(&self.desktop_event_rx);
         let settings = self.settings.clone();
-        Self::poll_events_once(ctx, event_rx, settings, self.core.clone(), self.devices.clone(), self.chat.clone());
+        Self::poll_events_once(
+            ctx,
+            event_rx,
+            settings,
+            self.core.clone(),
+            self.devices.clone(),
+            self.chat.clone(),
+        );
     }
 
     fn poll_events_once(
         ctx: &mut ViewContext<Self>,
-        event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
+        event_rx: Arc<
+            tokio::sync::Mutex<
+                tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>,
+            >,
+        >,
         settings: ViewHandle<SettingsView>,
         core: CoreHandle,
         devices: ViewHandle<DevicesView>,

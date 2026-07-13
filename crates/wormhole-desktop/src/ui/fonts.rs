@@ -184,11 +184,7 @@ mod tests {
 
     #[test]
     fn emoji_font_candidates_are_non_empty_on_desktop_targets() {
-        #[cfg(any(
-            windows,
-            target_os = "macos",
-            all(unix, not(target_os = "macos"))
-        ))]
+        #[cfg(any(windows, target_os = "macos", all(unix, not(target_os = "macos"))))]
         {
             assert!(!EMOJI_FONT_CANDIDATES.is_empty());
             for name in EMOJI_FONT_CANDIDATES {

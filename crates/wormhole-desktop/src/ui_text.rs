@@ -132,11 +132,7 @@ pub fn chat_header_status(text: impl Into<Cow<'static, str>>, font: FamilyId) ->
     Text::new(text, font, CHAT_HEADER_STATUS_SIZE)
 }
 
-pub fn chat_avatar_glyph(
-    text: impl Into<Cow<'static, str>>,
-    font: FamilyId,
-    size: f32,
-) -> Text {
+pub fn chat_avatar_glyph(text: impl Into<Cow<'static, str>>, font: FamilyId, size: f32) -> Text {
     Text::new(text, font, size)
 }
 

@@ -262,8 +262,7 @@ pub fn popover_icon_option<F>(
     on_click: F,
 ) -> Box<dyn Element>
 where
-    F: 'static
-        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+    F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
 {
     let title = title.into();
     let hint = hint.into();
@@ -284,22 +283,14 @@ where
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(icon)
-        .with_child(
-            Container::new(text_col)
-                .with_margin_left(12.0)
-                .finish(),
-        )
+        .with_child(Container::new(text_col).with_margin_left(12.0).finish())
         .finish();
-    Container::new(
-        EventHandler::new(row)
-            .on_left_mouse_down(on_click)
-            .finish(),
-    )
-    .with_padding_left(14.0)
-    .with_padding_right(14.0)
-    .with_padding_top(10.0)
-    .with_padding_bottom(10.0)
-    .finish()
+    Container::new(EventHandler::new(row).on_left_mouse_down(on_click).finish())
+        .with_padding_left(14.0)
+        .with_padding_right(14.0)
+        .with_padding_top(10.0)
+        .with_padding_bottom(10.0)
+        .finish()
 }
 
 /// Icon circle + single-line label (chat attach: no header / no subtitle).
@@ -310,8 +301,7 @@ pub fn popover_icon_label_option<F>(
     on_click: F,
 ) -> Box<dyn Element>
 where
-    F: 'static
-        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+    F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
 {
     let row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -327,16 +317,12 @@ where
             .finish(),
         )
         .finish();
-    Container::new(
-        EventHandler::new(row)
-            .on_left_mouse_down(on_click)
-            .finish(),
-    )
-    .with_padding_left(14.0)
-    .with_padding_right(14.0)
-    .with_padding_top(10.0)
-    .with_padding_bottom(10.0)
-    .finish()
+    Container::new(EventHandler::new(row).on_left_mouse_down(on_click).finish())
+        .with_padding_left(14.0)
+        .with_padding_right(14.0)
+        .with_padding_top(10.0)
+        .with_padding_bottom(10.0)
+        .finish()
 }
 
 /// Single-line popover menu item (chat header / mute flyout).
@@ -348,8 +334,7 @@ pub fn popover_plain_item<F>(
     on_click: F,
 ) -> Box<dyn Element>
 where
-    F: 'static
-        + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+    F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
 {
     let color = if danger {
         theme::danger()
@@ -366,13 +351,9 @@ where
     );
     if has_flyout {
         row.add_child(
-            Container::new(
-                ui_text::body("›", font)
-                    .with_color(theme::muted())
-                    .finish(),
-            )
-            .with_margin_left(8.0)
-            .finish(),
+            Container::new(ui_text::body("›", font).with_color(theme::muted()).finish())
+                .with_margin_left(8.0)
+                .finish(),
         );
     }
     EventHandler::new(
@@ -518,7 +499,10 @@ mod tests {
 
     #[test]
     fn tg_avatar_glyph_size_matches_design_diameters() {
-        assert_eq!(tg_avatar_glyph_size(TG_AVATAR_SIZE), ui_text::CHAT_AVATAR_GLYPH_SIZE);
+        assert_eq!(
+            tg_avatar_glyph_size(TG_AVATAR_SIZE),
+            ui_text::CHAT_AVATAR_GLYPH_SIZE
+        );
         assert_eq!(
             tg_avatar_glyph_size(TG_AVATAR_SM_SIZE),
             ui_text::CHAT_AVATAR_SM_GLYPH_SIZE

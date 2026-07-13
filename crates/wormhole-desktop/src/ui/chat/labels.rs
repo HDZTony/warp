@@ -8,9 +8,11 @@ pub fn find_cluster_node<'a>(
 ) -> Option<&'a ClusterNodeDto> {
     let cluster = cluster?;
     let peer = conv.peer_endpoint.as_str();
-    if let Some(node) = cluster.nodes.iter().find(|node| {
-        node.chat_endpoint_id.as_deref() == Some(peer) || node.node_id == peer
-    }) {
+    if let Some(node) = cluster
+        .nodes
+        .iter()
+        .find(|node| node.chat_endpoint_id.as_deref() == Some(peer) || node.node_id == peer)
+    {
         return Some(node);
     }
     let display = conv
@@ -64,9 +66,7 @@ pub fn chat_avatar_for_os(os: &str) -> String {
     if os.to_ascii_lowercase().contains("ipad") {
         return "iP".to_string();
     }
-    if os.to_ascii_lowercase().contains("ios")
-        || os.to_ascii_lowercase().contains("android")
-    {
+    if os.to_ascii_lowercase().contains("ios") || os.to_ascii_lowercase().contains("android") {
         return "iOS".to_string();
     }
     let compact: String = os
