@@ -55,6 +55,7 @@ enum ContextItemStyle {
 #[derive(Debug, Clone)]
 pub enum DevicesEvent {
     OpenChat { node_id: String },
+    OpenRemoteDesktop { node_id: String },
 }
 
 pub struct DevicesView {
@@ -2904,6 +2905,21 @@ impl DevicesView {
             ContextItemStyle::Normal,
             true,
         ));
+        let remote_online = self.cluster.as_ref().is_some_and(|cluster| {
+            cluster
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .is_some_and(|node| node.online)
+        });
+        if !is_local {
+            menu.add_child(self.device_context_item(
+                "远程桌面",
+                DevicesAction::OpenRemoteDesktop(node_id.clone()),
+                ContextItemStyle::Normal,
+                remote_online,
+            ));
+        }
         menu.add_child(self.device_context_item(
             if is_local {
                 "无法给本机发信息"
@@ -3973,6 +3989,46 @@ impl TypedActionView for DevicesView {
                     },
                 );
                 ctx.emit(DevicesEvent::OpenChat {
+                    node_id: node_id.clone(),
+                });
+            }
+            DevicesAction::OpenRemoteDesktop(node_id) => {
+                self.close_device_context_menu(ctx);
+                let is_local = self
+                    .cluster
+                    .as_ref()
+                    .is_some_and(|cluster| cluster.local_node_id == *node_id);
+                if is_local {
+                    self.status_flash = Some("无法对本机打开远程桌面".into());
+                    ctx.notify();
+                    return;
+                }
+                let online = self.cluster.as_ref().is_some_and(|cluster| {
+                    cluster
+                        .nodes
+                        .iter()
+                        .find(|node| node.node_id == *node_id)
+                        .is_some_and(|node| node.online)
+                });
+                if !online {
+                    self.status_flash = Some("终端离线，无法打开远程桌面".into());
+                    ctx.notify();
+                    return;
+                }
+                self.status_flash = Some("正在打开远程桌面…".into());
+                ctx.notify();
+                ctx.spawn(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(2600)).await;
+                    },
+                    |view, _, ctx| {
+                        if view.status_flash.as_deref() == Some("正在打开远程桌面…") {
+                            view.status_flash = None;
+                            ctx.notify();
+                        }
+                    },
+                );
+                ctx.emit(DevicesEvent::OpenRemoteDesktop {
                     node_id: node_id.clone(),
                 });
             }

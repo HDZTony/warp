@@ -39,6 +39,7 @@ pub enum ChatProfileAction {
 #[derive(Debug, Clone)]
 pub enum ChatProfileEvent {
     BrowseNodeShares(String),
+    OpenRemoteDesktop { peer: String },
 }
 
 pub struct ChatProfilePanelView {
@@ -581,19 +582,35 @@ impl TypedActionView for ChatProfilePanelView {
                 ctx.notify();
             }
             ChatProfileAction::RemoteDesktop => {
-                let toast = if let Ok(mut state) = self.shell_state.lock() {
-                    state.remote_desktop_active = !state.remote_desktop_active;
-                    if state.remote_desktop_active {
-                        "远程桌面 · 已连接（演示）"
-                    } else {
-                        "远程桌面已断开（演示）"
+                let peer = self.node_id.trim().to_string();
+                if peer.is_empty() {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast(
+                            "当前会话没有可连接的终端",
+                            crate::ui::panel_primitives::StatusTone::Muted,
+                        );
                     }
-                } else {
-                    "远程桌面（演示）"
-                };
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast(toast, crate::ui::panel_primitives::StatusTone::Muted);
+                    ctx.notify();
+                    return;
                 }
+                if !self.online {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast(
+                            "终端离线，无法打开远程桌面",
+                            crate::ui::panel_primitives::StatusTone::Muted,
+                        );
+                    }
+                    ctx.notify();
+                    return;
+                }
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.remote_desktop_active = true;
+                    state.show_toast(
+                        "正在打开远程桌面…",
+                        crate::ui::panel_primitives::StatusTone::Neutral,
+                    );
+                }
+                ctx.emit(ChatProfileEvent::OpenRemoteDesktop { peer });
                 self.refresh(ctx);
             }
             ChatProfileAction::BrowseSharedFiles => {

@@ -8,7 +8,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle};
 
 use crate::ui::chat::compose::ChatComposeView;
-use crate::ui::chat::header::{ChatHeaderView, TG_HEADER_HEIGHT};
+use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::shell_state::{
@@ -36,6 +36,7 @@ pub enum ChatShellAction {
 #[derive(Debug, Clone)]
 pub enum ChatShellEvent {
     BrowseNodeShares(String),
+    OpenRemoteDesktop { peer: String },
 }
 
 pub struct ChatShellView {
@@ -80,8 +81,22 @@ impl ChatShellView {
             ChatProfilePanelView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
         ctx.subscribe_to_view(&profile, |_, _, event, ctx| {
-            if let ChatProfileEvent::BrowseNodeShares(node_id) = event {
-                ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
+            match event {
+                ChatProfileEvent::BrowseNodeShares(node_id) => {
+                    ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
+                }
+                ChatProfileEvent::OpenRemoteDesktop { peer } => {
+                    ctx.emit(ChatShellEvent::OpenRemoteDesktop {
+                        peer: peer.clone(),
+                    });
+                }
+            }
+        });
+        ctx.subscribe_to_view(&header, |_, _, event, ctx| {
+            if let ChatHeaderEvent::OpenRemoteDesktop { peer } = event {
+                ctx.emit(ChatShellEvent::OpenRemoteDesktop {
+                    peer: peer.clone(),
+                });
             }
         });
         let font = crate::ui::fonts::load_ui_font(ctx);

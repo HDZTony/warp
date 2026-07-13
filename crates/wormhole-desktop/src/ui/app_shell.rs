@@ -17,7 +17,7 @@ use warpui::{
 use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
 use warpui_core::keymap::Keystroke;
 
-use crate::coordinator::{CoordinatorState, CoordinatorView};
+use crate::coordinator::{CoordinatorState, CoordinatorView, UiCommand};
 use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
@@ -203,31 +203,41 @@ impl AppShellView {
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
         let chat = ctx.add_typed_action_view(|ctx| ChatShellView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&chat, |view, _, event, ctx| {
-            if let ChatShellEvent::BrowseNodeShares(node_id) = event {
-                view.tab = AppTab::Devices;
-                let devices = view.devices.clone();
-                ctx.update_view(&devices, |devices, ctx| {
-                    devices.open_node_from_chat(node_id.clone(), ctx);
-                });
-                ctx.notify();
+            match event {
+                ChatShellEvent::BrowseNodeShares(node_id) => {
+                    view.tab = AppTab::Devices;
+                    let devices = view.devices.clone();
+                    ctx.update_view(&devices, |devices, ctx| {
+                        devices.open_node_from_chat(node_id.clone(), ctx);
+                    });
+                    ctx.notify();
+                }
+                ChatShellEvent::OpenRemoteDesktop { peer } => {
+                    view.open_remote_desktop_for_peer(peer, ctx);
+                }
             }
         });
         ctx.subscribe_to_view(&devices, |view, _, event, ctx| {
-            if let DevicesEvent::OpenChat { node_id } = event {
-                let warp_handle = view.warp.clone();
-                ctx.update_view(&warp_handle, |panel, ctx| {
-                    panel.set_tab_visible(false, ctx);
-                });
-                view.tab = AppTab::Chat;
-                view.tab_focus = AppTab::Chat;
-                view.persist_last_tab();
-                view.prompt_login_if_needed(ctx);
-                let chat = view.chat.clone();
-                let node_id = node_id.clone();
-                ctx.update_view(&chat, |chat, ctx| {
-                    chat.open_chat_for_cluster_node(node_id, ctx);
-                });
-                ctx.notify();
+            match event {
+                DevicesEvent::OpenChat { node_id } => {
+                    let warp_handle = view.warp.clone();
+                    ctx.update_view(&warp_handle, |panel, ctx| {
+                        panel.set_tab_visible(false, ctx);
+                    });
+                    view.tab = AppTab::Chat;
+                    view.tab_focus = AppTab::Chat;
+                    view.persist_last_tab();
+                    view.prompt_login_if_needed(ctx);
+                    let chat = view.chat.clone();
+                    let node_id = node_id.clone();
+                    ctx.update_view(&chat, |chat, ctx| {
+                        chat.open_chat_for_cluster_node(node_id, ctx);
+                    });
+                    ctx.notify();
+                }
+                DevicesEvent::OpenRemoteDesktop { node_id } => {
+                    view.open_remote_desktop_for_peer(node_id, ctx);
+                }
             }
         });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
@@ -644,6 +654,31 @@ impl AppShellView {
             tab,
             AppTab::Devices | AppTab::Chat | AppTab::Sync | AppTab::Display
         )
+    }
+
+    fn open_remote_desktop_for_peer(&self, peer: &str, _ctx: &mut ViewContext<Self>) {
+        let peer = peer.trim();
+        if peer.is_empty() {
+            return;
+        }
+        let short = if peer.chars().count() > 8 {
+            format!("{}…", peer.chars().take(8).collect::<String>())
+        } else {
+            peer.to_string()
+        };
+        let window_key = crate::wormhole_native_ipc::rdp_window_key(peer);
+        let title = format!("远程桌面 · {short}");
+        if let Ok(mut guard) = self.coordinator.lock() {
+            guard.enqueue(UiCommand::OpenRdp {
+                peer: peer.to_string(),
+                title,
+                reconnect: false,
+                window_key,
+                password: None,
+                totp_code: None,
+                fps: 60,
+            });
+        }
     }
 
     fn open_login_modal(&mut self, ctx: &mut ViewContext<Self>) {

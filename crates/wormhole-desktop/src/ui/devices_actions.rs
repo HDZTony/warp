@@ -61,4 +61,5 @@ pub enum DevicesAction {
     },
     CloseDeviceContextMenu,
     SendMessage(String),
+    OpenRemoteDesktop(String),
 }

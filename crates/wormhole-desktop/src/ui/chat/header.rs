@@ -29,7 +29,7 @@ const TG_HEADER_ACTION_GAP: f32 = 2.0;
 #[derive(Debug, Clone)]
 pub enum ChatHeaderAction {
     ToggleThreadSearch,
-    ToggleRemoteDesktop,
+    OpenRemoteDesktop,
     ToggleProfile,
     ToggleHeaderMenu,
     ToggleMuteFlyout,
@@ -39,6 +39,11 @@ pub enum ChatHeaderAction {
     MuteForever,
     ClearHistory,
     DeleteChat,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChatHeaderEvent {
+    OpenRemoteDesktop { peer: String },
 }
 
 pub struct ChatHeaderView {
@@ -267,7 +272,7 @@ impl ChatHeaderView {
 }
 
 impl Entity for ChatHeaderView {
-    type Event = ();
+    type Event = ChatHeaderEvent;
 }
 
 impl View for ChatHeaderView {
@@ -358,7 +363,7 @@ impl View for ChatHeaderView {
             (
                 "chat-header-rdp.svg",
                 rdp_active,
-                ChatHeaderAction::ToggleRemoteDesktop,
+                ChatHeaderAction::OpenRemoteDesktop,
             ),
             (
                 "chat-header-profile.svg",
@@ -453,11 +458,30 @@ impl TypedActionView for ChatHeaderView {
                 }
                 ctx.notify();
             }
-            ChatHeaderAction::ToggleRemoteDesktop => {
+            ChatHeaderAction::OpenRemoteDesktop => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.remote_desktop_active = !state.remote_desktop_active;
                     state.close_overlays();
                 }
+                let peer = self.node_id.trim().to_string();
+                if peer.is_empty() {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast("当前会话没有可连接的终端", StatusTone::Muted);
+                    }
+                    ctx.notify();
+                    return;
+                }
+                if !self.online {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast("终端离线，无法打开远程桌面", StatusTone::Muted);
+                    }
+                    ctx.notify();
+                    return;
+                }
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.remote_desktop_active = true;
+                    state.show_toast("正在打开远程桌面…", StatusTone::Neutral);
+                }
+                ctx.emit(ChatHeaderEvent::OpenRemoteDesktop { peer });
                 self.refresh_from_selection(ctx);
             }
             ChatHeaderAction::ToggleProfile => {

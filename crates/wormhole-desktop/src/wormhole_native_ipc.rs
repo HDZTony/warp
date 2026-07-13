@@ -264,3 +264,15 @@ pub struct InvokeRdpResponse {
     #[serde(default)]
     pub error: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::rdp_window_key;
+
+    #[test]
+    fn rdp_window_key_is_stable_per_peer() {
+        assert_eq!(rdp_window_key("abc123"), "rdp:abc123");
+        assert_eq!(rdp_window_key("abc123"), rdp_window_key("abc123"));
+        assert_ne!(rdp_window_key("a"), rdp_window_key("b"));
+    }
+}

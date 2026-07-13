@@ -328,6 +328,49 @@ fn share_files_button(
     }
 }
 
+fn remote_desktop_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn Element> {
+    let (border, color, bg) = if online {
+        (theme::border_bright(), theme::text(), theme::panel())
+    } else {
+        (
+            dim_color(theme::border_bright(), 0.55),
+            theme::placeholder(),
+            theme::panel_elevated(),
+        )
+    };
+    let inner = Container::new(
+        ConstrainedBox::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(
+                    ui_text::cluster_ctrl("远程桌面", mono)
+                        .with_color(color)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_height(SHARE_BTN_HEIGHT)
+        .finish(),
+    )
+    .with_horizontal_padding(SHARE_BTN_PAD_X)
+    .with_background(bg)
+    .with_border(Border::all(1.0).with_border_fill(border))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+    .finish();
+
+    if online {
+        EventHandler::new(inner)
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::OpenRemoteDesktop(node_id.clone()));
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    } else {
+        inner
+    }
+}
+
 fn remove_device_button(
     device_id: Option<String>,
     node_id: String,
@@ -415,6 +458,21 @@ fn node_card(
         .left()
         .finish(),
     );
+    if !is_local {
+        body.add_child(
+            Align::new(
+                Container::new(remote_desktop_button(
+                    node_id.clone(),
+                    node.online,
+                    mono,
+                ))
+                .with_vertical_margin(2.0)
+                .finish(),
+            )
+            .left()
+            .finish(),
+        );
+    }
     if node.removable {
         body.add_child(
             Align::new(
