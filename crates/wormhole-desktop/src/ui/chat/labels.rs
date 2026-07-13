@@ -1,13 +1,26 @@
 use wormhole_desktop_core::chat_commands::ChatConversationDto;
 use wormhole_desktop_core::cluster_commands::{ClusterNodeDto, ClusterStatusDto};
 
+/// Match a conversation peer to a cluster node by endpoint, node id, or display name.
 pub fn find_cluster_node<'a>(
     conv: &ChatConversationDto,
     cluster: Option<&'a ClusterStatusDto>,
 ) -> Option<&'a ClusterNodeDto> {
-    cluster?.nodes.iter().find(|node| {
-        node.chat_endpoint_id.as_deref() == Some(conv.peer_endpoint.as_str())
-            || node.node_id == conv.peer_endpoint
+    let cluster = cluster?;
+    let peer = conv.peer_endpoint.as_str();
+    if let Some(node) = cluster.nodes.iter().find(|node| {
+        node.chat_endpoint_id.as_deref() == Some(peer) || node.node_id == peer
+    }) {
+        return Some(node);
+    }
+    let display = conv
+        .peer_display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    cluster.nodes.iter().find(|node| {
+        node.hostname.eq_ignore_ascii_case(display)
+            || format!("{} · {}", node.os, node.hostname).eq_ignore_ascii_case(display)
     })
 }
 
@@ -31,6 +44,52 @@ pub fn conversation_device_title(
         .filter(|name| !name.is_empty())
         .or_else(|| conv.title.clone())
         .unwrap_or_else(|| "未知设备".to_string())
+}
+
+/// Sidebar / header avatar initials aligned with HTML `chatAvatarForDevice`.
+pub fn chat_avatar_for_os(os: &str) -> String {
+    let os = os.trim();
+    if os.is_empty() {
+        return "WH".to_string();
+    }
+    if os.eq_ignore_ascii_case("Windows")
+        || os.eq_ignore_ascii_case("macOS")
+        || os.eq_ignore_ascii_case("Linux")
+        || os.to_ascii_lowercase().contains("windows")
+        || os.to_ascii_lowercase().contains("macos")
+        || os.to_ascii_lowercase().contains("linux")
+    {
+        return "PC".to_string();
+    }
+    if os.to_ascii_lowercase().contains("ipad") {
+        return "iP".to_string();
+    }
+    if os.to_ascii_lowercase().contains("ios")
+        || os.to_ascii_lowercase().contains("android")
+    {
+        return "iOS".to_string();
+    }
+    let compact: String = os
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(3)
+        .collect::<String>()
+        .to_uppercase();
+    if compact.is_empty() {
+        "DEV".to_string()
+    } else {
+        compact
+    }
+}
+
+/// OS string for avatar: cluster node when known, else empty (caller may fall back).
+pub fn conversation_os_label(
+    conv: &ChatConversationDto,
+    cluster: Option<&ClusterStatusDto>,
+) -> String {
+    find_cluster_node(conv, cluster)
+        .map(|node| node.os.clone())
+        .unwrap_or_default()
 }
 
 /// Sidebar preview line: last message snippet, not the device name.
@@ -64,7 +123,13 @@ mod tests {
     use super::*;
     use wormhole_desktop_core::cluster_commands::ClusterStatusDto;
 
-    fn sample_conv(kind: &str, peer: &str, title: Option<&str>, preview: Option<&str>) -> ChatConversationDto {
+    fn sample_conv(
+        kind: &str,
+        peer: &str,
+        title: Option<&str>,
+        preview: Option<&str>,
+        peer_display_name: Option<&str>,
+    ) -> ChatConversationDto {
         ChatConversationDto {
             id: "conv-1".into(),
             backend: "wormhole".into(),
@@ -75,7 +140,7 @@ mod tests {
             created_by: None,
             membership_version: 0,
             peer_endpoint: peer.into(),
-            peer_display_name: Some("wormhole".into()),
+            peer_display_name: peer_display_name.map(str::to_string),
             peer_bootstrap_addrs: Vec::new(),
             doc_ticket: String::new(),
             created_at: 0,
@@ -130,7 +195,7 @@ mod tests {
 
     #[test]
     fn conversation_device_title_prefers_cluster_label() {
-        let conv = sample_conv("direct", "peer-1", None, None);
+        let conv = sample_conv("direct", "peer-1", None, None, Some("wormhole"));
         let cluster = cluster_with_node("peer-1", "Windows", "DESKTOP-VHCQ89I");
         assert_eq!(
             conversation_device_title(&conv, Some(&cluster)),
@@ -139,24 +204,69 @@ mod tests {
     }
 
     #[test]
+    fn find_cluster_node_by_hostname_display_name() {
+        let conv = sample_conv(
+            "direct",
+            "stale-endpoint",
+            None,
+            None,
+            Some("DESKTOP-KDSVGM5"),
+        );
+        let cluster = cluster_with_node("node-real", "Windows", "DESKTOP-KDSVGM5");
+        assert!(find_cluster_node(&conv, Some(&cluster)).is_some());
+        assert_eq!(
+            conversation_device_title(&conv, Some(&cluster)),
+            "Windows · DESKTOP-KDSVGM5"
+        );
+    }
+
+    #[test]
+    fn find_cluster_node_by_os_hostname_display_name() {
+        let conv = sample_conv(
+            "direct",
+            "stale-endpoint",
+            None,
+            None,
+            Some("Windows · DESKTOP-KDSVGM5"),
+        );
+        let cluster = cluster_with_node("node-real", "Windows", "DESKTOP-KDSVGM5");
+        assert_eq!(
+            conversation_device_title(&conv, Some(&cluster)),
+            "Windows · DESKTOP-KDSVGM5"
+        );
+    }
+
+    #[test]
     fn conversation_device_title_uses_group_title() {
-        let conv = sample_conv("cluster_group", "peer-1", Some("家庭群"), None);
+        let conv = sample_conv("cluster_group", "peer-1", Some("家庭群"), None, None);
         assert_eq!(conversation_device_title(&conv, None), "家庭群");
     }
 
     #[test]
     fn conversation_preview_uses_last_message_preview() {
-        let conv = sample_conv("direct", "peer-1", None, Some("你好啊"));
+        let conv = sample_conv("direct", "peer-1", None, Some("你好啊"), Some("wormhole"));
         assert_eq!(conversation_preview(&conv, None), "你好啊");
     }
 
     #[test]
     fn conversation_preview_does_not_repeat_device_name() {
-        let conv = sample_conv("direct", "peer-1", None, None);
+        let conv = sample_conv("direct", "peer-1", None, None, Some("wormhole"));
         let cluster = cluster_with_node("peer-1", "Windows", "DESKTOP-VHCQ89I");
         assert_eq!(
             conversation_preview(&conv, Some(&cluster)),
             "在线 · 等待消息…"
         );
+    }
+
+    #[test]
+    fn chat_avatar_for_os_maps_common_platforms() {
+        assert_eq!(chat_avatar_for_os("Windows"), "PC");
+        assert_eq!(chat_avatar_for_os("macOS"), "PC");
+        assert_eq!(chat_avatar_for_os("Linux"), "PC");
+        assert_eq!(chat_avatar_for_os("iPadOS 18"), "iP");
+        assert_eq!(chat_avatar_for_os("iOS 18"), "iOS");
+        assert_eq!(chat_avatar_for_os("Android 14"), "iOS");
+        assert_eq!(chat_avatar_for_os(""), "WH");
+        assert_eq!(chat_avatar_for_os("??"), "DEV");
     }
 }

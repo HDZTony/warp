@@ -7,6 +7,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
+use crate::ui::chat::labels::chat_avatar_for_os;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
@@ -177,15 +178,7 @@ impl ChatProfilePanelView {
                             .unwrap_or_default();
                         view.title = display_name_with_remark(
                             Some(view.remark.as_str()),
-                            || {
-                                conv.as_ref()
-                                    .and_then(|c| {
-                                        c.title
-                                            .clone()
-                                            .or(c.peer_display_name.clone())
-                                    })
-                                    .unwrap_or_else(|| view.default_title.clone())
-                            },
+                            || view.default_title.clone(),
                         );
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
@@ -274,19 +267,6 @@ impl ChatProfilePanelView {
                 ctx.notify();
             },
         );
-    }
-
-    fn avatar_initials(title: &str) -> String {
-        let compact: String = title
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .take(2)
-            .collect();
-        if compact.is_empty() {
-            "WH".into()
-        } else {
-            compact.to_uppercase()
-        }
     }
 
     fn profile_action(
@@ -508,7 +488,11 @@ impl View for ChatProfilePanelView {
             Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(tg_avatar(
-                    Self::avatar_initials(&self.title),
+                    if self.os_label.is_empty() || self.os_label == "—" {
+                        chat_avatar_for_os("")
+                    } else {
+                        chat_avatar_for_os(&self.os_label)
+                    },
                     self.font,
                     TG_AVATAR_LG_SIZE,
                 ))

@@ -52,6 +52,9 @@ impl FontconfigLoader {
     /// Returns a FamilyHandle for those fonts
     ///
     /// # Errors
+    /// Color emoji fonts often omit Latin/'en' coverage; skip that check for these families.
+    const EMOJI_FONTS: &[&str] = &["Noto Color Emoji", "Noto Emoji"];
+
     /// If there are zero valid fonts within the family, this will error with
     /// Error::FamilyHasNoFonts
     ///
@@ -61,8 +64,13 @@ impl FontconfigLoader {
         let fonts = self.query_fonts(Some(family_name))?;
         let mut family = FamilyHandle::new(family_name);
         let mut errors = Vec::<Error>::new();
+        let validate = if EMOJI_FONTS.contains(&family_name) {
+            ValidateFontSupportsEn::No
+        } else {
+            ValidateFontSupportsEn::Yes
+        };
         for pattern in fonts.iter() {
-            match Self::parse_font(pattern, ValidateFontSupportsEn::Yes) {
+            match Self::parse_font(pattern, validate) {
                 Ok(font) => family.add_font(font),
                 Err(err) => errors.push(err),
             }

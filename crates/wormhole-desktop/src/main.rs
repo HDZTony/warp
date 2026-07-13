@@ -44,9 +44,6 @@ struct Args {
     bridge_only: bool,
     #[arg(long)]
     headless_rdp: bool,
-    #[cfg(windows)]
-    #[arg(long)]
-    mount_w_drive: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -89,13 +86,6 @@ fn main() -> Result<()> {
     wormhole_desktop_core::init_desktop_tracing(&data_dir, "wormhole-desktop", env_filter);
     wormhole_desktop_core::install_observability_for_process(&data_dir, "wormhole-desktop");
 
-    #[cfg(windows)]
-    if args.mount_w_drive {
-        std::fs::create_dir_all(&data_dir)?;
-        wormhole_desktop_core::w_drive_headless::run_for_data_dir(data_dir);
-        return Ok(());
-    }
-
     if args.headless_rdp || wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
         wormhole_desktop_core::rdp_headless::run();
         return Ok(());
@@ -110,18 +100,6 @@ fn main() -> Result<()> {
             },
             Err(err) => tracing::warn!("failed to spawn headless RDP companion: {err}"),
         }
-    }
-
-    #[cfg(windows)]
-    if wormhole_desktop_core::w_drive_headless::is_mount_w_drive_requested() {
-        wormhole_desktop_core::w_drive_headless::run_mount();
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if wormhole_desktop_core::w_drive_headless::is_init_w_drive_requested() {
-        wormhole_desktop_core::w_drive_headless::run_init();
-        return Ok(());
     }
 
     if args.bridge_only {

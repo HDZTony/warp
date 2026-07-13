@@ -18,6 +18,14 @@ pub struct PendingOutgoingMessage {
     pub attachments: Vec<PendingOutgoingAttachment>,
 }
 
+/// Optimistic header/thread state while `chat_start_conversation` is in flight.
+#[derive(Debug, Clone)]
+pub struct PendingOpenChat {
+    pub title: String,
+    pub os: String,
+    pub online: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatShellState {
     pub thread_search_open: bool,
@@ -29,6 +37,11 @@ pub struct ChatShellState {
     pub toast: String,
     pub toast_tone: StatusTone,
     pub message_tick: u64,
+    /// Bumped when sidebar selection changes so header refreshes immediately.
+    pub selection_tick: u64,
+    /// Bumped when chat UI prefs (mute/hide) change so sidebar rebuilds.
+    pub prefs_tick: u64,
+    pub pending_open: Option<PendingOpenChat>,
     pub pending_outgoing: Vec<PendingOutgoingMessage>,
 }
 
@@ -44,6 +57,9 @@ impl Default for ChatShellState {
             toast: String::new(),
             toast_tone: StatusTone::Neutral,
             message_tick: 0,
+            selection_tick: 0,
+            prefs_tick: 0,
+            pending_open: None,
             pending_outgoing: Vec::new(),
         }
     }
@@ -109,6 +125,25 @@ impl ChatShellState {
     /// Bumps the thread refresh counter so [`super::thread::ChatThreadView`] refetches messages.
     pub fn bump_message_tick(&mut self) {
         self.message_tick = self.message_tick.saturating_add(1);
+    }
+
+    pub fn bump_selection_tick(&mut self) {
+        self.selection_tick = self.selection_tick.saturating_add(1);
+    }
+
+    pub fn bump_prefs_tick(&mut self) {
+        self.prefs_tick = self.prefs_tick.saturating_add(1);
+    }
+
+    pub fn set_pending_open(&mut self, title: String, os: String, online: bool) {
+        self.pending_open = Some(PendingOpenChat { title, os, online });
+        self.bump_selection_tick();
+    }
+
+    pub fn clear_pending_open(&mut self) {
+        if self.pending_open.take().is_some() {
+            self.bump_selection_tick();
+        }
     }
 }
 

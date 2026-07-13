@@ -24,7 +24,6 @@ pub mod sync_views;
 pub mod text_field_input;
 pub mod theme;
 pub mod toolbox_view;
-pub mod w_drive_settings_view;
 pub mod w_drive_view;
 pub mod window_chrome;
 pub mod window_options;

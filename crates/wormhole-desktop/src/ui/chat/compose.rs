@@ -30,7 +30,7 @@ use wormhole_desktop_core::chat_commands::{
     chat_send_message, SendChatAttachmentDto, SendChatMessageParams,
 };
 
-const TG_COMPOSE_GAP: f32 = 6.0;
+const TG_COMPOSE_GAP: f32 = 8.0;
 const ATTACH_POPOVER_WIDTH: f32 = 196.0;
 const ATTACH_POPOVER_RADIUS: f32 = 12.0;
 const ATTACH_ICON_SIZE: f32 = 36.0;
@@ -73,8 +73,7 @@ impl ChatComposeView {
         shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let sticker_picker =
-            ctx.add_typed_action_view(|ctx| StickerPickerView::new(ctx, core.clone()));
+        let sticker_picker = ctx.add_typed_action_view(StickerPickerView::new);
         ctx.subscribe_to_view(&sticker_picker, |view, _, event, ctx| {
             let StickerPickerEvent::InsertEmoji(emoji) = event;
             view.field_state.apply(
@@ -571,21 +570,30 @@ impl View for ChatComposeView {
 
         if self.sticker_open || self.attach_open {
             // Positioned overlays do not contribute to Stack size — input bar stays put.
-            let above_compose = OffsetPositioning::offset_from_parent(
-                vec2f(12.0, -8.0),
-                ParentOffsetBounds::Unbounded,
-                ParentAnchor::TopLeft,
-                ChildAnchor::BottomLeft,
-            );
             let mut stack = Stack::new();
             stack.add_child(compose_body);
             if self.attach_open {
-                stack.add_positioned_overlay_child(self.attach_panel(), above_compose.clone());
+                // Align to attach button (compose left).
+                stack.add_positioned_overlay_child(
+                    self.attach_panel(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(12.0, -8.0),
+                        ParentOffsetBounds::Unbounded,
+                        ParentAnchor::TopLeft,
+                        ChildAnchor::BottomLeft,
+                    ),
+                );
             }
             if self.sticker_open {
+                // Align to emoji button (compose right), matching `.tg-compose-emoji-panel`.
                 stack.add_positioned_overlay_child(
                     ChildView::new(&self.sticker_picker).finish(),
-                    above_compose,
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(-12.0, -8.0),
+                        ParentOffsetBounds::Unbounded,
+                        ParentAnchor::TopRight,
+                        ChildAnchor::BottomRight,
+                    ),
                 );
             }
             stack.finish()

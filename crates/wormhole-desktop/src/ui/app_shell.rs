@@ -23,7 +23,7 @@ use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
-use crate::ui::devices_view::DevicesView;
+use crate::ui::devices_view::{DevicesEvent, DevicesView};
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
     build_avatar_panel, build_avatar_slot, build_purchase_modal, build_redeem_modal,
@@ -41,7 +41,7 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
-use crate::ui::w_drive_view::WDriveView;
+use crate::ui::w_drive_view::SharedVaultView;
 use crate::ui::window_chrome::{
     self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
 };
@@ -136,7 +136,7 @@ pub struct AppShellView {
     coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
     #[allow(dead_code)]
     coordinator_view: ViewHandle<CoordinatorView>,
-    w_drive: ViewHandle<WDriveView>,
+    w_drive: ViewHandle<SharedVaultView>,
     sync: ViewHandle<SyncView>,
     devices: ViewHandle<DevicesView>,
     display: ViewHandle<DisplayView>,
@@ -197,7 +197,7 @@ impl AppShellView {
             ctx.add_typed_action_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
         #[cfg(windows)]
         crate::ui::windows_shell::register_main_shell_window(ctx.window_id(), &coordinator);
-        let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
+        let w_drive = ctx.add_view(|ctx| SharedVaultView::new(ctx, core.clone()));
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
         let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
@@ -208,6 +208,24 @@ impl AppShellView {
                 let devices = view.devices.clone();
                 ctx.update_view(&devices, |devices, ctx| {
                     devices.open_node_from_chat(node_id.clone(), ctx);
+                });
+                ctx.notify();
+            }
+        });
+        ctx.subscribe_to_view(&devices, |view, _, event, ctx| {
+            if let DevicesEvent::OpenChat { node_id } = event {
+                let warp_handle = view.warp.clone();
+                ctx.update_view(&warp_handle, |panel, ctx| {
+                    panel.set_tab_visible(false, ctx);
+                });
+                view.tab = AppTab::Chat;
+                view.tab_focus = AppTab::Chat;
+                view.persist_last_tab();
+                view.prompt_login_if_needed(ctx);
+                let chat = view.chat.clone();
+                let node_id = node_id.clone();
+                ctx.update_view(&chat, |chat, ctx| {
+                    chat.open_chat_for_cluster_node(node_id, ctx);
                 });
                 ctx.notify();
             }

@@ -60,4 +60,5 @@ pub enum DevicesAction {
         y: f32,
     },
     CloseDeviceContextMenu,
+    SendMessage(String),
 }

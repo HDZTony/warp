@@ -45,6 +45,18 @@ enum ViewMode {
     Files,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextItemStyle {
+    Normal,
+    Accent,
+    Danger,
+}
+
+#[derive(Debug, Clone)]
+pub enum DevicesEvent {
+    OpenChat { node_id: String },
+}
+
 pub struct DevicesView {
     core: CoreHandle,
     font: FamilyId,
@@ -2796,9 +2808,20 @@ impl DevicesView {
         menu.add_child(self.device_context_item(
             "浏览共享文件夹",
             DevicesAction::OpenNode(node_id.clone()),
-            false,
+            ContextItemStyle::Normal,
             true,
         ));
+        menu.add_child(self.device_context_item(
+            if is_local {
+                "无法给本机发信息"
+            } else {
+                "发信息"
+            },
+            DevicesAction::SendMessage(node_id.clone()),
+            ContextItemStyle::Accent,
+            !is_local,
+        ));
+        menu.add_child(Self::cluster_menu_divider());
         menu.add_child(self.device_context_item(
             if is_local {
                 "无法删除本机"
@@ -2806,7 +2829,7 @@ impl DevicesView {
                 "删除终端"
             },
             DevicesAction::OpenDeleteNodeModal(node_id),
-            true,
+            ContextItemStyle::Danger,
             !is_local,
         ));
 
@@ -2827,15 +2850,17 @@ impl DevicesView {
         &self,
         label: &str,
         action: DevicesAction,
-        danger: bool,
+        style: ContextItemStyle,
         enabled: bool,
     ) -> Box<dyn Element> {
         let color = if !enabled {
             theme::muted()
-        } else if danger {
-            theme::danger()
         } else {
-            theme::text()
+            match style {
+                ContextItemStyle::Normal => theme::text(),
+                ContextItemStyle::Accent => theme::accent_cool(),
+                ContextItemStyle::Danger => theme::danger(),
+            }
         };
         let handler = EventHandler::new(
             Container::new(
@@ -3721,7 +3746,7 @@ impl CaretBlinkHost for DevicesView {
 }
 
 impl Entity for DevicesView {
-    type Event = ();
+    type Event = DevicesEvent;
 }
 
 impl View for DevicesView {
@@ -3830,6 +3855,21 @@ impl TypedActionView for DevicesView {
                 ctx.notify();
             }
             DevicesAction::CloseDeviceContextMenu => self.close_device_context_menu(ctx),
+            DevicesAction::SendMessage(node_id) => {
+                self.close_device_context_menu(ctx);
+                let is_local = self
+                    .cluster
+                    .as_ref()
+                    .is_some_and(|cluster| cluster.local_node_id == *node_id);
+                if is_local {
+                    self.status_flash = Some("无法给本机发信息".into());
+                    ctx.notify();
+                    return;
+                }
+                ctx.emit(DevicesEvent::OpenChat {
+                    node_id: node_id.clone(),
+                });
+            }
         }
     }
 }
