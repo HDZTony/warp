@@ -27,12 +27,12 @@ use coordinator::{CoordinatorState, CoordinatorView};
 use pathfinder_geometry::vector::vec2f;
 use tracing_subscriber::EnvFilter;
 use ui::app_shell::AppShellView;
-use ui::codex_provider_import_model::new_shared_import_model;
 use ui::core_handle::CoreHandle;
 use warpui::platform::{AppBuilder, AppCallbacks};
 use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
 use wormhole_desktop_core::shutdown_desktop;
+use wormhole_desktop_core::MAIN_WINDOW_TITLE;
 
 #[derive(Debug, Parser)]
 #[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
@@ -44,9 +44,6 @@ struct Args {
     bridge_only: bool,
     #[arg(long)]
     headless_rdp: bool,
-    #[cfg(windows)]
-    #[arg(long)]
-    mount_w_drive: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -89,13 +86,6 @@ fn main() -> Result<()> {
     wormhole_desktop_core::init_desktop_tracing(&data_dir, "wormhole-desktop", env_filter);
     wormhole_desktop_core::install_observability_for_process(&data_dir, "wormhole-desktop");
 
-    #[cfg(windows)]
-    if args.mount_w_drive {
-        std::fs::create_dir_all(&data_dir)?;
-        wormhole_desktop_core::w_drive_headless::run_for_data_dir(data_dir);
-        return Ok(());
-    }
-
     if args.headless_rdp || wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
         wormhole_desktop_core::rdp_headless::run();
         return Ok(());
@@ -110,18 +100,6 @@ fn main() -> Result<()> {
             },
             Err(err) => tracing::warn!("failed to spawn headless RDP companion: {err}"),
         }
-    }
-
-    #[cfg(windows)]
-    if wormhole_desktop_core::w_drive_headless::is_mount_w_drive_requested() {
-        wormhole_desktop_core::w_drive_headless::run_mount();
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if wormhole_desktop_core::w_drive_headless::is_init_w_drive_requested() {
-        wormhole_desktop_core::w_drive_headless::run_init();
-        return Ok(());
     }
 
     if args.bridge_only {
@@ -141,11 +119,6 @@ fn main() -> Result<()> {
     }
 
     #[cfg(windows)]
-    let mut pending_deeplink: Option<String> = None;
-    #[cfg(not(windows))]
-    let pending_deeplink: Option<String> = None;
-
-    #[cfg(windows)]
     let tray = {
         use wormhole_desktop_platform_windows::{
             desktop_process_entry, handle_startup_args, DeepLinkState, DesktopProcessRole,
@@ -161,15 +134,12 @@ fn main() -> Result<()> {
             | DesktopProcessRole::SecondaryDuplicate => return Ok(()),
             DesktopProcessRole::Primary => {}
         }
-        pending_deeplink = deep_link.take_pending_url();
-        if let Some(ref url) = pending_deeplink {
-            pending_deeplink =
-                wormhole_desktop_core::deeplink_commands::process_incoming_deeplink(&data_dir, url);
-        }
+        // Consume any pending wormhole:// URL so it does not linger; provider import is removed.
+        let _ = deep_link.take_pending_url();
         if let Err(err) =
-            wormhole_desktop_core::deeplink_commands::sync_ccswitch_protocol_registration(&data_dir)
+            wormhole_desktop_core::deeplink_commands::sync_wormhole_protocol_registration(&data_dir)
         {
-            tracing::warn!("无法同步 ccswitch 协议注册: {err}");
+            tracing::warn!("无法同步 wormhole 协议注册: {err}");
         }
         Arc::new(TrayController::spawn("Wormhole")?)
     };
@@ -199,27 +169,29 @@ fn main() -> Result<()> {
         "wormhole-desktop starting WarpUI shell"
     );
 
-    let coordinator_for_close = coordinator.clone();
-    let mut callbacks = AppCallbacks::default();
-    #[cfg(windows)]
-    {
-        callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
-            if ui::windows_shell::should_hide_main_window_to_tray(window_id, &coordinator_for_close)
-            {
-                ui::windows_shell::hide_main_window(window_id, ctx);
-                ApproveTerminateResult::Cancel
-            } else {
-                ApproveTerminateResult::Terminate
-            }
-        }));
-    }
+    let callbacks = {
+        let mut callbacks = AppCallbacks::default();
+        #[cfg(windows)]
+        {
+            let coordinator_for_close = coordinator.clone();
+            callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
+                if ui::windows_shell::should_hide_main_window_to_tray(
+                    window_id,
+                    &coordinator_for_close,
+                ) {
+                    ui::windows_shell::hide_main_window(window_id, ctx);
+                    ApproveTerminateResult::Cancel
+                } else {
+                    ApproveTerminateResult::Terminate
+                }
+            }));
+        }
+        callbacks
+    };
 
     let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
-    let import_model = new_shared_import_model();
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
-    let import_model_for_shell = import_model.clone();
-    let pending_for_shell = pending_deeplink;
     #[cfg(windows)]
     let tray_for_shell = tray.clone();
     let _ = app_builder.run(move |ctx| {
@@ -227,14 +199,12 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         ctx.add_singleton_model(crate::ui::window_chrome::WindowsSymbolFontState::new);
         ctx.add_window(
-            ui::window_options::desktop_window_options("Wormhole", vec2f(1280.0, 840.0)),
+            ui::window_options::desktop_window_options(MAIN_WINDOW_TITLE, vec2f(1280.0, 840.0)),
             move |view_ctx| {
                 AppShellView::new(
                     view_ctx,
                     core_for_shell,
                     coordinator_for_shell,
-                    import_model_for_shell,
-                    pending_for_shell,
                     #[cfg(windows)]
                     tray_for_shell,
                 )

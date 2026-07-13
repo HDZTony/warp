@@ -41,6 +41,9 @@ pub enum DevicesAction {
     ShareSyncFile(String),
     ShareRemoteOpenFile(String),
     ShareDeleteFile(String),
+    OpenShareUnshareModal(String),
+    CloseShareUnshareModal,
+    ConfirmShareUnshare,
     OpenShareContextMenu {
         name: String,
         x: f32,
@@ -57,4 +60,5 @@ pub enum DevicesAction {
         y: f32,
     },
     CloseDeviceContextMenu,
+    SendMessage(String),
 }

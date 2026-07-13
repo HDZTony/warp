@@ -1,11 +1,13 @@
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Flex, MainAxisAlignment, MainAxisSize, ParentElement, Stack,
+    Expanded, Flex, MainAxisSize, ParentElement, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
-use crate::ui::chat::labels::conversation_device_title;
+use crate::ui::chat::labels::{
+    chat_avatar_for_os, conversation_device_title, conversation_os_label, find_cluster_node,
+};
 use crate::ui::chat::header_menu::{header_button, header_menu_panel};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
@@ -15,6 +17,7 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;
 use wormhole_desktop_core::cluster_commands::cluster_status;
+use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
 const TG_HEADER_BTN: f32 = 36.0;
@@ -47,6 +50,9 @@ pub struct ChatHeaderView {
     status: String,
     online: bool,
     node_id: String,
+    os: String,
+    last_selection: Option<String>,
+    last_selection_tick: u64,
 }
 
 impl ChatHeaderView {
@@ -63,9 +69,12 @@ impl ChatHeaderView {
             shell_state,
             font,
             title: "选择左侧终端".into(),
-            status: String::new(),
+            status: "从列表中选择会话".into(),
             online: false,
             node_id: String::new(),
+            os: String::new(),
+            last_selection: None,
+            last_selection_tick: 0,
         };
         view.start_poll(ctx);
         view
@@ -74,26 +83,61 @@ impl ChatHeaderView {
     fn start_poll(&self, ctx: &mut ViewContext<Self>) {
         ctx.spawn(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             },
             |view, _, ctx| {
-                view.refresh_from_selection(ctx);
+                view.poll(ctx);
                 view.start_poll(ctx);
             },
         );
     }
 
-    fn refresh_from_selection(&mut self, ctx: &mut ViewContext<Self>) {
+    fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let selected = self.selection.lock().ok().and_then(|g| g.clone());
+        let (selection_tick, pending) = self
+            .shell_state
+            .lock()
+            .map(|state| (state.selection_tick, state.pending_open.clone()))
+            .unwrap_or((0, None));
+        let selection_changed = selected != self.last_selection;
+        let tick_changed = selection_tick != self.last_selection_tick;
+        if !selection_changed && !tick_changed {
+            return;
+        }
+        self.last_selection = selected.clone();
+        self.last_selection_tick = selection_tick;
+
+        if let Some(pending) = pending {
+            self.title = pending.title;
+            self.status = "正在打开会话…".into();
+            self.online = pending.online;
+            self.os = pending.os;
+            self.node_id.clear();
+            ctx.notify();
+            if selected.is_some() {
+                // Still resolve once conv_id lands.
+                self.refresh_from_selection(ctx);
+            }
+            return;
+        }
+
         if selected.is_none() {
             self.title = "选择左侧终端".into();
             self.status = "从列表中选择会话".into();
             self.online = false;
             self.node_id.clear();
+            self.os.clear();
             ctx.notify();
             return;
         }
-        let selected = selected.unwrap();
+        self.refresh_from_selection(ctx);
+    }
+
+    fn refresh_from_selection(&mut self, ctx: &mut ViewContext<Self>) {
+        let selected = self.selection.lock().ok().and_then(|g| g.clone());
+        let Some(selected) = selected else {
+            return;
+        };
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -103,15 +147,24 @@ impl ChatHeaderView {
                 let conv_id = selected.clone();
                 let conversations = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status(&state).await;
-                (conv_id, conversations, cluster)
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (conv_id, conversations, cluster, remarks)
             },
             |view, output, ctx| {
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());
                 let Some(selected) = selected else {
                     return;
                 };
-                let (conv_id, conversations, cluster) = output;
+                let (conv_id, conversations, cluster, remarks) = output;
                 if conv_id != selected {
+                    return;
+                }
+                if view
+                    .shell_state
+                    .lock()
+                    .map(|state| state.pending_open.is_some())
+                    .unwrap_or(false)
+                {
                     return;
                 }
                 let remote_active = view
@@ -123,23 +176,16 @@ impl ChatHeaderView {
                     .ok()
                     .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
                 if let Some(conv) = conv {
-                    view.title = conversation_device_title(&conv, cluster.as_ref().ok());
+                    let cluster_ref = cluster.as_ref().ok();
+                    let remark = find_cluster_node(&conv, cluster_ref)
+                        .and_then(|node| remarks.get(&node.node_id).map(String::as_str));
+                    view.title = display_name_with_remark(remark, || {
+                        conversation_device_title(&conv, cluster_ref)
+                    });
+                    view.os = conversation_os_label(&conv, cluster_ref);
                     view.node_id = conv.peer_endpoint.clone();
-                    let peer_online = cluster
-                        .as_ref()
-                        .ok()
-                        .and_then(|cluster| {
-                            cluster.nodes.iter().find_map(|node| {
-                                if node.chat_endpoint_id.as_deref()
-                                    == Some(conv.peer_endpoint.as_str())
-                                    || node.node_id == conv.peer_endpoint
-                                {
-                                    Some(node.online)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
+                    let peer_online = find_cluster_node(&conv, cluster_ref)
+                        .map(|node| node.online)
                         .unwrap_or(false);
                     view.online = peer_online;
                     view.status = if remote_active {
@@ -154,9 +200,13 @@ impl ChatHeaderView {
                         n.chat_endpoint_id.as_deref() == Some(selected.as_str())
                             || n.node_id == selected
                     }) {
-                        view.title = format!("{} · {}", node.os, node.hostname);
+                        view.title = display_name_with_remark(
+                            remarks.get(&node.node_id).map(String::as_str),
+                            || format!("{} · {}", node.os, node.hostname),
+                        );
                         view.online = node.online;
                         view.node_id = node.node_id.clone();
+                        view.os = node.os.clone();
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
                         } else if node.online {
@@ -167,6 +217,7 @@ impl ChatHeaderView {
                     } else {
                         view.title = selected.clone();
                         view.node_id = selected.clone();
+                        view.os.clear();
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
                         } else {
@@ -174,23 +225,30 @@ impl ChatHeaderView {
                         };
                         view.online = false;
                     }
+                } else {
+                    view.title = selected.clone();
+                    view.node_id = selected.clone();
+                    view.os.clear();
+                    view.status = if remote_active {
+                        "远程桌面 · 已连接".into()
+                    } else {
+                        "会话信息同步中".into()
+                    };
+                    view.online = false;
                 }
                 ctx.notify();
             },
         );
     }
 
-    fn avatar_initials(title: &str) -> String {
-        let compact: String = title
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .take(2)
-            .collect();
-        if compact.is_empty() {
-            "WH".to_string()
-        } else {
-            compact.to_uppercase()
+    fn avatar_label(&self) -> String {
+        if self.title == "选择左侧终端" {
+            return "WH".to_string();
         }
+        if !self.os.is_empty() {
+            return chat_avatar_for_os(&self.os);
+        }
+        chat_avatar_for_os("")
     }
 
     fn shell_flags(&self) -> (bool, bool, bool, bool) {
@@ -229,7 +287,7 @@ impl View for ChatHeaderView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(tg_avatar(
-                Self::avatar_initials(&self.title),
+                self.avatar_label(),
                 self.font,
                 TG_AVATAR_SM_SIZE,
             ))
@@ -339,12 +397,15 @@ impl View for ChatHeaderView {
         let header_bar = Container::new(
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_child(
-                    Container::new(info_clickable)
-                        .with_uniform_padding(4.0)
-                        .finish(),
+                    Expanded::new(
+                        1.0,
+                        Container::new(info_clickable)
+                            .with_uniform_padding(4.0)
+                            .finish(),
+                    )
+                    .finish(),
                 )
                 .with_child(actions.finish())
                 .finish(),
@@ -438,13 +499,51 @@ impl TypedActionView for ChatHeaderView {
                 ctx.notify();
             }
             ChatHeaderAction::MuteForever => {
+                let selected = self.selection.lock().ok().and_then(|g| g.clone());
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("已永久静音此终端通知", StatusTone::Success);
                     state.header_menu_open = false;
                     state.mute_flyout_open = false;
                 }
-                self.status = "已静音".into();
-                self.online = false;
+                let Some(conv_id) = selected else {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast("请先选择会话", StatusTone::Muted);
+                    }
+                    ctx.notify();
+                    return;
+                };
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let runtime = core.runtime();
+                        let state = runtime.state.clone();
+                        wormhole_desktop_core::chat_ui_prefs::set_chat_muted(
+                            &state.data_dir,
+                            &conv_id,
+                            true,
+                        )
+                        .await
+                    },
+                    |view, output, ctx| match output {
+                        Ok(_) => {
+                            if let Ok(mut state) = view.shell_state.lock() {
+                                state.show_toast("已开启消息免打扰", StatusTone::Success);
+                                state.bump_prefs_tick();
+                            }
+                            view.status = "已静音".into();
+                            view.online = false;
+                            ctx.notify();
+                        }
+                        Err(err) => {
+                            if let Ok(mut state) = view.shell_state.lock() {
+                                state.show_toast(
+                                    format!("无法更新免打扰: {err}"),
+                                    StatusTone::Danger,
+                                );
+                            }
+                            ctx.notify();
+                        }
+                    },
+                );
                 ctx.notify();
             }
             ChatHeaderAction::ClearHistory => {
@@ -456,11 +555,58 @@ impl TypedActionView for ChatHeaderView {
                 ctx.notify();
             }
             ChatHeaderAction::DeleteChat => {
+                let selected = self.selection.lock().ok().and_then(|g| g.clone());
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("聊天已删除（演示 — 侧栏会话保留）", StatusTone::Muted);
                     state.header_menu_open = false;
-                    state.message_tick += 1;
                 }
+                let Some(conv_id) = selected else {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast("请先选择会话", StatusTone::Muted);
+                    }
+                    ctx.notify();
+                    return;
+                };
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let runtime = core.runtime();
+                        let state = runtime.state.clone();
+                        wormhole_desktop_core::chat_ui_prefs::set_chat_hidden(
+                            &state.data_dir,
+                            &conv_id,
+                            true,
+                        )
+                        .await
+                    },
+                    |view, output, ctx| match output {
+                        Ok(_) => {
+                            if let Ok(mut guard) = view.selection.lock() {
+                                *guard = None;
+                            }
+                            if let Ok(mut state) = view.shell_state.lock() {
+                                state.show_toast("已删除对话", StatusTone::Muted);
+                                state.clear_pending_open();
+                                state.bump_selection_tick();
+                                state.bump_prefs_tick();
+                            }
+                            view.title = "选择左侧终端".into();
+                            view.status = "从列表中选择会话".into();
+                            view.online = false;
+                            view.node_id.clear();
+                            view.os.clear();
+                            ctx.notify();
+                        }
+                        Err(err) => {
+                            if let Ok(mut state) = view.shell_state.lock() {
+                                state.show_toast(
+                                    format!("无法删除对话: {err}"),
+                                    StatusTone::Danger,
+                                );
+                            }
+                            ctx.notify();
+                        }
+                    },
+                );
                 ctx.notify();
             }
         }

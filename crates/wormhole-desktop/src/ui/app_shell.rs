@@ -21,10 +21,9 @@ use crate::coordinator::{CoordinatorState, CoordinatorView};
 use crate::ui::agent_panel::AgentPanelView;
 use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
-use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
-use crate::ui::devices_view::DevicesView;
+use crate::ui::devices_view::{DevicesEvent, DevicesView};
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
     build_avatar_panel, build_avatar_slot, build_purchase_modal, build_redeem_modal,
@@ -42,8 +41,7 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui::toolbox_view::ToolboxView;
-use crate::ui::w_drive_view::WDriveView;
-#[cfg(windows)]
+use crate::ui::w_drive_view::SharedVaultView;
 use crate::ui::window_chrome::{
     self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
 };
@@ -138,7 +136,7 @@ pub struct AppShellView {
     coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
     #[allow(dead_code)]
     coordinator_view: ViewHandle<CoordinatorView>,
-    w_drive: ViewHandle<WDriveView>,
+    w_drive: ViewHandle<SharedVaultView>,
     sync: ViewHandle<SyncView>,
     devices: ViewHandle<DevicesView>,
     display: ViewHandle<DisplayView>,
@@ -191,8 +189,6 @@ impl AppShellView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
-        import_model: SharedCodexProviderImportModel,
-        pending_deeplink: Option<String>,
         #[cfg(windows)] tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
@@ -201,7 +197,7 @@ impl AppShellView {
             ctx.add_typed_action_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
         #[cfg(windows)]
         crate::ui::windows_shell::register_main_shell_window(ctx.window_id(), &coordinator);
-        let w_drive = ctx.add_view(|ctx| WDriveView::new(ctx, core.clone()));
+        let w_drive = ctx.add_view(|ctx| SharedVaultView::new(ctx, core.clone()));
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
         let devices = ctx.add_typed_action_view(|ctx| DevicesView::new(ctx, core.clone()));
         let display = ctx.add_view(|ctx| DisplayView::new(ctx, core.clone()));
@@ -216,11 +212,28 @@ impl AppShellView {
                 ctx.notify();
             }
         });
+        ctx.subscribe_to_view(&devices, |view, _, event, ctx| {
+            if let DevicesEvent::OpenChat { node_id } = event {
+                let warp_handle = view.warp.clone();
+                ctx.update_view(&warp_handle, |panel, ctx| {
+                    panel.set_tab_visible(false, ctx);
+                });
+                view.tab = AppTab::Chat;
+                view.tab_focus = AppTab::Chat;
+                view.persist_last_tab();
+                view.prompt_login_if_needed(ctx);
+                let chat = view.chat.clone();
+                let node_id = node_id.clone();
+                ctx.update_view(&chat, |chat, ctx| {
+                    chat.open_chat_for_cluster_node(node_id, ctx);
+                });
+                ctx.notify();
+            }
+        });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
         let toolbox = ctx
             .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
-        let settings =
-            ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone(), import_model));
+        let settings = ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone()));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
             match event {
@@ -291,14 +304,7 @@ impl AppShellView {
         if matches!(tab, AppTab::WDrive | AppTab::Sync | AppTab::Display) {
             tab = AppTab::Devices;
         }
-        if let Some(ref url) = pending_deeplink {
-            tab = AppTab::Settings;
-            let settings_handle = settings.clone();
-            ctx.update_view(&settings_handle, |view, ctx| {
-                view.open_deeplink_url(url.clone(), ctx)
-            });
-        }
-        let show_onboarding = pending_deeplink.is_none() && !prefs.onboarding_dismissed;
+        let show_onboarding = !prefs.onboarding_dismissed;
         let window_id = ctx.window_id();
         let view = Self {
             tab,
@@ -358,7 +364,7 @@ impl AppShellView {
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.refresh_auth_status(ctx);
-        view.start_deeplink_listener(ctx);
+        view.start_event_listener(ctx);
         #[cfg(windows)]
         view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
@@ -444,13 +450,13 @@ impl AppShellView {
         );
     }
 
-    fn start_deeplink_listener(&self, ctx: &mut ViewContext<Self>) {
+    fn start_event_listener(&self, ctx: &mut ViewContext<Self>) {
         let events = self.core.runtime().ctx.events.clone();
         let settings = self.settings.clone();
-        Self::poll_deeplink_once(ctx, events, settings);
+        Self::poll_events_once(ctx, events, settings);
     }
 
-    fn poll_deeplink_once(
+    fn poll_events_once(
         ctx: &mut ViewContext<Self>,
         events: wormhole_desktop_core::DesktopEventBus,
         settings: ViewHandle<SettingsView>,
@@ -459,14 +465,6 @@ impl AppShellView {
         ctx.spawn(async move { rx.recv().await }, move |view, output, ctx| {
             if let Ok(event) = output {
                 match event.name.as_str() {
-                    "deeplink-import" => {
-                        if let Some(url) = event.payload.get("url").and_then(|v| v.as_str()) {
-                            let url = url.to_string();
-                            ctx.update_view(&settings, |view, ctx| {
-                                view.open_deeplink_url(url, ctx);
-                            });
-                        }
-                    }
                     "cloud-auth-changed" => {
                         view.refresh_auth_status(ctx);
                         view.refresh_auth_gated_views(ctx);
@@ -478,7 +476,7 @@ impl AppShellView {
                     _ => {}
                 }
             }
-            Self::poll_deeplink_once(ctx, events, settings);
+            Self::poll_events_once(ctx, events, settings);
         });
     }
 

@@ -1,24 +1,39 @@
+use std::collections::BTreeMap;
+
 use warpui::elements::{
-    Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Flex, MainAxisSize, ParentElement,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, EventHandler, Flex, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
+use crate::ui::chat::labels::chat_avatar_for_os;
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{tg_avatar, ui_title, TG_AVATAR_LG_SIZE};
+use crate::ui::text_field_input::{
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+};
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::chat_commands::{chat_set_peer_display_name, SetChatPeerDisplayNameParams};
 use wormhole_desktop_core::cluster_commands::cluster_status;
+use wormhole_desktop_core::device_remarks::{
+    display_name_with_remark, load_device_remarks, set_device_remark,
+};
+
+const MAX_REMARK_CHARS: usize = 40;
 
 #[derive(Debug, Clone)]
 pub enum ChatProfileAction {
     Call,
     RemoteDesktop,
     BrowseSharedFiles,
+    FocusRemark,
+    RemarkEdit(TextFieldEditAction),
 }
 
 #[derive(Debug, Clone)]
@@ -33,10 +48,17 @@ pub struct ChatProfilePanelView {
     font: FamilyId,
     title: String,
     node_id: String,
+    conv_id: Option<String>,
     status: String,
     online: bool,
     cluster_name: String,
     os_label: String,
+    default_title: String,
+    remark: String,
+    remark_field: TextFieldState,
+    remark_focused: bool,
+    remark_dirty: bool,
+    caret_blink: CaretBlink,
 }
 
 impl ChatProfilePanelView {
@@ -54,10 +76,17 @@ impl ChatProfilePanelView {
             font,
             title: String::new(),
             node_id: String::new(),
+            conv_id: None,
             status: String::new(),
             online: false,
             cluster_name: String::new(),
             os_label: String::new(),
+            default_title: String::new(),
+            remark: String::new(),
+            remark_field: TextFieldState::new(),
+            remark_focused: false,
+            remark_dirty: false,
+            caret_blink: CaretBlink::new(),
         };
         view.start_poll(ctx);
         view
@@ -80,16 +109,30 @@ impl ChatProfilePanelView {
         let Some(selected) = selected else {
             self.title.clear();
             self.node_id.clear();
+            self.conv_id = None;
+            self.remark.clear();
             ctx.notify();
             return;
         };
+        if self.remark_focused || self.remark_dirty {
+            return;
+        }
         let core = self.core.clone();
         ctx.spawn(
             async move {
-                let state = core.runtime().state.clone();
-                cluster_status(&state).await
+                let runtime = core.runtime();
+                let app = runtime.ctx.as_ref();
+                let state = runtime.state.clone();
+                let conversations =
+                    wormhole_desktop_core::chat_commands::chat_list_conversations(app, &state).await;
+                let cluster = cluster_status(&state).await;
+                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                (conversations, cluster, remarks)
             },
             |view, output, ctx| {
+                if view.remark_focused || view.remark_dirty {
+                    return;
+                }
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());
                 let Some(selected) = selected else {
                     return;
@@ -99,7 +142,16 @@ impl ChatProfilePanelView {
                     .lock()
                     .map(|state| state.remote_desktop_active)
                     .unwrap_or(false);
-                if let Ok(cluster) = output {
+                let (conversations, cluster, remarks) = output;
+                let conv = conversations.ok().and_then(|list| {
+                    list.into_iter().find(|conv| conv.id == selected)
+                });
+                if let Some(ref conv) = conv {
+                    view.conv_id = Some(conv.id.clone());
+                } else {
+                    view.conv_id = Some(selected.clone());
+                }
+                if let Ok(cluster) = cluster {
                     view.cluster_name = cluster
                         .clusters
                         .iter()
@@ -107,14 +159,27 @@ impl ChatProfilePanelView {
                         .and_then(|c| c.name.clone())
                         .or(cluster.cluster_id.clone())
                         .unwrap_or_else(|| "—".into());
+                    let peer_key = conv
+                        .as_ref()
+                        .map(|c| c.peer_endpoint.as_str())
+                        .unwrap_or(selected.as_str());
                     if let Some(node) = cluster.nodes.iter().find(|n| {
-                        n.chat_endpoint_id.as_deref() == Some(selected.as_str())
+                        n.chat_endpoint_id.as_deref() == Some(peer_key)
+                            || n.node_id == peer_key
                             || n.node_id == selected
                     }) {
-                        view.title = format!("{} · {}", node.os, node.hostname);
+                        view.default_title = format!("{} · {}", node.os, node.hostname);
                         view.node_id = node.node_id.clone();
                         view.os_label = node.os.clone();
                         view.online = node.online;
+                        view.remark = remarks
+                            .get(&node.node_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        view.title = display_name_with_remark(
+                            Some(view.remark.as_str()),
+                            || view.default_title.clone(),
+                        );
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
                         } else if node.online {
@@ -123,10 +188,21 @@ impl ChatProfilePanelView {
                             "离线".into()
                         };
                     } else {
-                        view.title = "未知设备".into();
-                        view.node_id = selected.clone();
+                        view.default_title = conv
+                            .as_ref()
+                            .and_then(|c| c.title.clone().or(c.peer_display_name.clone()))
+                            .unwrap_or_else(|| "未知设备".into());
+                        view.title = view.default_title.clone();
+                        view.node_id = peer_key.to_string();
                         view.os_label = "—".into();
                         view.online = false;
+                        view.remark = remarks
+                            .get(&view.node_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        if !view.remark.is_empty() {
+                            view.title = view.remark.clone();
+                        }
                         view.status = "会话信息同步中".into();
                     }
                 }
@@ -135,17 +211,62 @@ impl ChatProfilePanelView {
         );
     }
 
-    fn avatar_initials(title: &str) -> String {
-        let compact: String = title
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .take(2)
-            .collect();
-        if compact.is_empty() {
-            "WH".into()
-        } else {
-            compact.to_uppercase()
+    fn persist_remark(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.node_id.is_empty() {
+            return;
         }
+        let node_id = self.node_id.clone();
+        let conv_id = self.conv_id.clone();
+        let remark = self.remark.chars().take(MAX_REMARK_CHARS).collect::<String>();
+        let remark_for_save = remark.trim().to_string();
+        self.remark = remark_for_save.clone();
+        self.title = display_name_with_remark(Some(self.remark.as_str()), || {
+            self.default_title.clone()
+        });
+        self.remark_dirty = false;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let remarks = set_device_remark(
+                    &state.data_dir,
+                    &node_id,
+                    if remark_for_save.is_empty() {
+                        None
+                    } else {
+                        Some(remark_for_save.as_str())
+                    },
+                )
+                .await?;
+                if let Some(conv_id) = conv_id {
+                    let peer_display_name = if remark_for_save.is_empty() {
+                        None
+                    } else {
+                        Some(remark_for_save.clone())
+                    };
+                    let _ = chat_set_peer_display_name(
+                        &state,
+                        SetChatPeerDisplayNameParams {
+                            conv_id,
+                            peer_display_name,
+                        },
+                    )
+                    .await;
+                }
+                Ok::<BTreeMap<String, String>, String>(remarks)
+            },
+            |view, output, ctx| {
+                if let Err(e) = output {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(
+                            format!("备注保存失败: {e}"),
+                            crate::ui::panel_primitives::StatusTone::Danger,
+                        );
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn profile_action(
@@ -229,6 +350,113 @@ impl ChatProfilePanelView {
             .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
             .finish()
     }
+
+    fn remark_section(&self) -> Box<dyn Element> {
+        let draft = self.remark.clone();
+        let marked = self.remark_field.marked_text.clone();
+        let border = if self.remark_focused {
+            theme::accent_cool()
+        } else {
+            theme::border()
+        };
+        let field = render_field_with_caret(
+            &draft,
+            &marked,
+            "用作聊天和终端名",
+            self.font,
+            self.remark_focused,
+            false,
+            self.caret_blink.visible,
+        );
+        let input = wrap_text_field_focus_on_click(
+            TextFieldInput::builder(field, |ctx, action| {
+                ctx.dispatch_typed_action(ChatProfileAction::RemarkEdit(action));
+            })
+            .focused(self.remark_focused)
+            .ime_preedit(!marked.is_empty())
+            .on_keydown(|ctx, keystroke| match keystroke.key.as_str() {
+                "enter" | "return" => {
+                    ctx.dispatch_typed_action(ChatProfileAction::RemarkEdit(
+                        TextFieldEditAction::ClearMarkedText,
+                    ));
+                    DispatchEventResult::StopPropagation
+                }
+                "escape" => DispatchEventResult::PropagateToParent,
+                _ => DispatchEventResult::PropagateToParent,
+            })
+            .finish(),
+            |ctx| ctx.dispatch_typed_action(ChatProfileAction::FocusRemark),
+        );
+
+        let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
+        col.add_child(
+            Container::new(ui_title("终端".to_string(), self.font))
+                .with_margin_bottom(8.0)
+                .finish(),
+        );
+        let mut remark_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        remark_row.add_child(
+            ui_text::body("备注".to_string(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        remark_row.add_child(
+            Container::new(
+                ConstrainedBox::new(
+                    Container::new(input)
+                        .with_padding_left(10.0)
+                        .with_padding_right(10.0)
+                        .with_padding_top(6.0)
+                        .with_padding_bottom(6.0)
+                        .with_background(theme::canvas())
+                        .with_border(Border::all(1.0).with_border_fill(border))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                        .finish(),
+                )
+                .with_min_width(120.0)
+                .finish(),
+            )
+            .with_margin_left(10.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(remark_row.finish())
+                .with_vertical_padding(4.0)
+                .finish(),
+        );
+        col.add_child(
+            Container::new(
+                ui_text::chat_sidebar_time(
+                    "留空则使用系统默认名；填写后同步到聊天列表与终端卡片".to_string(),
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_padding_top(6.0)
+            .with_padding_bottom(4.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(self.profile_row("系统", &self.os_label))
+                .with_vertical_padding(4.0)
+                .finish(),
+        );
+        col.add_child(
+            Container::new(self.profile_row("node_id", &self.node_id))
+                .with_vertical_padding(4.0)
+                .finish(),
+        );
+        Container::new(col.finish())
+            .with_padding_left(16.0)
+            .with_padding_right(16.0)
+            .with_padding_top(12.0)
+            .with_padding_bottom(12.0)
+            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .finish()
+    }
 }
 
 impl Entity for ChatProfilePanelView {
@@ -260,7 +488,11 @@ impl View for ChatProfilePanelView {
             Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(tg_avatar(
-                    Self::avatar_initials(&self.title),
+                    if self.os_label.is_empty() || self.os_label == "—" {
+                        chat_avatar_for_os("")
+                    } else {
+                        chat_avatar_for_os(&self.os_label)
+                    },
                     self.font,
                     TG_AVATAR_LG_SIZE,
                 ))
@@ -321,17 +553,7 @@ impl View for ChatProfilePanelView {
 
         let cluster_section = self.profile_section(
             "集群",
-            vec![
-                ("集群".into(), self.cluster_name.clone()),
-                ("加密".into(), "E2E · Iroh".into()),
-            ],
-        );
-        let terminal_section = self.profile_section(
-            "终端",
-            vec![
-                ("系统".into(), self.os_label.clone()),
-                ("node_id".into(), self.node_id.clone()),
-            ],
+            vec![("集群".into(), self.cluster_name.clone())],
         );
 
         Flex::column()
@@ -339,7 +561,7 @@ impl View for ChatProfilePanelView {
             .with_child(head)
             .with_child(actions)
             .with_child(cluster_section)
-            .with_child(terminal_section)
+            .with_child(self.remark_section())
             .finish()
     }
 }
@@ -351,7 +573,10 @@ impl TypedActionView for ChatProfilePanelView {
         match action {
             ChatProfileAction::Call => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("语音通话（演示）", crate::ui::panel_primitives::StatusTone::Muted);
+                    state.show_toast(
+                        "语音通话（演示）",
+                        crate::ui::panel_primitives::StatusTone::Muted,
+                    );
                 }
                 ctx.notify();
             }
@@ -376,6 +601,34 @@ impl TypedActionView for ChatProfilePanelView {
                     ctx.emit(ChatProfileEvent::BrowseNodeShares(self.node_id.clone()));
                 }
             }
+            ChatProfileAction::FocusRemark => {
+                self.remark_focused = true;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ChatProfileAction::RemarkEdit(edit) => {
+                self.remark_field.apply(&mut self.remark, edit);
+                if self.remark.chars().count() > MAX_REMARK_CHARS {
+                    self.remark = self.remark.chars().take(MAX_REMARK_CHARS).collect();
+                }
+                self.remark_dirty = true;
+                self.title = display_name_with_remark(Some(self.remark.as_str()), || {
+                    self.default_title.clone()
+                });
+                sync_caret_blink(self, ctx);
+                self.persist_remark(ctx);
+                ctx.notify();
+            }
         }
+    }
+}
+
+impl CaretBlinkHost for ChatProfilePanelView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.remark_focused
     }
 }

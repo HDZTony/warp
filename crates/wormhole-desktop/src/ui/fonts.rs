@@ -24,6 +24,19 @@ const UI_FONT_CANDIDATES: &[&str] = &["Noto Sans CJK SC", "WenQuanYi Micro Hei",
 #[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
 const UI_FONT_CANDIDATES: &[&str] = &[];
 
+/// System color-emoji fonts for chat picker glyphs (OPPO Sans has no emoji coverage).
+#[cfg(windows)]
+const EMOJI_FONT_CANDIDATES: &[&str] = &["Segoe UI Emoji"];
+
+#[cfg(target_os = "macos")]
+const EMOJI_FONT_CANDIDATES: &[&str] = &["Apple Color Emoji"];
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const EMOJI_FONT_CANDIDATES: &[&str] = &["Noto Color Emoji", "Noto Emoji"];
+
+#[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
+const EMOJI_FONT_CANDIDATES: &[&str] = &[];
+
 fn load_first_system_font(cache: &mut FontCache, candidates: &[&str]) -> Option<FamilyId> {
     candidates
         .iter()
@@ -43,6 +56,25 @@ fn load_bundled_ui_font(cache: &mut FontCache) -> Option<FamilyId> {
     }
 }
 
+fn load_emoji_font_into_cache(cache: &mut FontCache) -> Option<FamilyId> {
+    for name in EMOJI_FONT_CANDIDATES {
+        if let Some(id) = cache.family_id_for_name(name) {
+            return Some(id);
+        }
+        match cache.load_system_font(name) {
+            Ok(id) => return Some(id),
+            Err(err) => {
+                tracing::debug!(%err, font = %name, "emoji font candidate unavailable");
+            }
+        }
+    }
+    tracing::warn!(
+        candidates = ?EMOJI_FONT_CANDIDATES,
+        "no system emoji font loaded; chat emoji picker may show missing glyphs"
+    );
+    None
+}
+
 /// Loads bundled and fallback fonts before any view constructs text.
 pub fn warm_up_font_cache(ctx: &mut warpui::AppContext) {
     FontCache::handle(ctx).update(ctx, |cache, _| {
@@ -52,6 +84,7 @@ pub fn warm_up_font_cache(ctx: &mut warpui::AppContext) {
             #[cfg(all(unix, not(target_os = "macos")))]
             tracing::warn!("bundled OPPO Sans missing; Linux dev uses default font family");
         }
+        let _ = load_emoji_font_into_cache(cache);
     });
 }
 
@@ -77,6 +110,19 @@ where
             })
         })
         .unwrap_or(FamilyId(0))
+}
+
+/// System color-emoji font for chat emoji picker cells.
+///
+/// Falls back to the UI font when no emoji family is available (glyphs may tofu).
+pub fn load_emoji_font<E>(ctx: &mut ViewContext<E>) -> FamilyId
+where
+    E: warpui::Entity + warpui::View,
+{
+    let ui = load_ui_font(ctx);
+    FontCache::handle(ctx)
+        .update(ctx, |cache, _| load_emoji_font_into_cache(cache))
+        .unwrap_or(ui)
 }
 
 pub fn load_mono_font<E>(ctx: &mut ViewContext<E>, fallback: FamilyId) -> FamilyId
@@ -109,6 +155,21 @@ mod tests {
             .expect("OPPO Sans TTF should parse");
         for ch in "盘设备聊天设置贴纸".chars() {
             assert!(face.glyph_index(ch).is_some(), "missing glyph for {ch}");
+        }
+    }
+
+    #[test]
+    fn emoji_font_candidates_are_non_empty_on_desktop_targets() {
+        #[cfg(any(
+            windows,
+            target_os = "macos",
+            all(unix, not(target_os = "macos"))
+        ))]
+        {
+            assert!(!EMOJI_FONT_CANDIDATES.is_empty());
+            for name in EMOJI_FONT_CANDIDATES {
+                assert!(!name.is_empty());
+            }
         }
     }
 }

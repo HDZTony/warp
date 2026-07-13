@@ -6,7 +6,7 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::keymap::Keystroke;
-use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{status_line, StatusTone};
@@ -18,18 +18,30 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::device_identity::device_bootstrap;
 use wormhole_desktop_core::{
-    cloud_auth_status, supabase_password_login, SupabasePasswordLoginParams,
+    cloud_auth_status, supabase_password_login, supabase_resend_signup, supabase_signup,
+    CloudAuthStatusDto, SupabasePasswordLoginParams, SupabaseResendSignupParams,
+    SupabaseSignupParams,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    Login,
+    Register,
+}
 
 #[derive(Debug, Clone)]
 pub enum LoginModalAction {
     Open,
     Close,
     Submit,
+    ResendConfirmation,
+    ToggleMode,
     EmailEdit(TextFieldEditAction),
     PasswordEdit(TextFieldEditAction),
+    ConfirmPasswordEdit(TextFieldEditAction),
     FocusEmail,
     FocusPassword,
+    FocusConfirmPassword,
 }
 
 #[derive(Debug, Clone)]
@@ -47,16 +59,21 @@ pub struct LoginModalView {
     core: CoreHandle,
     font: FamilyId,
     open: bool,
+    mode: AuthMode,
     email: String,
     password: String,
+    confirm_password: String,
     email_field: TextFieldState,
     password_field: TextFieldState,
+    confirm_password_field: TextFieldState,
     email_focused: bool,
     password_focused: bool,
+    confirm_password_focused: bool,
     caret_blink: CaretBlink,
     busy: bool,
     status: String,
     status_tone: StatusTone,
+    pending_confirmation: bool,
 }
 
 impl LoginModalView {
@@ -65,16 +82,21 @@ impl LoginModalView {
             core,
             font: crate::ui::fonts::load_ui_font(ctx),
             open: false,
+            mode: AuthMode::Login,
             email: String::new(),
             password: String::new(),
+            confirm_password: String::new(),
             email_field: TextFieldState::new(),
             password_field: TextFieldState::new(),
+            confirm_password_field: TextFieldState::new(),
             email_focused: true,
             password_focused: false,
+            confirm_password_focused: false,
             caret_blink: CaretBlink::new(),
             busy: false,
             status: String::new(),
             status_tone: StatusTone::Placeholder,
+            pending_confirmation: false,
         }
     }
 
@@ -84,9 +106,10 @@ impl LoginModalView {
 
     pub fn open(&mut self, ctx: &mut ViewContext<Self>) {
         self.open = true;
+        self.mode = AuthMode::Login;
         self.status.clear();
-        self.email_focused = true;
-        self.password_focused = false;
+        self.pending_confirmation = false;
+        self.focus_email_only();
         sync_caret_blink(self, ctx);
         ctx.emit(LoginModalEvent::OpenChanged { open: true });
         ctx.notify();
@@ -97,17 +120,50 @@ impl LoginModalView {
         self.busy = false;
         self.email_focused = false;
         self.password_focused = false;
+        self.confirm_password_focused = false;
         sync_caret_blink(self, ctx);
         ctx.emit(LoginModalEvent::OpenChanged { open: false });
         ctx.notify();
     }
 
+    fn focus_email_only(&mut self) {
+        self.email_focused = true;
+        self.password_focused = false;
+        self.confirm_password_focused = false;
+    }
+
+    fn focus_password_only(&mut self) {
+        self.email_focused = false;
+        self.password_focused = true;
+        self.confirm_password_focused = false;
+    }
+
+    fn focus_confirm_only(&mut self) {
+        self.email_focused = false;
+        self.password_focused = false;
+        self.confirm_password_focused = true;
+    }
+
     fn any_field_focused(&self) -> bool {
-        self.email_focused || self.password_focused
+        self.email_focused || self.password_focused || self.confirm_password_focused
     }
 
     fn sync_caret(&mut self, ctx: &mut ViewContext<Self>) {
         sync_caret_blink(self, ctx);
+    }
+
+    fn toggle_mode(&mut self, ctx: &mut ViewContext<Self>) {
+        self.mode = match self.mode {
+            AuthMode::Login => AuthMode::Register,
+            AuthMode::Register => AuthMode::Login,
+        };
+        self.status.clear();
+        self.pending_confirmation = false;
+        self.confirm_password.clear();
+        self.confirm_password_field = TextFieldState::new();
+        self.focus_email_only();
+        self.sync_caret(ctx);
+        ctx.notify();
     }
 
     fn consumes_shell_navigation(keystroke: &Keystroke) -> bool {
@@ -145,6 +201,15 @@ impl LoginModalView {
         }
     }
 
+    fn map_edit_action(edit_action: &LoginModalAction, action: TextFieldEditAction) -> LoginModalAction {
+        match edit_action {
+            LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
+            LoginModalAction::PasswordEdit(_) => LoginModalAction::PasswordEdit(action),
+            LoginModalAction::ConfirmPasswordEdit(_) => LoginModalAction::ConfirmPasswordEdit(action),
+            _ => LoginModalAction::EmailEdit(action),
+        }
+    }
+
     fn field_block(
         &self,
         label: &str,
@@ -177,11 +242,7 @@ impl LoginModalView {
         col.add_child(
             Container::new(wrap_text_field_focus_on_click(
                 TextFieldInput::builder(field, move |ctx, action| {
-                    ctx.dispatch_typed_action(match &edit_action {
-                        LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
-                        LoginModalAction::PasswordEdit(_) => LoginModalAction::PasswordEdit(action),
-                        _ => LoginModalAction::EmailEdit(action),
-                    });
+                    ctx.dispatch_typed_action(Self::map_edit_action(&edit_action, action));
                 })
                 .focused(focused)
                 .ime_preedit(!marked.is_empty())
@@ -241,21 +302,60 @@ impl LoginModalView {
         .finish()
     }
 
+    fn link_button(&self, label: &str, action: LoginModalAction) -> Box<dyn Element> {
+        EventHandler::new(
+            ui_text::body(label.to_string(), self.font)
+                .with_color(theme::accent())
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+    }
+
     fn dialog(&self) -> Box<dyn Element> {
+        let is_register = self.mode == AuthMode::Register;
+        let title = if is_register {
+            "注册 Wormhole"
+        } else {
+            "登录 Wormhole"
+        };
+        let description = if is_register {
+            "创建账号后绑定本机设备身份，即可使用 P2P 集群、聊天与同步。"
+        } else {
+            "登录后绑定本机设备身份，可使用 P2P 集群、聊天与同步。"
+        };
+        let submit_label = if self.busy {
+            if is_register {
+                "注册中…"
+            } else {
+                "登录中…"
+            }
+        } else if is_register {
+            "注册"
+        } else {
+            "登录"
+        };
+        let switch_prefix = if is_register {
+            "已有账号？"
+        } else {
+            "没有账号？"
+        };
+        let switch_label = if is_register { "登录" } else { "注册" };
+
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(
-            ui_text::title("登录 Wormhole", self.font)
+            ui_text::title(title, self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         col.add_child(
             Container::new(
-                ui_text::body(
-                    "登录后绑定本机设备身份，可使用 P2P 集群、聊天与同步。",
-                    self.font,
-                )
-                .with_color(theme::muted())
-                .finish(),
+                ui_text::body(description, self.font)
+                    .with_color(theme::muted())
+                    .finish(),
             )
             .with_vertical_margin(8.0)
             .finish(),
@@ -270,6 +370,11 @@ impl LoginModalView {
             LoginModalAction::FocusEmail,
             LoginModalAction::FocusPassword,
         ));
+        let password_tab = if is_register {
+            LoginModalAction::FocusConfirmPassword
+        } else {
+            LoginModalAction::FocusEmail
+        };
         col.add_child(self.field_block(
             "密码",
             &self.password,
@@ -278,8 +383,22 @@ impl LoginModalView {
             self.password_focused,
             LoginModalAction::PasswordEdit(TextFieldEditAction::TypedCharacters(String::new())),
             LoginModalAction::FocusPassword,
-            LoginModalAction::FocusEmail,
+            password_tab,
         ));
+        if is_register {
+            col.add_child(self.field_block(
+                "确认密码",
+                &self.confirm_password,
+                &self.confirm_password_field.marked_text,
+                "••••••••",
+                self.confirm_password_focused,
+                LoginModalAction::ConfirmPasswordEdit(TextFieldEditAction::TypedCharacters(
+                    String::new(),
+                )),
+                LoginModalAction::FocusConfirmPassword,
+                LoginModalAction::FocusEmail,
+            ));
+        }
 
         if !self.status.is_empty() {
             col.add_child(status_line(
@@ -287,6 +406,21 @@ impl LoginModalView {
                 self.font,
                 self.status_tone,
             ));
+        }
+
+        if self.pending_confirmation {
+            col.add_child(
+                Container::new(self.link_button(
+                    if self.busy {
+                        "发送中…"
+                    } else {
+                        "重新发送确认邮件"
+                    },
+                    LoginModalAction::ResendConfirmation,
+                ))
+                .with_vertical_margin(8.0)
+                .finish(),
+            );
         }
 
         let mut actions = Flex::row()
@@ -299,16 +433,27 @@ impl LoginModalView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
-        actions.add_child(self.action_button(
-            if self.busy { "登录中…" } else { "登录" },
-            LoginModalAction::Submit,
-            true,
-        ));
+        actions.add_child(self.action_button(submit_label, LoginModalAction::Submit, true));
         col.add_child(
             Container::new(actions.finish())
                 .with_vertical_margin(14.0)
                 .finish(),
         );
+
+        let mut switch_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::Center);
+        switch_row.add_child(
+            ui_text::body(switch_prefix, self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        switch_row.add_child(
+            Container::new(self.link_button(switch_label, LoginModalAction::ToggleMode))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        col.add_child(switch_row.finish());
 
         let panel = EventHandler::new(
             Container::new(ConstrainedBox::new(col.finish()).with_width(400.0).finish())
@@ -333,6 +478,20 @@ impl LoginModalView {
             .finish()
     }
 
+    fn finish_authenticated(
+        view: &mut Self,
+        status: CloudAuthStatusDto,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        view.status.clear();
+        view.pending_confirmation = false;
+        view.close(ctx);
+        ctx.emit(LoginModalEvent::AuthChanged {
+            authenticated: status.authenticated,
+            device_id: status.device_id,
+        });
+    }
+
     fn submit(&mut self, ctx: &mut ViewContext<Self>) {
         let email = self.email.trim().to_string();
         let password = self.password.clone();
@@ -342,7 +501,28 @@ impl LoginModalView {
             ctx.notify();
             return;
         }
+        if self.mode == AuthMode::Register {
+            if password.len() < 6 {
+                self.status = "密码至少 6 位。".into();
+                self.status_tone = StatusTone::Danger;
+                ctx.notify();
+                return;
+            }
+            if password != self.confirm_password {
+                self.status = "两次输入的密码不一致。".into();
+                self.status_tone = StatusTone::Danger;
+                ctx.notify();
+                return;
+            }
+            self.submit_register(ctx, email, password);
+            return;
+        }
+        self.submit_login(ctx, email, password);
+    }
+
+    fn submit_login(&mut self, ctx: &mut ViewContext<Self>, email: String, password: String) {
         self.busy = true;
+        self.pending_confirmation = false;
         self.status = "正在登录…".into();
         self.status_tone = StatusTone::Placeholder;
         ctx.notify();
@@ -363,13 +543,105 @@ impl LoginModalView {
             |view, output, ctx| {
                 view.busy = false;
                 match output {
-                    Ok(status) => {
-                        view.status.clear();
-                        view.close(ctx);
-                        ctx.emit(LoginModalEvent::AuthChanged {
-                            authenticated: status.authenticated,
-                            device_id: status.device_id,
-                        });
+                    Ok(status) => Self::finish_authenticated(view, status, ctx),
+                    Err(err) => {
+                        view.status = err.clone();
+                        view.status_tone = StatusTone::Danger;
+                        if err.contains("邮箱尚未验证") {
+                            view.pending_confirmation = true;
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn submit_register(&mut self, ctx: &mut ViewContext<Self>, email: String, password: String) {
+        self.busy = true;
+        self.pending_confirmation = false;
+        self.status = "正在注册…".into();
+        self.status_tone = StatusTone::Placeholder;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let result = supabase_signup(
+                    &state,
+                    SupabaseSignupParams {
+                        email,
+                        password,
+                        email_redirect_to: None,
+                    },
+                )
+                .await?;
+                if result.pending_confirmation {
+                    return Ok(Err(result));
+                }
+                let bootstrap = device_bootstrap(&state)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if !bootstrap.ready {
+                    return Err(bootstrap.error.unwrap_or_else(|| "设备身份恢复失败".into()));
+                }
+                let status = result
+                    .auth
+                    .ok_or_else(|| "注册成功但未返回会话，请尝试登录。".to_string())?;
+                Ok(Ok(status))
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(Ok(status)) => Self::finish_authenticated(view, status, ctx),
+                    Ok(Err(pending)) => {
+                        view.pending_confirmation = true;
+                        view.status = "注册成功，请查收验证邮件。".into();
+                        view.status_tone = StatusTone::Success;
+                        if let Some(email) = pending.email {
+                            view.email = email;
+                        }
+                    }
+                    Err(err) => {
+                        view.status = err;
+                        view.status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn resend_confirmation(&mut self, ctx: &mut ViewContext<Self>) {
+        let email = self.email.trim().to_string();
+        if email.is_empty() {
+            self.status = "请输入邮箱。".into();
+            self.status_tone = StatusTone::Danger;
+            ctx.notify();
+            return;
+        }
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = "正在发送确认邮件…".into();
+        self.status_tone = StatusTone::Placeholder;
+        ctx.notify();
+        ctx.spawn(
+            async move {
+                supabase_resend_signup(SupabaseResendSignupParams {
+                    email,
+                    email_redirect_to: None,
+                })
+                .await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(_) => {
+                        view.pending_confirmation = true;
+                        view.status = "确认邮件已发送，请查收。".into();
+                        view.status_tone = StatusTone::Success;
                     }
                     Err(err) => {
                         view.status = err;
@@ -419,29 +691,39 @@ impl TypedActionView for LoginModalView {
             LoginModalAction::Open => self.open(ctx),
             LoginModalAction::Close => self.close(ctx),
             LoginModalAction::Submit => self.submit(ctx),
+            LoginModalAction::ResendConfirmation => self.resend_confirmation(ctx),
+            LoginModalAction::ToggleMode => self.toggle_mode(ctx),
             LoginModalAction::FocusEmail => {
-                self.email_focused = true;
-                self.password_focused = false;
+                self.focus_email_only();
                 self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::FocusPassword => {
-                self.email_focused = false;
-                self.password_focused = true;
+                self.focus_password_only();
+                self.sync_caret(ctx);
+                ctx.notify();
+            }
+            LoginModalAction::FocusConfirmPassword => {
+                self.focus_confirm_only();
                 self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::EmailEdit(edit) => {
                 self.email_field.apply(&mut self.email, edit);
-                self.email_focused = true;
-                self.password_focused = false;
+                self.focus_email_only();
                 self.sync_caret(ctx);
                 ctx.notify();
             }
             LoginModalAction::PasswordEdit(edit) => {
                 self.password_field.apply(&mut self.password, edit);
-                self.email_focused = false;
-                self.password_focused = true;
+                self.focus_password_only();
+                self.sync_caret(ctx);
+                ctx.notify();
+            }
+            LoginModalAction::ConfirmPasswordEdit(edit) => {
+                self.confirm_password_field
+                    .apply(&mut self.confirm_password, edit);
+                self.focus_confirm_only();
                 self.sync_caret(ctx);
                 ctx.notify();
             }

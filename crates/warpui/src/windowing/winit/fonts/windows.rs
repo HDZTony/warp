@@ -44,6 +44,9 @@ fn fallback_locale() -> &'static str {
 /// validation of these fonts (i.e. to check if the font contains english characters).
 const SYMBOL_ICON_FONTS: &[&str] = &["Segoe Fluent Icons", "Segoe MDL2 Assets"];
 
+/// Color emoji fonts typically lack a Latin 'm' glyph; skip English-charset validation.
+const EMOJI_FONTS: &[&str] = &["Segoe UI Emoji"];
+
 pub(crate) mod loader {
     use super::*;
     use crate::fonts::FontInfo;
@@ -123,11 +126,12 @@ pub(crate) mod loader {
         let source = font_kit::source::SystemSource::new();
         let family = source.select_family_by_name(font_family)?;
 
-        let validate_supports_en = if SYMBOL_ICON_FONTS.contains(&font_family) {
-            ValidateFontSupportsEn::No
-        } else {
-            ValidateFontSupportsEn::Yes
-        };
+        let validate_supports_en =
+            if SYMBOL_ICON_FONTS.contains(&font_family) || EMOJI_FONTS.contains(&font_family) {
+                ValidateFontSupportsEn::No
+            } else {
+                ValidateFontSupportsEn::Yes
+            };
 
         Ok(FontFamily {
             name: font_family.to_string(),

@@ -36,6 +36,7 @@ pub struct ChatThreadView {
     font: FamilyId,
     loaded_for: Option<String>,
     last_message_tick: u64,
+    last_selection_tick: u64,
     last_search_query: String,
     local_endpoint: Option<String>,
     messages: Vec<ChatMessageDto>,
@@ -122,6 +123,7 @@ impl ChatThreadView {
             font,
             loaded_for: None,
             last_message_tick: 0,
+            last_selection_tick: 0,
             last_search_query: String::new(),
             local_endpoint: None,
             messages: Vec::new(),
@@ -151,20 +153,26 @@ impl ChatThreadView {
 
     fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let current = self.selection.lock().ok().and_then(|g| g.clone());
-        let message_tick = self
+        let (message_tick, selection_tick) = self
             .shell_state
             .lock()
-            .map(|state| state.message_tick)
-            .unwrap_or(0);
+            .map(|state| (state.message_tick, state.selection_tick))
+            .unwrap_or((0, 0));
         let query = self.search_query();
         let search_changed = query != self.last_search_query;
         let selection_changed = current != self.loaded_for;
         let tick_changed = message_tick != self.last_message_tick;
+        let pending_changed = selection_tick != self.last_selection_tick;
         if search_changed && !self.messages.is_empty() {
             self.last_search_query = query;
             self.rebuild_bubbles(ctx);
             ctx.notify();
             return;
+        }
+        if pending_changed {
+            self.last_selection_tick = selection_tick;
+            self.update_hint_bubble(ctx);
+            ctx.notify();
         }
         if !selection_changed && !tick_changed {
             return;
@@ -244,6 +252,14 @@ impl ChatThreadView {
     }
 
     fn hint_text(&self) -> String {
+        let pending_open = self
+            .shell_state
+            .lock()
+            .map(|state| state.pending_open.is_some())
+            .unwrap_or(false);
+        if pending_open {
+            return "正在打开会话…".into();
+        }
         if self.loaded_for.is_none() {
             return "选择左侧终端开始聊天".into();
         }

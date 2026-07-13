@@ -51,6 +51,9 @@ mod loader {
     // is extremely inefficient. Thus, for system fonts, we load these fonts by reference
     // through CTFontDescriptorCreateWithAttributes function and create a dummy font-kit
     // Font interface to access its functions.
+    /// Color emoji fonts typically lack a Latin 'm' glyph; skip that check for these families.
+    const EMOJI_FONTS: &[&str] = &["Apple Color Emoji"];
+
     pub fn load_system_font(font_family: &str) -> Result<FontFamily> {
         let Some(descriptors) = FontDB::descriptors_for_family(font_family) else {
             bail!(
@@ -58,6 +61,7 @@ mod loader {
                 font_family
             );
         };
+        let skip_m_glyph = EMOJI_FONTS.contains(&font_family);
         let mut fonts = Vec::with_capacity(descriptors.len() as usize);
         for fontdesc in descriptors.into_iter() {
             // The font size here does not affect our rendering. In CTFont, pt_size
@@ -67,9 +71,11 @@ mod loader {
             // 16.0 here as it is consistent with https://docs.rs/core-text/19.2.0/src/core_text/font.rs.html#130
             let font = Font::from_ct_font(font::new_from_descriptor(&fontdesc, DEFAULT_FONT_SIZE));
 
-            let glyph_id = font.glyph_for_char('m');
-            if glyph_id.is_none() {
-                return Err(anyhow!("font must contain a glyph for the 'm' character"));
+            if !skip_m_glyph {
+                let glyph_id = font.glyph_for_char('m');
+                if glyph_id.is_none() {
+                    return Err(anyhow!("font must contain a glyph for the 'm' character"));
+                }
             }
 
             fonts.push(font);

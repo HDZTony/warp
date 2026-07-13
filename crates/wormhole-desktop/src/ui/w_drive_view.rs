@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use warpui::elements::{Container, Flex, ParentElement};
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
@@ -12,7 +10,8 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::commands::{list_files, vault_status};
 
-pub struct WDriveView {
+/// Vault / shared-files overview (legacy tab id `w_drive`).
+pub struct SharedVaultView {
     core: CoreHandle,
     font: FamilyId,
     gate: DeviceGateStatus,
@@ -20,7 +19,7 @@ pub struct WDriveView {
     files: Vec<String>,
 }
 
-impl WDriveView {
+impl SharedVaultView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mut view = Self {
@@ -87,7 +86,7 @@ impl WDriveView {
 
     fn drive_body(&self) -> Box<dyn Element> {
         let mut col = Flex::column();
-        col.add_child(ui_text::title("W 盘 / Vault", self.font).finish());
+        col.add_child(ui_text::title("共享 / Vault", self.font).finish());
         col.add_child(ui_text::body(self.status.clone(), self.font).finish());
         for line in &self.files {
             col.add_child(ui_text::mono(line.clone(), self.font).finish());
@@ -102,16 +101,16 @@ impl WDriveView {
     }
 }
 
-impl Entity for WDriveView {
+impl Entity for SharedVaultView {
     type Event = ();
 }
 
-impl View for WDriveView {
+impl View for SharedVaultView {
     fn ui_name() -> &'static str {
-        "WDriveView"
+        "SharedVaultView"
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        wrap_with_device_gate(self.font, "W 盘 / Vault", &self.gate, self.drive_body())
+        wrap_with_device_gate(self.font, "共享 / Vault", &self.gate, self.drive_body())
     }
 }

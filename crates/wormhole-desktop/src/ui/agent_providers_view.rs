@@ -4,14 +4,9 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
-use wormhole_desktop_core::agent_deeplink::DeepLinkImportPreviewDto;
 use wormhole_desktop_core::agent_provider_commands;
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
 
-use crate::ui::codex_provider_import_model::{
-    close_preview, open_preview, set_importing, set_message, snapshot_importing, snapshot_message,
-    snapshot_preview, SharedCodexProviderImportModel,
-};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
@@ -25,15 +20,11 @@ pub enum AgentProvidersAction {
     Activate(String),
     Delete(String),
     QueryUsage(String),
-    ConfirmImport,
-    CancelImport,
-    ParseClipboard,
 }
 
 pub struct AgentProvidersView {
     core: CoreHandle,
     font: FamilyId,
-    import_model: SharedCodexProviderImportModel,
     providers: Vec<AgentProviderSummaryDto>,
     active_provider_id: Option<String>,
     llm_summary: String,
@@ -41,16 +32,11 @@ pub struct AgentProvidersView {
 }
 
 impl AgentProvidersView {
-    pub fn new(
-        ctx: &mut ViewContext<Self>,
-        core: CoreHandle,
-        import_model: SharedCodexProviderImportModel,
-    ) -> Self {
+    pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mut view = Self {
             core,
             font,
-            import_model,
             providers: Vec::new(),
             active_provider_id: None,
             llm_summary: "加载 Codex 上游…".into(),
@@ -58,25 +44,6 @@ impl AgentProvidersView {
         };
         view.refresh(ctx);
         view
-    }
-
-    pub fn open_deeplink_url(&mut self, url: String, ctx: &mut ViewContext<Self>) {
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                wormhole_desktop_core::agent_provider_commands::parse_agent_deeplink(url).await
-            },
-            |view, output, ctx| {
-                match output {
-                    Ok(preview) => {
-                        open_preview(&view.import_model, preview);
-                        view.status = "已解析供应商链接，请确认导入".into();
-                    }
-                    Err(err) => view.status = err,
-                }
-                ctx.notify();
-            },
-        );
     }
 
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
@@ -101,29 +68,6 @@ impl AgentProvidersView {
                     ),
                     Err(err) => format!("LLM 配置错误: {err}"),
                 };
-                ctx.notify();
-            },
-        );
-    }
-
-    fn confirm_import(&mut self, preview: DeepLinkImportPreviewDto, ctx: &mut ViewContext<Self>) {
-        set_importing(&self.import_model, true);
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                agent_provider_commands::import_agent_provider(&state, preview.request).await
-            },
-            move |view, output, ctx| {
-                set_importing(&view.import_model, false);
-                match output {
-                    Ok(result) => {
-                        close_preview(&view.import_model);
-                        view.status = format!("已导入供应商 {}", result.provider_id);
-                        view.refresh(ctx);
-                    }
-                    Err(err) => set_message(&view.import_model, err),
-                }
                 ctx.notify();
             },
         );
@@ -180,19 +124,6 @@ impl AgentProvidersView {
         );
     }
 
-    fn parse_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
-        let text = read_clipboard_text().unwrap_or_default();
-        let url = text
-            .lines()
-            .map(str::trim)
-            .find(|line| line.starts_with("ccswitch://"))
-            .map(str::to_string);
-        match url {
-            Some(url) => self.open_deeplink_url(url, ctx),
-            None => self.status = "剪贴板中未找到 ccswitch:// 链接".into(),
-        }
-    }
-
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
         Container::new(
@@ -213,77 +144,6 @@ impl AgentProvidersView {
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
     }
-
-    fn import_card(&self, preview: &DeepLinkImportPreviewDto) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(ui_text::title("确认导入 Codex 供应商", self.font).finish());
-        col.add_child(
-            ui_text::body(
-                "请核对信息。导入后可在列表中点击「查询用量」执行 CC Switch 同款脚本。",
-                self.font,
-            )
-            .with_color(theme::muted())
-            .finish(),
-        );
-        for (label, value) in [
-            ("应用", preview.app.as_str()),
-            ("名称", preview.name.as_str()),
-            ("官网", preview.homepage.as_str()),
-            ("端点", preview.endpoint.as_str()),
-            (
-                "API Key",
-                preview.api_key_masked.as_deref().unwrap_or("****"),
-            ),
-            ("模型", preview.model.as_str()),
-        ] {
-            col.add_child(
-                ui_text::mono(format!("{label}: {value}"), self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            );
-        }
-        let usage = if preview.usage_enabled {
-            match preview.usage_auto_interval {
-                Some(minutes) => format!("用量查询：已启用 · 每 {minutes} 分钟"),
-                None => "用量查询：已启用".into(),
-            }
-        } else {
-            "用量查询：未启用".into()
-        };
-        col.add_child(ui_text::body(usage, self.font).finish());
-        col.add_child(
-            ui_text::body(
-                if preview.enabled {
-                    "导入后启用：是（enabled=true）"
-                } else {
-                    "导入后启用：否"
-                },
-                self.font,
-            )
-            .finish(),
-        );
-        if !snapshot_message(&self.import_model).is_empty() {
-            col.add_child(
-                ui_text::body(snapshot_message(&self.import_model), self.font)
-                    .with_color(theme::danger())
-                    .finish(),
-            );
-        }
-        let importing = snapshot_importing(&self.import_model);
-        let mut actions = Flex::row();
-        actions.add_child(self.action_button(
-            if importing { "导入中…" } else { "导入" },
-            AgentProvidersAction::ConfirmImport,
-        ));
-        actions.add_child(self.action_button("取消", AgentProvidersAction::CancelImport));
-        col.add_child(actions.finish());
-        Container::new(col.finish())
-            .with_uniform_padding(12.0)
-            .with_background(theme::accent_bg(18))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
-            .with_border(Border::all(1.0).with_border_fill(theme::accent()))
-            .finish()
-    }
 }
 
 impl Entity for AgentProvidersView {
@@ -298,12 +158,10 @@ impl View for AgentProvidersView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("Codex 供应商", self.font));
-        col.add_child(
-            section_hint(
-                "兼容 CC Switch 的 ccswitch:// 深度链接。若系统默认处理程序不是 Wormhole，可从剪贴板导入。",
-                self.font,
-            ),
-        );
+        col.add_child(section_hint(
+            "登录后使用 control plane Key Pool（control_plane）。不拦截 ccswitch://；CC Switch 桌面程序可独立使用。",
+            self.font,
+        ));
         col.add_child(status_line(
             self.llm_summary.clone(),
             self.font,
@@ -312,12 +170,7 @@ impl View for AgentProvidersView {
 
         let mut toolbar = Flex::row();
         toolbar.add_child(self.action_button("刷新", AgentProvidersAction::Refresh));
-        toolbar.add_child(self.action_button("从剪贴板导入", AgentProvidersAction::ParseClipboard));
         col.add_child(toolbar.finish());
-
-        if let Some(preview) = snapshot_preview(&self.import_model) {
-            col.add_child(self.import_card(&preview));
-        }
 
         if !self.status.is_empty() {
             let tone = if self.status.contains("错误")
@@ -333,10 +186,10 @@ impl View for AgentProvidersView {
             col.add_child(status_line(self.status.clone(), self.font, tone));
         }
 
-        col.add_child(section_title("已导入供应商", self.font));
+        col.add_child(section_title("供应商列表", self.font));
         if self.providers.is_empty() {
             col.add_child(status_line(
-                "暂无自定义供应商。使用「从剪贴板导入」或打开 ccswitch:// 链接添加。",
+                "暂无供应商记录。登录后将自动启用远端 Key Pool。",
                 self.font,
                 StatusTone::Placeholder,
             ));
@@ -425,60 +278,6 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::Activate(id) => self.activate(id.clone(), ctx),
             AgentProvidersAction::Delete(id) => self.delete(id.clone(), ctx),
             AgentProvidersAction::QueryUsage(id) => self.query_usage(id.clone(), ctx),
-            AgentProvidersAction::ParseClipboard => self.parse_clipboard(ctx),
-            AgentProvidersAction::CancelImport => {
-                close_preview(&self.import_model);
-                ctx.notify();
-            }
-            AgentProvidersAction::ConfirmImport => {
-                if let Some(preview) = snapshot_preview(&self.import_model) {
-                    self.confirm_import(preview, ctx);
-                }
-            }
         }
     }
-}
-
-#[cfg(windows)]
-fn read_clipboard_text() -> Option<String> {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    };
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
-
-    unsafe {
-        if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
-            return None;
-        }
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return None;
-        }
-        let handle = GetClipboardData(CF_UNICODETEXT as u32);
-        if handle.is_null() {
-            CloseClipboard();
-            return None;
-        }
-        let ptr = GlobalLock(handle) as *const u16;
-        if ptr.is_null() {
-            CloseClipboard();
-            return None;
-        }
-        let mut len = 0usize;
-        while *ptr.add(len) != 0 {
-            len += 1;
-        }
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let text = OsString::from_wide(slice).to_string_lossy().into_owned();
-        GlobalUnlock(handle);
-        CloseClipboard();
-        Some(text)
-    }
-}
-
-#[cfg(not(windows))]
-fn read_clipboard_text() -> Option<String> {
-    None
 }

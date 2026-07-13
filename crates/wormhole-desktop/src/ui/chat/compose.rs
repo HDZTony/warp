@@ -1,9 +1,10 @@
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
     DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize,
-    ParentElement, Radius, Stack,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -13,13 +14,12 @@ use crate::ui::chat::attach_panel::{
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingAttachment, SharedChatShellState};
-use crate::ui::chat::sticker_picker::StickerPickerView;
+use crate::ui::chat::sticker_picker::{StickerPickerEvent, StickerPickerView};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
 use crate::ui::panel_primitives::{
-    popover_icon_option, popover_menu_header, popover_shell, status_line, StatusTone,
-    POPOVER_ICON_SIZE,
+    popover_icon_label_option, popover_shell_with_radius, status_line, StatusTone,
 };
 use crate::ui::text_field_input::{
     compose_input_height, render_compose_field_with_caret, sync_caret_blink, CaretBlink,
@@ -30,9 +30,11 @@ use wormhole_desktop_core::chat_commands::{
     chat_send_message, SendChatAttachmentDto, SendChatMessageParams,
 };
 
-const TG_COMPOSE_GAP: f32 = 6.0;
-const ATTACH_POPOVER_WIDTH: f32 = 280.0;
-const ATTACH_ICON_GLYPH: f32 = 17.0;
+const TG_COMPOSE_GAP: f32 = 8.0;
+const ATTACH_POPOVER_WIDTH: f32 = 196.0;
+const ATTACH_POPOVER_RADIUS: f32 = 12.0;
+const ATTACH_ICON_SIZE: f32 = 36.0;
+const ATTACH_ICON_GLYPH: f32 = 18.0;
 
 #[derive(Debug, Clone)]
 pub enum ChatComposeAction {
@@ -71,7 +73,17 @@ impl ChatComposeView {
         shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let sticker_picker = ctx.add_view(|ctx| StickerPickerView::new(ctx, core.clone()));
+        let sticker_picker = ctx.add_typed_action_view(StickerPickerView::new);
+        ctx.subscribe_to_view(&sticker_picker, |view, _, event, ctx| {
+            let StickerPickerEvent::InsertEmoji(emoji) = event;
+            view.field_state.apply(
+                &mut view.draft,
+                &TextFieldEditAction::TypedCharacters(emoji.clone()),
+            );
+            view.input_focused = true;
+            sync_caret_blink(view, ctx);
+            ctx.notify();
+        });
         Self {
             core,
             selection,
@@ -349,59 +361,41 @@ impl ChatComposeView {
                     .with_child(icons::icon(kind.icon_path(), ATTACH_ICON_GLYPH, icon_tint))
                     .finish(),
             )
-            .with_width(POPOVER_ICON_SIZE)
-            .with_height(POPOVER_ICON_SIZE)
+            .with_width(ATTACH_ICON_SIZE)
+            .with_height(ATTACH_ICON_SIZE)
             .finish(),
         )
         .with_background(icon_bg)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(POPOVER_ICON_SIZE / 2.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ATTACH_ICON_SIZE / 2.0)))
         .finish()
     }
 
     fn attach_panel(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(popover_menu_header(self.font, "附件"));
         for kind in [
             AttachKind::Media,
             AttachKind::Document,
             AttachKind::Location,
         ] {
-            col.add_child(popover_icon_option(
+            col.add_child(popover_icon_label_option(
                 self.font,
                 self.attach_kind_icon(kind),
                 kind.label(),
-                kind.desc(),
                 move |ctx, _, _| {
                     ctx.dispatch_typed_action(ChatComposeAction::PickAttachment(kind));
                     DispatchEventResult::StopPropagation
                 },
             ));
         }
-        popover_shell(ATTACH_POPOVER_WIDTH, col.finish())
+        popover_shell_with_radius(ATTACH_POPOVER_WIDTH, ATTACH_POPOVER_RADIUS, col.finish())
     }
 
     fn attach_button(&self) -> Box<dyn Element> {
-        let btn = Self::compose_plain_btn(
+        Self::compose_plain_btn(
             "chat-compose-attach.svg",
             theme::muted(),
             ChatComposeAction::ToggleAttachPanel,
-        );
-        if !self.attach_open {
-            return btn;
-        }
-
-        let mut stack = Stack::new();
-        stack.add_child(btn);
-        stack.add_child(
-            Align::new(
-                Container::new(self.attach_panel())
-                    .with_margin_bottom(CHAT_COMPOSE_BTN + 8.0)
-                    .finish(),
-            )
-            .bottom_left()
-            .finish(),
-        );
-        stack.finish()
+        )
     }
 
     fn input_pill(&self, input_height: f32) -> Box<dyn Element> {
@@ -575,18 +569,31 @@ impl View for ChatComposeView {
             .finish();
 
         if self.sticker_open || self.attach_open {
+            // Positioned overlays do not contribute to Stack size — input bar stays put.
             let mut stack = Stack::new();
             stack.add_child(compose_body);
+            if self.attach_open {
+                // Align to attach button (compose left).
+                stack.add_positioned_overlay_child(
+                    self.attach_panel(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(12.0, -8.0),
+                        ParentOffsetBounds::Unbounded,
+                        ParentAnchor::TopLeft,
+                        ChildAnchor::BottomLeft,
+                    ),
+                );
+            }
             if self.sticker_open {
-                stack.add_child(
-                    Align::new(
-                        Container::new(ChildView::new(&self.sticker_picker).finish())
-                            .with_margin_left(12.0)
-                            .with_margin_bottom(56.0)
-                            .finish(),
-                    )
-                    .bottom_left()
-                    .finish(),
+                // Align to emoji button (compose right), matching `.tg-compose-emoji-panel`.
+                stack.add_positioned_overlay_child(
+                    ChildView::new(&self.sticker_picker).finish(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(-12.0, -8.0),
+                        ParentOffsetBounds::Unbounded,
+                        ParentAnchor::TopRight,
+                        ChildAnchor::BottomRight,
+                    ),
                 );
             }
             stack.finish()

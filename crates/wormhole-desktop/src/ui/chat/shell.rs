@@ -148,6 +148,15 @@ impl ChatShellView {
         load_device_gate(core, ctx, apply);
     }
 
+    /// Switch-in entry from Devices Tab 「发信息」.
+    pub fn open_chat_for_cluster_node(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        let sidebar = self.sidebar.clone();
+        ctx.update_view(&sidebar, |sidebar, ctx| {
+            sidebar.open_chat_for_cluster_node(node_id, ctx);
+        });
+        ctx.notify();
+    }
+
     fn overlay_open(&self) -> bool {
         self.shell_state
             .lock()

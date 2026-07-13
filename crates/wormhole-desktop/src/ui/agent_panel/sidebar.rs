@@ -208,7 +208,6 @@ pub fn save_projects_state(
 
 const SIDEBAR_ICON_BTN: f32 = 26.0;
 const PROJECT_HEAD_ICON_BTN: f32 = 24.0;
-const PROJECT_NEW_CHAT_ICON: f32 = 13.0;
 
 fn agent_sidebar_icon_btn(
     hover_key: &'static str,
@@ -602,80 +601,77 @@ fn row_with_delete(
         .finish()
 }
 
-fn project_new_chat_row(
+fn project_row_more_btn(
     font: FamilyId,
-    project_id: &str,
+    hover_key: String,
     sidebar_hover: Option<&str>,
+    project_id: String,
+    menu_open: bool,
 ) -> Box<dyn Element> {
-    let hover_key = format!("project-new-chat:{project_id}");
     let hovered = sidebar_hover == Some(hover_key.as_str());
     let icon_color = if hovered {
         theme::accent_cool()
     } else {
         theme::muted()
     };
-    let text_color = icon_color;
-    let mut row_container = Container::new(
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                Container::new(icons::icon(
-                    "agent-plus.svg",
-                    PROJECT_NEW_CHAT_ICON,
-                    icon_color,
-                ))
-                .with_margin_right(6.0)
-                .finish(),
-            )
-            .with_child(
-                ui_text::mono("新建对话".to_string(), font)
-                    .with_color(text_color)
+    let mut container = Container::new(
+        ConstrainedBox::new(
+            Align::new(icons::icon(
+                "agent-more.svg",
+                icons::AGENT_ICON_SIZE,
+                icon_color,
+            ))
+            .finish(),
+        )
+        .with_width(PROJECT_HEAD_ICON_BTN)
+        .with_height(PROJECT_HEAD_ICON_BTN)
+        .finish(),
+    )
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+        AGENT_ICON_BTN_RADIUS,
+    )));
+    if hovered {
+        container = container.with_background(theme::accent_cool_bg(20));
+    }
+    let hover_key_in = hover_key.clone();
+    let hover_key_out = hover_key;
+    let open_id = project_id.clone();
+    let btn = EventHandler::new(container.finish())
+        .on_mouse_in(
+            move |ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
+                    hover_key_in.clone(),
+                )));
+                DispatchEventResult::PropagateToParent
+            },
+            None,
+        )
+        .on_mouse_out(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(
+                hover_key_out.clone(),
+            ));
+            DispatchEventResult::PropagateToParent
+        })
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::OpenProjectRowMenu(open_id.clone()));
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+
+    let mut stack = Stack::new();
+    stack.add_child(btn);
+    if menu_open {
+        stack.add_child(
+            Align::new(
+                Container::new(project_row_menu_panel(font, &project_id))
+                    .with_margin_top(PROJECT_HEAD_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP)
                     .finish(),
             )
+            .top_left()
             .finish(),
-    )
-    .with_padding_left(10.0)
-    .with_padding_right(10.0)
-    .with_padding_top(5.0)
-    .with_padding_bottom(5.0)
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)));
-    if hovered {
-        row_container = row_container.with_background(theme::accent_cool_bg(20));
+        );
     }
-    let new_thread_id = project_id.to_string();
-    let hover_key_in = hover_key.clone();
-    Container::new(
-        EventHandler::new(row_container.finish())
-            .on_mouse_in(
-                move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
-                        hover_key_in.clone(),
-                    )));
-                    DispatchEventResult::PropagateToParent
-                },
-                None,
-            )
-            .on_mouse_out({
-                let hover_key_out = hover_key.clone();
-                move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(
-                        hover_key_out.clone(),
-                    ));
-                    DispatchEventResult::PropagateToParent
-                }
-            })
-            .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AgentPanelAction::NewProjectThread(
-                    new_thread_id.clone(),
-                ));
-                DispatchEventResult::StopPropagation
-            })
-            .finish(),
-    )
-    .with_padding_left(28.0)
-    .with_margin_top(2.0)
-    .with_margin_bottom(4.0)
-    .finish()
+    stack.finish()
 }
 
 fn project_tree_block(
@@ -687,11 +683,10 @@ fn project_tree_block(
     expanded: bool,
     search: &str,
     archived_ids: &HashSet<String>,
-    can_delete_project: bool,
+    project_row_menu: Option<&str>,
     sidebar_hover: Option<&str>,
     project_head_hover: Option<&str>,
 ) -> Box<dyn Element> {
-    let project_id = project.id.clone();
     let chats = project_threads(&project.id, sessions, archived_ids, search);
     let force_expanded = expanded || (!search.trim().is_empty() && !chats.is_empty());
     let head_selected = project.id == active_project_id;
@@ -766,26 +761,26 @@ fn project_tree_block(
     })
     .finish();
 
-    let menu_id = project.id.clone();
-    let rename_id = project.id.clone();
-    let show_head_actions = head_selected || project_head_hover == Some(project.id.as_str());
+    let new_thread_id = project.id.clone();
+    let menu_open = project_row_menu == Some(project.id.as_str());
+    let show_head_actions =
+        head_selected || project_head_hover == Some(project.id.as_str()) || menu_open;
     let menu_hover_key = format!("project-menu:{}", project.id);
-    let rename_hover_key = format!("project-rename:{}", project.id);
+    let new_thread_hover_key = format!("project-new-thread:{}", project.id);
     let head_actions = if show_head_actions {
         Align::new(
             Flex::row()
-                .with_child(agent_sidebar_icon_btn_dynamic(
+                .with_child(project_row_more_btn(
+                    font,
                     menu_hover_key,
                     sidebar_hover,
-                    AgentPanelAction::OpenProjectRowMenu(menu_id),
-                    "agent-more.svg",
-                    PROJECT_HEAD_ICON_BTN,
-                    icons::AGENT_ICON_SIZE,
+                    project.id.clone(),
+                    menu_open,
                 ))
                 .with_child(agent_sidebar_icon_btn_dynamic(
-                    rename_hover_key,
+                    new_thread_hover_key,
                     sidebar_hover,
-                    AgentPanelAction::RenameProject(rename_id),
+                    AgentPanelAction::NewProjectThread(new_thread_id),
                     "agent-edit.svg",
                     PROJECT_HEAD_ICON_BTN,
                     icons::AGENT_ICON_SIZE,
@@ -867,12 +862,8 @@ fn project_tree_block(
                 );
             }
         }
-
-        let new_thread_id = project_id.clone();
-        children_col.add_child(project_new_chat_row(font, &new_thread_id, sidebar_hover));
     }
 
-    let _ = can_delete_project;
     Flex::column()
         .with_child(Container::new(head).with_horizontal_padding(2.0).finish())
         .with_child(children_col.finish())
@@ -883,10 +874,13 @@ fn sidebar_menu_item(
     font: FamilyId,
     label: &str,
     disabled: bool,
+    danger: bool,
     action: AgentPanelAction,
 ) -> Box<dyn Element> {
     let color = if disabled {
         theme::placeholder()
+    } else if danger {
+        theme::danger()
     } else {
         theme::text()
     };
@@ -916,11 +910,11 @@ fn sidebar_menu_item(
 
 fn sidebar_dropdown_menu(
     font: FamilyId,
-    items: Vec<(&str, bool, AgentPanelAction)>,
+    items: Vec<(&str, bool, bool, AgentPanelAction)>,
 ) -> Box<dyn Element> {
     let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
-    for (label, disabled, action) in items {
-        col.add_child(sidebar_menu_item(font, label, disabled, action));
+    for (label, disabled, danger, action) in items {
+        col.add_child(sidebar_menu_item(font, label, disabled, danger, action));
     }
     Container::new(
         ConstrainedBox::new(col.finish())
@@ -928,6 +922,7 @@ fn sidebar_dropdown_menu(
             .with_width(SIDEBAR_MENU_WIDTH)
             .finish(),
     )
+    .with_uniform_padding(4.0)
     .with_background(theme::panel_elevated())
     .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)))
@@ -942,26 +937,42 @@ pub fn render_session_context_menu(
     y: f32,
 ) -> Box<dyn Element> {
     let id = session_id.to_string();
-    let mut items: Vec<(&str, bool, AgentPanelAction)> = Vec::new();
+    let mut items: Vec<(&str, bool, bool, AgentPanelAction)> = Vec::new();
     if archived {
         items.push((
             "恢复至对话",
+            false,
             false,
             AgentPanelAction::RestoreSession(id.clone()),
         ));
         items.push((
             "永久删除",
             false,
+            true,
             AgentPanelAction::DeleteSession(id.clone()),
         ));
     } else {
         items.push((
             "归档",
             false,
+            false,
             AgentPanelAction::ArchiveSession(id.clone()),
         ));
     }
     positioned_context_menu(x, y, sidebar_dropdown_menu(font, items))
+}
+
+/// Project-row ⋯ dropdown panel — HTML `#agent-projects-menu` (anchored in-tree).
+fn project_row_menu_panel(font: FamilyId, project_id: &str) -> Box<dyn Element> {
+    let items = vec![(
+        "删除项目",
+        false,
+        true,
+        AgentPanelAction::OpenProjectDeleteModal(project_id.to_string()),
+    )];
+    EventHandler::new(sidebar_dropdown_menu(font, items))
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish()
 }
 
 pub fn render_sidebar(
@@ -975,8 +986,8 @@ pub fn render_sidebar(
     search: &str,
     search_focused: bool,
     archived_ids: &HashSet<String>,
-    _projects_menu_open: bool,
     chats_menu_open: bool,
+    project_row_menu: Option<&str>,
     sidebar_hover: Option<&str>,
     project_head_hover: Option<&str>,
 ) -> Box<dyn Element> {
@@ -1000,7 +1011,6 @@ pub fn render_sidebar(
         .finish(),
     );
 
-    let can_delete_project = projects.len() > 1;
     if projects.is_empty() {
         scroll_col.add_child(
             Container::new(section_hint("暂无项目，点击新建", font))
@@ -1021,7 +1031,7 @@ pub fn render_sidebar(
                     expanded,
                     search,
                     archived_ids,
-                    can_delete_project,
+                    project_row_menu,
                     sidebar_hover,
                     project_head_hover,
                 ))

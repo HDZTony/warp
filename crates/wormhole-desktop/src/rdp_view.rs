@@ -73,6 +73,99 @@ impl RdpInputBridge {
             });
         });
     }
+
+    /// Sends a press-and-release sequence for `vks` (KeyDown=11, KeyUp=12).
+    /// Host injectors expect Windows virtual-key codes in `extra`.
+    fn send_vk_chord(&self, vks: &[u32]) {
+        if vks.is_empty() {
+            return;
+        }
+        for &vk in vks {
+            self.send(11, 0., 0., vk as f32);
+        }
+        for &vk in vks.iter().rev() {
+            self.send(12, 0., 0., vk as f32);
+        }
+    }
+}
+
+/// Maps a Warp [`Keystroke`] key name to a Windows virtual-key code.
+///
+/// Host-side injection (`input_inject` / macOS CG) expects Windows VK values in
+/// `InputEvent.extra` for `KeyDown`/`KeyUp`.
+fn keystroke_key_to_vk(key: &str) -> Option<u32> {
+    match key {
+        "backspace" => Some(0x08),
+        "tab" | "\t" => Some(0x09),
+        "enter" | "return" => Some(0x0D),
+        "escape" => Some(0x1B),
+        " " | "space" => Some(0x20),
+        "pageup" => Some(0x21),
+        "pagedown" => Some(0x22),
+        "end" => Some(0x23),
+        "home" => Some(0x24),
+        "left" => Some(0x25),
+        "up" => Some(0x26),
+        "right" => Some(0x27),
+        "down" => Some(0x28),
+        "insert" => Some(0x2D),
+        "delete" => Some(0x2E),
+        "f1" => Some(0x70),
+        "f2" => Some(0x71),
+        "f3" => Some(0x72),
+        "f4" => Some(0x73),
+        "f5" => Some(0x74),
+        "f6" => Some(0x75),
+        "f7" => Some(0x76),
+        "f8" => Some(0x77),
+        "f9" => Some(0x78),
+        "f10" => Some(0x79),
+        "f11" => Some(0x7A),
+        "f12" => Some(0x7B),
+        "-" | "_" => Some(0xBD),
+        "=" | "+" => Some(0xBB),
+        "[" | "{" => Some(0xDB),
+        "]" | "}" => Some(0xDD),
+        "\\" | "|" => Some(0xDC),
+        ";" => Some(0xBA),
+        "'" | "\"" => Some(0xDE),
+        "," | "<" => Some(0xBC),
+        "." | ">" => Some(0xBE),
+        "/" | "?" => Some(0xBF),
+        "`" | "~" => Some(0xC0),
+        k if k.len() == 1 => {
+            let c = k.chars().next()?.to_ascii_uppercase();
+            match c {
+                '0'..='9' | 'A'..='Z' => Some(c as u32),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Builds the VK press order for a keystroke: modifiers first, then the key.
+fn keystroke_to_vk_chord(keystroke: &Keystroke) -> Vec<u32> {
+    let mut vks = Vec::with_capacity(4);
+    if keystroke.ctrl {
+        vks.push(0x11);
+    }
+    if keystroke.alt {
+        vks.push(0x12);
+    }
+    if keystroke.shift {
+        vks.push(0x10);
+    }
+    if keystroke.cmd || keystroke.meta {
+        vks.push(0x5B);
+    }
+    if let Some(vk) = keystroke_key_to_vk(keystroke.key.as_str()) {
+        // Avoid duplicating a modifier that is also the primary key.
+        if !vks.contains(&vk) {
+            vks.push(vk);
+        }
+    }
+    vks
 }
 
 pub struct RdpViewerView {
@@ -809,14 +902,39 @@ impl View for RdpViewerView {
             .with_uniform_padding(8.)
             .finish();
 
+        let column = Flex::column()
+            .with_child(header)
+            .with_child(Align::new(surface).finish())
+            .finish();
+
+        let body = if self.watch_only {
+            column
+        } else {
+            let input = self.input.clone();
+            let extras_ui = self.extras_ui.clone();
+            EventHandler::new(column)
+                .with_always_handle()
+                .on_keydown(move |ctx, _, keystroke| {
+                    let (has_panel, auth_prompt) = extras_ui
+                        .lock()
+                        .map(|g| (g.panel.is_some(), g.auth_prompt))
+                        .unwrap_or((false, false));
+                    if has_panel || auth_prompt {
+                        ctx.dispatch_typed_action(RdpAction::ExtrasKeydown(keystroke.clone()));
+                        return DispatchEventResult::StopPropagation;
+                    }
+                    let chord = keystroke_to_vk_chord(keystroke);
+                    if !chord.is_empty() {
+                        input.send_vk_chord(&chord);
+                    }
+                    DispatchEventResult::StopPropagation
+                })
+                .finish()
+        };
+
         Stack::new()
             .with_child(Rect::new().with_background_color(ColorU::black()).finish())
-            .with_child(
-                Flex::column()
-                    .with_child(header)
-                    .with_child(Align::new(surface).finish())
-                    .finish(),
-            )
+            .with_child(body)
             .finish()
     }
 }
@@ -1015,5 +1133,47 @@ mod tests {
         let (cx, cy) = RdpViewerView::normalize_pointer(vec2f(640., 360.), 1280., 720., 1024, 768);
         assert!((cx - 0.5).abs() < 0.01);
         assert!((cy - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn keystroke_key_to_vk_maps_letters_and_specials() {
+        assert_eq!(keystroke_key_to_vk("a"), Some(0x41));
+        assert_eq!(keystroke_key_to_vk("Z"), Some(0x5A));
+        assert_eq!(keystroke_key_to_vk("5"), Some(0x35));
+        assert_eq!(keystroke_key_to_vk("enter"), Some(0x0D));
+        assert_eq!(keystroke_key_to_vk("return"), Some(0x0D));
+        assert_eq!(keystroke_key_to_vk("backspace"), Some(0x08));
+        assert_eq!(keystroke_key_to_vk("escape"), Some(0x1B));
+        assert_eq!(keystroke_key_to_vk(" "), Some(0x20));
+        assert_eq!(keystroke_key_to_vk("f12"), Some(0x7B));
+        assert_eq!(keystroke_key_to_vk("left"), Some(0x25));
+        assert_eq!(keystroke_key_to_vk("-"), Some(0xBD));
+        assert_eq!(keystroke_key_to_vk("unknown-key"), None);
+    }
+
+    #[test]
+    fn keystroke_to_vk_chord_orders_modifiers_then_key() {
+        let chord = keystroke_to_vk_chord(&Keystroke {
+            ctrl: true,
+            alt: false,
+            shift: true,
+            cmd: false,
+            meta: false,
+            key: "c".into(),
+        });
+        assert_eq!(chord, vec![0x11, 0x10, 0x43]);
+    }
+
+    #[test]
+    fn keystroke_to_vk_chord_includes_win_for_cmd_or_meta() {
+        let chord = keystroke_to_vk_chord(&Keystroke {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            cmd: true,
+            meta: false,
+            key: "r".into(),
+        });
+        assert_eq!(chord, vec![0x5B, 0x52]);
     }
 }
