@@ -22,21 +22,25 @@ const EMOJI_GAP: f32 = 2.0;
 
 /// Fantantonio Emoji-List-Unicode Smileys face groups through robot (U+1F916).
 /// Source: https://github.com/Fantantonio/Emoji-List-Unicode (Smileys-and-Emotion → face-* … robot).
+///
+/// Omitted on purpose (Windows Segoe UI Emoji / cosmic-text shaping):
+/// - `🥲` / `🥸` — missing glyphs (empty picker cells)
+/// - ZWJ sequences `😶‍🌫️` / `😮‍💨` / `😵‍💫` — fail to compose; bubble shows
+///   split faces + fog/dash/spiral (or a white CBDT block) instead of one glyph
 const COMMON_EMOJIS: &[&str] = &[
     "😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😂", //
     "🙂", "🙃", "😉", "😊", "😇", "🥰", "😍", "🤩", //
     "😘", "😗", "☺", "😚", "😙", "😋", "😛", "😜", //
     "🤪", "😝", "🤑", "🤗", "🤭", "🤫", "🤔", "🤐", //
-    "🤨", "😐", "😑", "😶", "😶‍🌫️", "😏", "😒", "🙄", //
-    "😬", "😮‍💨", "🤥", "😌", "😔", "😪", "🤤", "😴", //
-    "😷", "🤒", "🤕", "🤢", "🤮", "🤧", "🥵", "🥶", //
-    "🥴", "😵", "😵‍💫", "🤯", "🤠", "🥳", "😎", "🤓", //
-    "🧐", "😕", "😟", "🙁", "☹", "😮", "😯", "😲", //
-    "😳", "🥺", "😦", "😧", "😨", "😰", "😥", "😢", //
-    "😭", "😱", "😖", "😣", "😞", "😓", "😩", "😫", //
-    "🥱", "😤", "😡", "😠", "🤬", "😈", "👿", "💀", //
-    "☠", "💩", "🤡", "👹", "👺", "👻", "👽", "👾", //
-    "🤖",
+    "🤨", "😐", "😑", "😶", "😏", "😒", "🙄", "😬", //
+    "🤥", "😌", "😔", "😪", "🤤", "😴", "😷", "🤒", //
+    "🤕", "🤢", "🤮", "🤧", "🥵", "🥶", "🥴", "😵", //
+    "🤯", "🤠", "🥳", "😎", "🤓", "🧐", "😕", "😟", //
+    "🙁", "☹", "😮", "😯", "😲", "😳", "🥺", "😦", //
+    "😧", "😨", "😰", "😥", "😢", "😭", "😱", "😖", //
+    "😣", "😞", "😓", "😩", "😫", "🥱", "😤", "😡", //
+    "😠", "🤬", "😈", "👿", "💀", "☠", "💩", "🤡", //
+    "👹", "👺", "👻", "👽", "👾", "🤖",
 ];
 
 #[derive(Debug, Clone)]
@@ -168,6 +172,16 @@ mod tests {
         // Dropped on Windows Segoe UI Emoji (missing glyphs → empty cells):
         assert!(!COMMON_EMOJIS.contains(&"🥲"));
         assert!(!COMMON_EMOJIS.contains(&"🥸"));
+        // Dropped: ZWJ sequences that fail to compose (face-in-clouds etc.):
+        assert!(!COMMON_EMOJIS.contains(&"😶‍🌫️"));
+        assert!(!COMMON_EMOJIS.contains(&"😮‍💨"));
+        assert!(!COMMON_EMOJIS.contains(&"😵‍💫"));
+        for emoji in COMMON_EMOJIS {
+            assert!(
+                !emoji.contains('\u{200D}'),
+                "picker must not offer ZWJ sequences that split on Windows: {emoji:?}"
+            );
+        }
     }
 
     #[test]
