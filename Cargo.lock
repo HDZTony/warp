@@ -20200,6 +20200,7 @@ dependencies = [
  "hmac 0.12.1",
  "if-addrs",
  "iroh",
+ "libc",
  "marketplace-core",
  "notify 7.0.0",
  "provider-protocol",

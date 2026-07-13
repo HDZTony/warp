@@ -33,6 +33,8 @@ use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
 use wormhole_desktop_core::shutdown_desktop;
 use wormhole_desktop_core::MAIN_WINDOW_TITLE;
+#[cfg(unix)]
+use wormhole_desktop_core::{acquire_gui_instance_or_exit, acquire_headless_instance_or_exit, DesktopInstanceKind};
 
 #[derive(Debug, Parser)]
 #[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
@@ -44,6 +46,9 @@ struct Args {
     bridge_only: bool,
     #[arg(long)]
     headless_rdp: bool,
+    /// Headless Linux sync daemon (FUSE + IPC); used by systemd user unit.
+    #[arg(long)]
+    headless: bool,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -87,7 +92,18 @@ fn main() -> Result<()> {
     wormhole_desktop_core::install_observability_for_process(&data_dir, "wormhole-desktop");
 
     if args.headless_rdp || wormhole_desktop_core::rdp_headless::is_headless_rdp_requested() {
+        #[cfg(unix)]
+        let _headless_rdp_lock =
+            acquire_headless_instance_or_exit(DesktopInstanceKind::HeadlessRdp);
         wormhole_desktop_core::rdp_headless::run();
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    if args.headless || wormhole_desktop_core::linux_headless::is_headless_requested() {
+        let _headless_sync_lock =
+            acquire_headless_instance_or_exit(DesktopInstanceKind::HeadlessSync);
+        wormhole_desktop_core::linux_headless::run();
         return Ok(());
     }
 
@@ -117,6 +133,9 @@ fn main() -> Result<()> {
             std::thread::park();
         }
     }
+
+    #[cfg(unix)]
+    let _gui_instance_lock = acquire_gui_instance_or_exit();
 
     #[cfg(windows)]
     let tray = {
@@ -194,6 +213,55 @@ fn main() -> Result<()> {
     let core_for_shell = core.clone();
     #[cfg(windows)]
     let tray_for_shell = tray.clone();
+
+    #[cfg(unix)]
+    {
+        let core_for_signal = core.clone();
+        std::thread::Builder::new()
+            .name("wormhole-signal".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(err) => {
+                        tracing::warn!("signal handler runtime failed: {err}");
+                        return;
+                    }
+                };
+                rt.block_on(async {
+                    #[cfg(unix)]
+                    {
+                        use tokio::signal::unix::{signal, SignalKind};
+                        let mut sigterm =
+                            signal(SignalKind::terminate()).ok();
+                        let mut sigint = signal(SignalKind::interrupt()).ok();
+                        tokio::select! {
+                            _ = async {
+                                if let Some(stream) = sigterm.as_mut() {
+                                    stream.recv().await
+                                } else {
+                                    std::future::pending().await
+                                }
+                            } => tracing::info!("received SIGTERM; shutting down wormhole-desktop"),
+                            _ = async {
+                                if let Some(stream) = sigint.as_mut() {
+                                    stream.recv().await
+                                } else {
+                                    std::future::pending().await
+                                }
+                            } => tracing::info!("received SIGINT; shutting down wormhole-desktop"),
+                        }
+                    }
+                    let runtime = core_for_signal.runtime();
+                    if let Err(err) =
+                        shutdown_desktop(&runtime.state, &runtime.ctx).await
+                    {
+                        tracing::warn!("signal shutdown: {err:#}");
+                    }
+                    std::process::exit(0);
+                });
+            })?;
+    }
+
     let _ = app_builder.run(move |ctx| {
         crate::ui::fonts::warm_up_font_cache(ctx);
         #[cfg(windows)]
