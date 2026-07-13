@@ -53,6 +53,7 @@ pub struct ChatComposeView {
     selection: ConversationSelection,
     shell_state: SharedChatShellState,
     font: FamilyId,
+    emoji_font: FamilyId,
     draft: String,
     field_state: TextFieldState,
     status: String,
@@ -73,6 +74,7 @@ impl ChatComposeView {
         shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
         let sticker_picker = ctx.add_typed_action_view(StickerPickerView::new);
         ctx.subscribe_to_view(&sticker_picker, |view, _, event, ctx| {
             let StickerPickerEvent::InsertEmoji(emoji) = event;
@@ -89,6 +91,7 @@ impl ChatComposeView {
             selection,
             shell_state,
             font,
+            emoji_font,
             draft: String::new(),
             field_state: TextFieldState::new(),
             status: String::new(),
@@ -425,11 +428,12 @@ impl ChatComposeView {
         } else {
             "输入消息…"
         };
+        let draft_font = crate::ui::fonts::chat_message_font(self.font, self.emoji_font, &draft);
         let field = render_compose_field_with_caret(
             &draft,
             &marked,
             placeholder,
-            self.font,
+            draft_font,
             self.input_focused,
             self.sending,
             self.caret_blink.visible,

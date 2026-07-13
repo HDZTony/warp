@@ -123,10 +123,18 @@ impl Rasterizer {
 
         Ok(RasterizedGlyph {
             canvas: canvas.into(),
-            // TODO(alokedesai): Properly support colored glyphs on Windows.
-            is_emoji: self.font_for_id(font_id).is_colored() && !cfg!(windows),
+            // Color CBDT/sbix fonts (Segoe UI Emoji, Apple Color Emoji, …) must skip
+            // foreground tinting; otherwise Windows paints white boxes / wrong glyphs.
+            is_emoji: colored_font_is_emoji(self.font_for_id(font_id).is_colored()),
         })
     }
+}
+
+/// Whether a rasterized glyph should skip foreground-color tinting.
+///
+/// Colored emoji fonts must return `true` on every platform, including Windows.
+pub(crate) fn colored_font_is_emoji(font_is_colored: bool) -> bool {
+    font_is_colored
 }
 
 pub fn properties_to_font_kit(properties: Properties) -> font_kit::properties::Properties {
@@ -164,5 +172,16 @@ fn style_to_font_kit(value: Style) -> font_kit::properties::Style {
     match value {
         Style::Normal => font_kit::properties::Style::Normal,
         Style::Italic => font_kit::properties::Style::Italic,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::colored_font_is_emoji;
+
+    #[test]
+    fn colored_fonts_are_emoji_on_all_platforms_including_windows() {
+        assert!(colored_font_is_emoji(true));
+        assert!(!colored_font_is_emoji(false));
     }
 }

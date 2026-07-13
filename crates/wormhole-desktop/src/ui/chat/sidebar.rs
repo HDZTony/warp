@@ -85,6 +85,7 @@ pub struct ChatSidebarView {
     selection: ConversationSelection,
     shell_state: SharedChatShellState,
     font: FamilyId,
+    emoji_font: FamilyId,
     rows: Vec<SidebarRow>,
     conversations: Vec<ChatConversationDto>,
     cluster: Option<ClusterStatusDto>,
@@ -109,11 +110,13 @@ impl ChatSidebarView {
         shell_state: SharedChatShellState,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
         let mut view = Self {
             core,
             selection,
             shell_state,
             font,
+            emoji_font,
             rows: Vec::new(),
             conversations: Vec::new(),
             cluster: None,
@@ -577,8 +580,10 @@ impl ChatSidebarView {
         } else {
             row.preview.clone()
         };
+        let preview_font =
+            crate::ui::fonts::chat_message_font(self.font, self.emoji_font, &preview_text);
         preview_row.add_child(
-            ui_text::chat_preview(preview_text, self.font)
+            ui_text::chat_preview(preview_text, preview_font)
                 .with_color(preview_color)
                 .finish(),
         );

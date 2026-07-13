@@ -125,6 +125,30 @@ where
         .unwrap_or(ui)
 }
 
+/// True when `text` contains emoji presentation characters that need the system emoji font.
+///
+/// Covers common emoji blocks, VS16 (U+FE0F), and ZWJ (U+200D) sequences used by the picker.
+pub fn text_contains_emoji(text: &str) -> bool {
+    text.chars().any(|ch| {
+        let c = ch as u32;
+        matches!(c, 0x200D | 0xFE0F)
+            || (0x2600..=0x27BF).contains(&c)
+            || (0x1F000..=0x1FAFF).contains(&c)
+    })
+}
+
+/// Font family for chat message body / draft / sidebar preview.
+///
+/// Uses the system emoji family when `text` contains emoji; otherwise the UI font
+/// (OPPO Sans) so pure CJK stays sharp.
+pub fn chat_message_font(ui_font: FamilyId, emoji_font: FamilyId, text: &str) -> FamilyId {
+    if text_contains_emoji(text) {
+        emoji_font
+    } else {
+        ui_font
+    }
+}
+
 pub fn load_mono_font<E>(ctx: &mut ViewContext<E>, fallback: FamilyId) -> FamilyId
 where
     E: warpui::Entity + warpui::View,
@@ -171,5 +195,23 @@ mod tests {
                 assert!(!name.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn text_contains_emoji_detects_faces_and_zwj() {
+        assert!(text_contains_emoji("🤡"));
+        assert!(text_contains_emoji("你好🤡"));
+        assert!(text_contains_emoji("😶‍🌫️"));
+        assert!(!text_contains_emoji("你好"));
+        assert!(!text_contains_emoji(""));
+    }
+
+    #[test]
+    fn chat_message_font_picks_emoji_family_only_when_needed() {
+        let ui = FamilyId(1);
+        let emoji = FamilyId(2);
+        assert_eq!(chat_message_font(ui, emoji, "你好"), ui);
+        assert_eq!(chat_message_font(ui, emoji, "🤡"), emoji);
+        assert_eq!(chat_message_font(ui, emoji, "hi 🤡"), emoji);
     }
 }

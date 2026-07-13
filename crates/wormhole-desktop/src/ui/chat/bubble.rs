@@ -20,6 +20,7 @@ const ATTACH_MEDIA_PLACEHOLDER_HEIGHT: f32 = 120.0;
 
 pub struct ChatBubbleView {
     font: FamilyId,
+    emoji_font: FamilyId,
     body: String,
     attachments: Vec<ChatAttachmentDto>,
     outgoing: bool,
@@ -44,8 +45,10 @@ impl ChatBubbleView {
         max_bubble_width: f32,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
         Self {
             font,
+            emoji_font,
             body,
             attachments,
             outgoing,
@@ -60,8 +63,10 @@ impl ChatBubbleView {
 
     pub fn system_hint(ctx: &mut ViewContext<Self>, body: String) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
         Self {
             font,
+            emoji_font,
             body,
             attachments: Vec::new(),
             outgoing: false,
@@ -72,6 +77,10 @@ impl ChatBubbleView {
             search_hit: false,
             max_bubble_width: TG_BUBBLE_MAX_WIDTH,
         }
+    }
+
+    fn body_font(&self) -> FamilyId {
+        crate::ui::fonts::chat_message_font(self.font, self.emoji_font, &self.body)
     }
 
     pub fn set_body(&mut self, body: String) {
@@ -262,7 +271,7 @@ impl View for ChatBubbleView {
         }
         if !self.body.is_empty() {
             bubble_col.add_child(
-                ui_text::chat_bubble_text(self.body.clone(), self.font)
+                ui_text::chat_bubble_text(self.body.clone(), self.body_font())
                     .with_color(theme::text())
                     .finish(),
             );

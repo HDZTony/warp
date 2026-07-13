@@ -223,6 +223,91 @@ impl DevicesView {
         }
     }
 
+    /// Instantly drop a cluster from the local HUD; control-plane delete continues in the background.
+    fn apply_optimistic_remove_cluster(
+        &mut self,
+        cluster_id: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(mut status) = self.cluster.take() else {
+            return;
+        };
+        let was_active = status.cluster_id.as_deref() == Some(cluster_id)
+            || status
+                .clusters
+                .iter()
+                .any(|entry| entry.active && entry.cluster_id == cluster_id);
+        status.clusters.retain(|entry| entry.cluster_id != cluster_id);
+        if was_active {
+            if self.mode == ViewMode::Files {
+                self.mode = ViewMode::Grid;
+                self.browsing_node_id = None;
+                self.browsing_label.clear();
+                self.share_entries.clear();
+                self.share_error = None;
+                self.share_path.clear();
+                self.share_history_back.clear();
+                self.share_history_forward.clear();
+                self.share_status = None;
+                self.share_add_modal_open = false;
+            }
+            if let Some(next_id) = status.clusters.first().map(|entry| entry.cluster_id.clone()) {
+                for entry in &mut status.clusters {
+                    entry.active = entry.cluster_id == next_id;
+                }
+                let next = status
+                    .clusters
+                    .iter()
+                    .find(|entry| entry.cluster_id == next_id)
+                    .expect("next_id taken from clusters");
+                status.configured = true;
+                status.cluster_id = Some(next_id);
+                status.joined_at = Some(next.joined_at);
+                status.role_stale = next.role_stale;
+                let local_id = status.local_node_id.clone();
+                status.nodes.retain(|node| node.node_id == local_id);
+                status
+                    .storage_volumes
+                    .retain(|volume| volume.node_id == local_id);
+                status.syncing = true;
+            } else {
+                status.configured = false;
+                status.cluster_id = None;
+                status.joined_at = None;
+                status.nodes.clear();
+                status.storage_volumes.clear();
+                status.syncing = false;
+                status.role_stale = true;
+            }
+        }
+        self.local_invite = None;
+        self.apply_cluster_status(status, ctx);
+    }
+
+    /// Instantly hide a remote terminal from the topology; removal continues in the background.
+    fn apply_optimistic_remove_node(&mut self, node_id: &str, ctx: &mut ViewContext<Self>) {
+        let Some(mut status) = self.cluster.take() else {
+            return;
+        };
+        status.nodes.retain(|node| node.node_id != node_id);
+        status
+            .storage_volumes
+            .retain(|volume| volume.node_id != node_id);
+        if self.browsing_node_id.as_deref() == Some(node_id) {
+            self.mode = ViewMode::Grid;
+            self.browsing_node_id = None;
+            self.browsing_label.clear();
+            self.share_entries.clear();
+            self.share_error = None;
+            self.share_path.clear();
+            self.share_history_back.clear();
+            self.share_history_forward.clear();
+            self.share_status = None;
+            self.share_add_modal_open = false;
+        }
+        self.apply_cluster_status(status, ctx);
+    }
+
     pub fn refresh_cluster(&self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         ctx.spawn(
@@ -1771,7 +1856,9 @@ impl DevicesView {
             ctx.notify();
             return;
         };
-        self.status_flash = Some("正在退出集群…".into());
+        self.cluster_picker_open = false;
+        self.apply_optimistic_remove_cluster(&cluster_id, ctx);
+        self.status_flash = Some("已退出集群".into());
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -1790,6 +1877,7 @@ impl DevicesView {
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
                         view.status_flash = Some(format!("退出集群失败：{e}"));
+                        view.refresh_cluster(ctx);
                     }
                 }
                 ctx.notify();
@@ -1814,9 +1902,6 @@ impl DevicesView {
     }
 
     fn close_delete_cluster_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.delete_cluster_busy {
-            return;
-        }
         self.delete_modal_cluster_id = None;
         ctx.notify();
     }
@@ -1864,7 +1949,10 @@ impl DevicesView {
             return;
         };
         self.delete_cluster_busy = true;
-        self.status_flash = Some("正在删除集群…".into());
+        self.delete_modal_cluster_id = None;
+        self.cluster_picker_open = false;
+        self.apply_optimistic_remove_cluster(&cluster_id, ctx);
+        self.status_flash = Some(format!("CLUSTER REMOVED · {removed_label}"));
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -1874,8 +1962,6 @@ impl DevicesView {
             },
             move |view, output, ctx| {
                 view.delete_cluster_busy = false;
-                view.delete_modal_cluster_id = None;
-                view.cluster_picker_open = false;
                 match output {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
@@ -1886,6 +1972,7 @@ impl DevicesView {
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
                         view.status_flash = Some(format!("删除集群失败：{e}"));
+                        view.refresh_cluster(ctx);
                     }
                 }
                 ctx.notify();
@@ -1905,10 +1992,15 @@ impl DevicesView {
             ctx.notify();
             return;
         };
-        self.status_flash = Some("正在移除设备…".into());
+        let removing_server_member = device_id.is_some();
+        self.apply_optimistic_remove_node(&node_id, ctx);
+        self.status_flash = Some(if removing_server_member {
+            "已移除设备".into()
+        } else {
+            "已隐藏离线终端".into()
+        });
         ctx.notify();
         let core = self.core.clone();
-        let removing_server_member = device_id.is_some();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
@@ -1941,6 +2033,7 @@ impl DevicesView {
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
                         view.status_flash = Some(format!("移除设备失败：{e}"));
+                        view.refresh_cluster(ctx);
                     }
                 }
                 ctx.notify();
