@@ -211,6 +211,7 @@ impl ChatSidebarView {
         if let Ok(mut state) = self.shell_state.lock() {
             state.clear_pending_open();
             state.clear_open_error();
+            state.clear_toast();
             state.bump_selection_tick();
         }
         ctx.emit(ChatSidebarEvent::Selected(conv_id));
@@ -394,7 +395,9 @@ impl ChatSidebarView {
                 ctx.notify();
                 return;
             }
-            if let Some(node) = cluster.nodes.iter().find(|node| node.node_id == node_id) {
+            if let Some(node) = cluster.nodes.iter().find(|node| {
+                node.node_id == node_id || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
+            }) {
                 let Some(peer) = node.chat_endpoint_id.clone().filter(|id| !id.trim().is_empty())
                 else {
                     if let Ok(mut state) = self.shell_state.lock() {
@@ -416,8 +419,24 @@ impl ChatSidebarView {
                 self.start_conversation_for_peer(peer, display_name, bootstrap_addrs, ctx);
                 return;
             }
+            if let Some(conv_id) =
+                find_conversation_for_node_ref(&self.conversations, Some(cluster), &node_id)
+            {
+                self.apply_selection(conv_id, ctx);
+                return;
+            }
         }
         // Cluster cache miss: refresh then open.
+        let stale_peer = self.cluster.as_ref().and_then(|cluster| {
+            cluster.nodes.iter().find_map(|node| {
+                if node.node_id == node_id || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
+                {
+                    node.chat_endpoint_id.clone()
+                } else {
+                    None
+                }
+            })
+        });
         let core = self.core.clone();
         self.selecting = Some(node_id.clone());
         ctx.spawn(
@@ -427,12 +446,12 @@ impl ChatSidebarView {
                 let state = runtime.state.clone();
                 let list = chat_list_conversations(app, &state).await;
                 let cluster = cluster_status(&state).await?;
-                Ok::<_, String>((list.unwrap_or_default(), cluster, node_id))
+                Ok::<_, String>((list.unwrap_or_default(), cluster, node_id, stale_peer))
             },
             |view, output, ctx| {
                 view.selecting = None;
                 match output {
-                    Ok((conversations, cluster, node_id)) => {
+                    Ok((conversations, cluster, node_id, stale_peer)) => {
                         view.conversations = conversations.clone();
                         view.cluster = Some(cluster.clone());
                         view.rows = view.build_rows(conversations, Some(&cluster));
@@ -443,8 +462,31 @@ impl ChatSidebarView {
                             ctx.notify();
                             return;
                         }
-                        let Some(node) = cluster.nodes.iter().find(|node| node.node_id == node_id)
-                        else {
+                        let node = cluster.nodes.iter().find(|node| {
+                            node.node_id == node_id
+                                || node.chat_endpoint_id.as_deref() == Some(node_id.as_str())
+                        });
+                        let Some(node) = node else {
+                            if let Some(conv_id) = find_conversation_for_node_ref(
+                                &view.conversations,
+                                Some(&cluster),
+                                &node_id,
+                            ) {
+                                view.apply_selection(conv_id, ctx);
+                                return;
+                            }
+                            if let Some(peer) =
+                                stale_peer.filter(|id| !id.trim().is_empty())
+                            {
+                                if let Some(conv) = view
+                                    .conversations
+                                    .iter()
+                                    .find(|conv| conv.peer_endpoint == peer)
+                                {
+                                    view.apply_selection(conv.id.clone(), ctx);
+                                    return;
+                                }
+                            }
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.show_toast("未找到该终端", StatusTone::Danger);
                             }
@@ -1129,6 +1171,62 @@ fn resolve_select_target(
     }
 }
 
+/// Resolve an existing DM when cluster topology no longer lists `node_id`
+/// (offline prune) but the conversation is already local.
+fn find_conversation_for_node_ref(
+    conversations: &[ChatConversationDto],
+    cluster: Option<&ClusterStatusDto>,
+    node_id: &str,
+) -> Option<String> {
+    if let Some(conv) = conversations
+        .iter()
+        .find(|conv| conv.peer_endpoint == node_id || conv.id == node_id)
+    {
+        return Some(conv.id.clone());
+    }
+    if let Some(cluster) = cluster {
+        if let Some(node) = cluster.nodes.iter().find(|node| {
+            node.node_id == node_id || node.chat_endpoint_id.as_deref() == Some(node_id)
+        }) {
+            if let Some(endpoint) = node
+                .chat_endpoint_id
+                .as_deref()
+                .filter(|endpoint| !endpoint.is_empty())
+            {
+                if let Some(conv) = conversations
+                    .iter()
+                    .find(|conv| conv.peer_endpoint == endpoint)
+                {
+                    return Some(conv.id.clone());
+                }
+            }
+            let label = format!("{} · {}", node.os, node.hostname);
+            if let Some(conv) = conversations.iter().find(|conv| {
+                conv.peer_display_name.as_deref().is_some_and(|name| {
+                    let name = name.trim();
+                    name.eq_ignore_ascii_case(&label)
+                        || name.eq_ignore_ascii_case(&node.hostname)
+                        || name
+                            .to_lowercase()
+                            .contains(&node.hostname.to_lowercase())
+                })
+            }) {
+                return Some(conv.id.clone());
+            }
+        }
+    }
+    let needle = node_id.to_lowercase();
+    conversations.iter().find_map(|conv| {
+        conv.peer_display_name.as_deref().and_then(|name| {
+            if name.to_lowercase().contains(&needle) {
+                Some(conv.id.clone())
+            } else {
+                None
+            }
+        })
+    })
+}
+
 fn conversation_covers_cluster_node(
     conv: &ChatConversationDto,
     node: &wormhole_desktop_core::cluster_commands::ClusterNodeDto,
@@ -1311,6 +1409,46 @@ mod tests {
         };
         let target = resolve_select_target("node-1", &[], Some(&cluster));
         assert_eq!(target, SelectTarget::MissingChatEndpoint);
+    }
+
+    #[test]
+    fn find_conversation_for_node_ref_matches_endpoint_and_display_name() {
+        let mut conv = sample_conv("conv-hash", "chat-endpoint");
+        conv.peer_display_name = Some("Windows · DESKTOP-KDSVGM5".into());
+        let conversations = vec![conv];
+        assert_eq!(
+            find_conversation_for_node_ref(&conversations, None, "chat-endpoint").as_deref(),
+            Some("conv-hash")
+        );
+        assert_eq!(
+            find_conversation_for_node_ref(&conversations, None, "DESKTOP-KDSVGM5").as_deref(),
+            Some("conv-hash")
+        );
+        let cluster = ClusterStatusDto {
+            configured: true,
+            cluster_id: None,
+            clusters: Vec::new(),
+            joined_at: None,
+            device_id: None,
+            local_node_id: String::new(),
+            transport: String::new(),
+            nodes: vec![sample_node("node-1", Some("chat-endpoint"), false)],
+            storage_volumes: Vec::new(),
+            normal_replica_target: 0,
+            photo_video_replica_target: 0,
+            build_cache_replica_target: 0,
+            normal_replica_degraded: false,
+            photo_video_replica_degraded: false,
+            syncing: false,
+            auth_required: false,
+            device_bootstrap_required: false,
+            device_bootstrap_error: None,
+            role_stale: false,
+        };
+        assert_eq!(
+            find_conversation_for_node_ref(&conversations, Some(&cluster), "node-1").as_deref(),
+            Some("conv-hash")
+        );
     }
 
     fn sample_node(node_id: &str, endpoint: Option<&str>, local: bool) -> ClusterNodeDto {
