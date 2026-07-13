@@ -7,14 +7,16 @@ use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, Vie
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::agent_providers_view::AgentProvidersView;
-use crate::ui::codex_provider_import_model::SharedCodexProviderImportModel;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
     section_card, section_hint, section_title, status_line, view_panel, StatusTone,
 };
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::sync_commands::{list_local_drives, set_sync_root, sync_status};
+use wormhole_desktop_core::sync_commands::{
+    list_local_drives, migrate_shared_storage, restore_default_shared_storage, shared_storage_info,
+    SharedStorageInfoDto,
+};
 use wormhole_desktop_core::{
     clear_cloud_auth_token, clear_desktop_error_events, cloud_auth_status,
     configure_desktop_error_settings, desktop_error_status, sync_desktop_errors_now,
@@ -31,7 +33,9 @@ pub enum SettingsEvent {
 
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
-    SavePath(String),
+    MigrateTo(String),
+    BrowseMigrate,
+    RestoreDefault,
     Refresh,
     Login,
     Logout,
@@ -48,8 +52,8 @@ pub enum SettingsAction {
 pub struct SettingsView {
     core: CoreHandle,
     font: FamilyId,
-    root_path: String,
-    drive_options: Vec<String>,
+    storage: Option<SharedStorageInfoDto>,
+    drive_letters: Vec<String>,
     status: String,
     status_tone: StatusTone,
     busy: bool,
@@ -67,19 +71,15 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(
-        ctx: &mut ViewContext<Self>,
-        core: CoreHandle,
-        import_model: SharedCodexProviderImportModel,
-    ) -> Self {
+    pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
-        let agent_providers = ctx
-            .add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone(), import_model));
+        let agent_providers =
+            ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
-            root_path: String::new(),
-            drive_options: Vec::new(),
+            storage: None,
+            drive_letters: Vec::new(),
             status: String::new(),
             status_tone: StatusTone::Placeholder,
             busy: false,
@@ -141,11 +141,6 @@ impl SettingsView {
         &self.agent_providers
     }
 
-    pub fn open_deeplink_url(&mut self, url: String, ctx: &mut ViewContext<Self>) {
-        let agent = self.agent_providers.clone();
-        ctx.update_view(&agent, |view, ctx| view.open_deeplink_url(url, ctx));
-    }
-
     fn refresh_diagnostics(&mut self, ctx: &mut ViewContext<Self>) {
         self.diagnostic_busy = true;
         ctx.notify();
@@ -184,19 +179,19 @@ impl SettingsView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let status = sync_status(&state).await;
+                let info = shared_storage_info(&state).await;
                 let drives = list_local_drives().await;
-                (status, drives)
+                (info, drives)
             },
             |view, output, ctx| {
                 view.busy = false;
-                let (status, drives) = output;
-                match status {
+                let (info, drives) = output;
+                match info {
                     Ok(s) => {
-                        view.root_path = s.root_path;
+                        view.storage = Some(s);
                         if view.status.is_empty() {
                             view.status =
-                                "终端共享文件夹的本地副本将写入此目录。修改后建议重启同步服务。"
+                                "同步入口是资源管理器路径；物理存放是数据落盘位置。换盘会真正迁移数据。"
                                     .into();
                             view.status_tone = StatusTone::Placeholder;
                         }
@@ -206,17 +201,79 @@ impl SettingsView {
                         view.status_tone = StatusTone::Danger;
                     }
                 }
-                view.drive_options = drives
+                view.drive_letters = drives
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|d| format!("{}:\\Wormhole", d.letter.trim_end_matches(':')))
+                    .map(|d| d.letter.trim_end_matches(':').to_ascii_uppercase())
+                    .filter(|letter| !letter.is_empty())
                     .collect();
                 ctx.notify();
             },
         );
     }
 
-    fn action_button(&self, label: &str, path: String) -> Box<dyn Element> {
+    fn run_migrate(&mut self, ctx: &mut ViewContext<Self>, target: String) {
+        if target.trim().is_empty() || self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = "正在迁移…".into();
+        self.status_tone = StatusTone::Placeholder;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                migrate_shared_storage(&state, target).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(info) => {
+                        view.status = if info.mode == "vhd" {
+                            format!(
+                                "已迁移物理存放至 {}（同步入口仍为 {}）",
+                                info.physical_path, info.sync_entry_path
+                            )
+                        } else {
+                            format!("已迁移共享文件至 {}", info.sync_entry_path)
+                        };
+                        view.storage = Some(info);
+                        view.status_tone = StatusTone::Success;
+                    }
+                    Err(e) => {
+                        view.status = format!("迁移失败: {e}");
+                        view.status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn path_row(&self, label: &str, value: &str) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(
+            ui_text::body(label.to_string(), self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        col.add_child(
+            Container::new(
+                ui_text::mono(value.to_string(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_background(theme::bg())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .finish(),
+        );
+        col.finish()
+    }
+
+    fn action_button(&self, label: &str, action: SettingsAction) -> Box<dyn Element> {
         let label = label.to_string();
         Container::new(
             EventHandler::new(
@@ -225,7 +282,7 @@ impl SettingsView {
                     .finish(),
             )
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(SettingsAction::SavePath(path.clone()));
+                ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
             })
             .finish(),
@@ -262,39 +319,96 @@ impl SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("DATA · 共享文件存放位置", self.font));
         col.add_child(section_hint(
-            "终端共享文件夹的本地副本将写入此目录。选择新位置后自动保存。",
+            "同步入口是资源管理器中的路径；物理存放是数据真正落盘的位置。换盘会迁移数据，不会只改索引。",
             self.font,
         ));
-        col.add_child(
-            Container::new(
-                ui_text::mono(self.root_path.clone(), self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_uniform_padding(10.0)
-            .with_background(theme::bg())
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
-            .finish(),
-        );
 
-        if !self.drive_options.is_empty() {
+        if let Some(info) = &self.storage {
+            col.add_child(self.path_row("当前同步入口", &info.sync_entry_path));
             col.add_child(
-                ui_text::body("选择存放磁盘:", self.font)
+                Container::new(self.path_row("默认同步入口", &info.default_entry_path))
+                    .with_vertical_margin(6.0)
+                    .finish(),
+            );
+            col.add_child(
+                Container::new(self.path_row("物理存放", &info.physical_path))
+                    .with_vertical_margin(6.0)
+                    .finish(),
+            );
+            if info.mode == "vhd" {
+                col.add_child(
+                    Container::new(self.path_row("默认物理存放", &info.default_physical_path))
+                        .with_vertical_margin(6.0)
+                        .finish(),
+                );
+                if let Some(vhd) = &info.vhd_path {
+                    col.add_child(
+                        Container::new(self.path_row("VHD 文件", vhd))
+                            .with_vertical_margin(6.0)
+                            .finish(),
+                    );
+                }
+            }
+            if let Some(cluster) = &info.active_cluster_path {
+                col.add_child(
+                    Container::new(
+                        ui_text::body(format!("当前集群目录: {cluster}"), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_vertical_margin(6.0)
+                    .finish(),
+                );
+            }
+        } else {
+            col.add_child(
+                ui_text::body("加载中…", self.font)
                     .with_color(theme::muted())
                     .finish(),
             );
-            let mut picks = Flex::row();
-            for path in &self.drive_options {
-                let label = format!("使用 {path}");
-                picks.add_child(
-                    Container::new(self.action_button(&label, path.clone()))
-                        .with_horizontal_margin(4.0)
+        }
+
+        if !self.drive_letters.is_empty() {
+            col.add_child(
+                Container::new(
+                    ui_text::body("迁移到磁盘:", self.font)
+                        .with_color(theme::muted())
                         .finish(),
+                )
+                .with_vertical_margin(8.0)
+                .finish(),
+            );
+            let mut picks = Flex::row();
+            for letter in &self.drive_letters {
+                let label = format!("迁移到 {letter}:");
+                picks.add_child(
+                    Container::new(self.action_button(
+                        &label,
+                        SettingsAction::MigrateTo(letter.clone()),
+                    ))
+                    .with_horizontal_margin(4.0)
+                    .finish(),
                 );
             }
             col.add_child(picks.finish());
         }
+
+        let mut actions = Flex::row();
+        actions.add_child(
+            Container::new(self.action_button("浏览…", SettingsAction::BrowseMigrate))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        actions.add_child(
+            Container::new(self.action_button("恢复默认", SettingsAction::RestoreDefault))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        col.add_child(
+            Container::new(actions.finish())
+                .with_vertical_margin(8.0)
+                .finish(),
+        );
 
         col.add_child(
             Container::new(
@@ -781,35 +895,109 @@ impl TypedActionView for SettingsView {
                     },
                 );
             }
-            SettingsAction::SavePath(path) => {
-                if path.trim().is_empty() {
+            SettingsAction::MigrateTo(target) => {
+                self.run_migrate(ctx, target.clone());
+            }
+            SettingsAction::BrowseMigrate => {
+                if self.busy {
                     return;
                 }
-                if path == &self.root_path {
-                    self.refresh(ctx);
-                    return;
-                }
+                let core = self.core.clone();
+                let mode = self
+                    .storage
+                    .as_ref()
+                    .map(|s| s.mode.clone())
+                    .unwrap_or_else(|| "folder".into());
                 self.busy = true;
-                self.status = "正在保存…".into();
+                self.status = "正在迁移…".into();
                 self.status_tone = StatusTone::Placeholder;
                 ctx.notify();
-                let core = self.core.clone();
-                let path_arg = Some(path.clone());
                 ctx.spawn(
                     async move {
+                        #[cfg(windows)]
+                        let picked = tokio::task::spawn_blocking(|| {
+                            wormhole_desktop_platform_windows::pick_folder(
+                                "选择共享文件存放位置",
+                            )
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        #[cfg(not(windows))]
+                        let picked: Option<std::path::PathBuf> = None;
+
+                        let Some(path) = picked else {
+                            return Ok::<Option<SharedStorageInfoDto>, String>(None);
+                        };
+
+                        let target = if mode == "vhd" {
+                            // Drive letter / root volume — VHD migrate normalizes to {disk}\.wormhole
+                            path.components()
+                                .next()
+                                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string())
+                        } else {
+                            path.display().to_string()
+                        };
                         let state = core.runtime().state.clone();
-                        set_sync_root(&state, path_arg).await
+                        let info = migrate_shared_storage(&state, target).await?;
+                        Ok(Some(info))
                     },
                     |view, output, ctx| {
                         view.busy = false;
                         match output {
-                            Ok(saved) => {
-                                view.root_path = saved;
-                                view.status = "已保存共享文件夹路径。".into();
+                            Ok(Some(info)) => {
+                                view.status = if info.mode == "vhd" {
+                                    format!(
+                                        "已迁移物理存放至 {}（同步入口仍为 {}）",
+                                        info.physical_path, info.sync_entry_path
+                                    )
+                                } else {
+                                    format!("已迁移共享文件至 {}", info.sync_entry_path)
+                                };
+                                view.storage = Some(info);
+                                view.status_tone = StatusTone::Success;
+                            }
+                            Ok(None) => {
+                                view.status = "已取消选择。".into();
+                                view.status_tone = StatusTone::Placeholder;
+                            }
+                            Err(e) => {
+                                view.status = format!("迁移失败: {e}");
+                                view.status_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::RestoreDefault => {
+                if self.busy {
+                    return;
+                }
+                self.busy = true;
+                self.status = "正在恢复默认…".into();
+                self.status_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        restore_default_shared_storage(&state).await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(info) => {
+                                view.status = format!(
+                                    "已恢复默认 · 入口 {} · 物理 {}",
+                                    info.sync_entry_path, info.physical_path
+                                );
+                                view.storage = Some(info);
                                 view.status_tone = StatusTone::Success;
                             }
                             Err(e) => {
-                                view.status = format!("保存失败: {e}");
+                                view.status = format!("恢复默认失败: {e}");
                                 view.status_tone = StatusTone::Danger;
                             }
                         }
