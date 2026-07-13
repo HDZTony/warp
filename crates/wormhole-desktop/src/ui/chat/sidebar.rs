@@ -720,7 +720,6 @@ impl ChatSidebarView {
     fn conversation_context_menu(&self) -> Box<dyn Element> {
         let (row_id, x, y) = self.context_menu.clone().unwrap_or_default();
         let muted = self.ui_prefs.is_muted(&row_id);
-        let can_delete = self.rows.len() > 1;
         let mut menu = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
@@ -745,7 +744,7 @@ impl ChatSidebarView {
             "删除对话",
             ChatSidebarAction::ContextDelete,
             ContextItemStyle::Danger,
-            can_delete,
+            true,
         ));
 
         let panel = Container::new(
@@ -1044,13 +1043,6 @@ impl TypedActionView for ChatSidebarView {
                     return;
                 };
                 self.context_menu = None;
-                if self.rows.len() <= 1 {
-                    if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("至少保留一个对话", StatusTone::Muted);
-                    }
-                    ctx.notify();
-                    return;
-                }
                 let core = self.core.clone();
                 let hide_id = id.clone();
                 ctx.spawn(

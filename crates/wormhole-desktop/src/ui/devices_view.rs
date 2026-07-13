@@ -3866,6 +3866,19 @@ impl TypedActionView for DevicesView {
                     ctx.notify();
                     return;
                 }
+                self.status_flash = Some("正在打开聊天…".into());
+                ctx.notify();
+                ctx.spawn(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(2600)).await;
+                    },
+                    |view, _, ctx| {
+                        if view.status_flash.as_deref() == Some("正在打开聊天…") {
+                            view.status_flash = None;
+                            ctx.notify();
+                        }
+                    },
+                );
                 ctx.emit(DevicesEvent::OpenChat {
                     node_id: node_id.clone(),
                 });
