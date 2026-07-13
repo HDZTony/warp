@@ -102,6 +102,7 @@ pub struct ChatSidebarView {
     context_menu: Option<(String, f32, f32)>,
     last_prefs_tick: u64,
     refresh_in_flight: bool,
+    refresh_pending: bool,
 }
 
 impl ChatSidebarView {
@@ -134,6 +135,7 @@ impl ChatSidebarView {
             context_menu: None,
             last_prefs_tick: 0,
             refresh_in_flight: false,
+            refresh_pending: false,
         };
         view.refresh(ctx);
         view.start_prefs_poll(ctx);
@@ -178,6 +180,7 @@ impl ChatSidebarView {
 
     pub(crate) fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         if self.refresh_in_flight {
+            self.refresh_pending = true;
             return;
         }
         self.refresh_in_flight = true;
@@ -210,6 +213,10 @@ impl ChatSidebarView {
                 view.ui_prefs = ui_prefs;
                 view.rows = view.build_rows(conversations, view.cluster.as_ref());
                 ctx.notify();
+                if view.refresh_pending {
+                    view.refresh_pending = false;
+                    view.refresh(ctx);
+                }
             },
         );
     }

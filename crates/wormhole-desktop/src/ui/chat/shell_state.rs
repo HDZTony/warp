@@ -164,7 +164,10 @@ impl ChatShellState {
 
 /// Whether a desktop `chat-event` payload should refresh the open thread and sidebar.
 pub fn chat_event_triggers_refresh(kind: &str) -> bool {
-    matches!(kind, "message_received" | "conversation_added")
+    matches!(
+        kind,
+        "message_received" | "conversation_added" | "sync_required"
+    )
 }
 
 #[cfg(test)]
@@ -185,6 +188,7 @@ mod tests {
     fn chat_event_triggers_refresh_for_known_kinds() {
         assert!(chat_event_triggers_refresh("message_received"));
         assert!(chat_event_triggers_refresh("conversation_added"));
+        assert!(chat_event_triggers_refresh("sync_required"));
         assert!(!chat_event_triggers_refresh("typing_changed"));
         assert!(!chat_event_triggers_refresh(""));
     }

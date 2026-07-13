@@ -180,6 +180,7 @@ pub struct AppShellView {
     show_onboarding: bool,
     window_id: WindowId,
     traffic_light_mouse_states: TrafficLightMouseStates,
+    desktop_event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
     #[cfg(windows)]
     tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
 }
@@ -316,6 +317,9 @@ impl AppShellView {
         }
         let show_onboarding = !prefs.onboarding_dismissed;
         let window_id = ctx.window_id();
+        let desktop_event_rx = Arc::new(tokio::sync::Mutex::new(
+            core.runtime().ctx.events.subscribe(),
+        ));
         let view = Self {
             tab,
             hovered_tab: None,
@@ -368,6 +372,7 @@ impl AppShellView {
             show_onboarding,
             window_id,
             traffic_light_mouse_states: TrafficLightMouseStates::default(),
+            desktop_event_rx,
             #[cfg(windows)]
             tray,
         };
@@ -461,33 +466,77 @@ impl AppShellView {
     }
 
     fn start_event_listener(&self, ctx: &mut ViewContext<Self>) {
-        let events = self.core.runtime().ctx.events.clone();
+        let event_rx = Arc::clone(&self.desktop_event_rx);
         let settings = self.settings.clone();
-        Self::poll_events_once(ctx, events, settings);
+        Self::poll_events_once(ctx, event_rx, settings, self.core.clone(), self.devices.clone(), self.chat.clone());
     }
 
     fn poll_events_once(
         ctx: &mut ViewContext<Self>,
-        events: wormhole_desktop_core::DesktopEventBus,
+        event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
         settings: ViewHandle<SettingsView>,
+        core: CoreHandle,
+        devices: ViewHandle<DevicesView>,
+        chat: ViewHandle<ChatShellView>,
     ) {
-        let mut rx = events.subscribe();
-        ctx.spawn(async move { rx.recv().await }, move |view, output, ctx| {
-            if let Ok(event) = output {
-                match event.name.as_str() {
-                    "cloud-auth-changed" => {
-                        view.refresh_auth_status(ctx);
-                        view.refresh_auth_gated_views(ctx);
-                        let settings_handle = settings.clone();
-                        ctx.update_view(&settings_handle, |settings, ctx| {
-                            settings.refresh_account(ctx);
-                        });
+        let rx = Arc::clone(&event_rx);
+        ctx.spawn(
+            async move {
+                let mut guard = rx.lock().await;
+                guard.recv().await
+            },
+            move |view, output, ctx| {
+                match output {
+                    Ok(event) => match event.name.as_str() {
+                        "cloud-auth-changed" => {
+                            view.refresh_auth_status(ctx);
+                            view.refresh_auth_gated_views(ctx);
+                            let settings_handle = settings.clone();
+                            ctx.update_view(&settings_handle, |settings, ctx| {
+                                settings.refresh_account(ctx);
+                            });
+                        }
+                        "cluster-gossip-changed" => {
+                            view.refresh_cluster_gossip_views(ctx, &devices, &chat, &core);
+                        }
+                        _ => {}
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        view.refresh_cluster_gossip_views(ctx, &devices, &chat, &core);
                     }
-                    _ => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
-            }
-            Self::poll_events_once(ctx, events, settings);
+                Self::poll_events_once(ctx, event_rx, settings, core, devices, chat);
+            },
+        );
+    }
+
+    fn refresh_cluster_gossip_views(
+        &self,
+        ctx: &mut ViewContext<Self>,
+        devices: &ViewHandle<DevicesView>,
+        chat: &ViewHandle<ChatShellView>,
+        core: &CoreHandle,
+    ) {
+        ctx.update_view(devices, |devices, ctx| {
+            devices.refresh_cluster(ctx);
         });
+        ctx.update_view(chat, |chat, ctx| {
+            chat.refresh_cluster_display(ctx);
+        });
+        let core = core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                cluster_status_hud(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.hud_nodes = status.nodes.len().max(1);
+                    ctx.notify();
+                }
+            },
+        );
     }
 
     fn start_warp_focus_poll(&self, ctx: &mut ViewContext<Self>) {

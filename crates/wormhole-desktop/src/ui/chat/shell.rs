@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use warpui::elements::{
-    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+use tokio::sync::broadcast::error::RecvError;
+use warpui::elements::{    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
     EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
@@ -14,9 +14,7 @@ use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
 };
-use wormhole_desktop_core::chat_commands::ChatEventDto;
-use wormhole_desktop_core::DesktopEventBus;
-use crate::ui::chat::thread::ChatThreadView;
+use wormhole_desktop_core::chat_commands::ChatEventDto;use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
@@ -45,8 +43,8 @@ pub struct ChatShellView {
     gate: DeviceGateStatus,
     selection: ConversationSelection,
     shell_state: SharedChatShellState,
-    sidebar: ViewHandle<ChatSidebarView>,
-    header: ViewHandle<ChatHeaderView>,
+    event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
+    sidebar: ViewHandle<ChatSidebarView>,    header: ViewHandle<ChatHeaderView>,
     thread_search: ViewHandle<ChatThreadSearchView>,
     thread: ViewHandle<ChatThreadView>,
     compose: ViewHandle<ChatComposeView>,
@@ -100,14 +98,17 @@ impl ChatShellView {
             }
         });
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let event_rx = Arc::new(tokio::sync::Mutex::new(
+            core.runtime().ctx.events.subscribe(),
+        ));
         let mut view = Self {
             core: core.clone(),
             font,
             gate: DeviceGateStatus::default(),
             selection,
             shell_state,
-            sidebar,
-            header,
+            event_rx,
+            sidebar,            header,
             thread_search,
             thread,
             compose,
@@ -119,41 +120,102 @@ impl ChatShellView {
     }
 
     fn start_chat_event_listener(&self, ctx: &mut ViewContext<Self>) {
-        let events = self.core.runtime().ctx.events.clone();
+        let event_rx = Arc::clone(&self.event_rx);
         let shell_state = self.shell_state.clone();
         let sidebar = self.sidebar.clone();
-        Self::poll_chat_event_once(ctx, events, shell_state, sidebar);
+        let thread = self.thread.clone();
+        let selection = self.selection.clone();
+        Self::poll_chat_event_once(
+            ctx,
+            event_rx,
+            shell_state,
+            sidebar,
+            thread,
+            selection,
+        );
     }
 
     fn poll_chat_event_once(
         ctx: &mut ViewContext<Self>,
-        events: DesktopEventBus,
+        event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
         shell_state: SharedChatShellState,
         sidebar: ViewHandle<ChatSidebarView>,
+        thread: ViewHandle<ChatThreadView>,
+        selection: ConversationSelection,
     ) {
-        let mut rx = events.subscribe();
-        ctx.spawn(async move { rx.recv().await }, move |_view, output, ctx| {
-            if let Ok(event) = output {
-                if event.name == "chat-event" {
-                    if let Ok(chat_event) =
-                        serde_json::from_value::<ChatEventDto>(event.payload.clone())
-                    {
-                        if chat_event_triggers_refresh(&chat_event.kind) {
-                            if let Ok(mut state) = shell_state.lock() {
-                                state.bump_message_tick();
+        let rx = Arc::clone(&event_rx);
+        ctx.spawn(
+            async move {
+                let mut guard = rx.lock().await;
+                guard.recv().await
+            },
+            move |_view, output, ctx| {
+                let mut lagged = false;
+                match output {
+                    Ok(event) if event.name == "chat-event" => {
+                        if let Ok(chat_event) =
+                            serde_json::from_value::<ChatEventDto>(event.payload.clone())
+                        {
+                            if chat_event.kind == "sync_required" {
+                                lagged = true;
                             }
-                            ctx.update_view(&sidebar, |sidebar, ctx| {
-                                sidebar.refresh(ctx);
-                            });
-                            ctx.notify();
+                            if chat_event_triggers_refresh(&chat_event.kind) {
+                                if let Some(message) = chat_event.message.clone() {
+                                    let conv_id = chat_event.conv_id.clone();
+                                    ctx.update_view(&thread, |thread, ctx| {
+                                        thread.apply_incoming_message(message, &conv_id, ctx);
+                                    });
+                                }
+                                if let Ok(mut state) = shell_state.lock() {
+                                    state.bump_message_tick();
+                                }
+                                ctx.update_view(&sidebar, |sidebar, ctx| {
+                                    sidebar.refresh(ctx);
+                                });
+                                ctx.notify();
+                            }
                         }
                     }
+                    Err(RecvError::Lagged(_)) => {
+                        lagged = true;
+                    }
+                    Err(RecvError::Closed) => return,
+                    _ => {}
                 }
-            }
-            Self::poll_chat_event_once(ctx, events, shell_state, sidebar);
-        });
+                if lagged {
+                    if let Ok(mut state) = shell_state.lock() {
+                        state.bump_message_tick();
+                    }
+                    let active_conv = selection.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(conv_id) = active_conv {
+                        ctx.update_view(&thread, |thread, ctx| {
+                            thread.force_sync_messages(&conv_id, ctx);
+                        });
+                    }
+                    ctx.update_view(&sidebar, |sidebar, ctx| {
+                        sidebar.refresh(ctx);
+                    });
+                    ctx.notify();
+                }
+                Self::poll_chat_event_once(
+                    ctx,
+                    event_rx,
+                    shell_state,
+                    sidebar,
+                    thread,
+                    selection,
+                );
+            },
+        );
     }
 
+    pub fn refresh_cluster_display(&mut self, ctx: &mut ViewContext<Self>) {
+        let sidebar = self.sidebar.clone();
+        ctx.update_view(&sidebar, |sidebar, ctx| {
+            sidebar.refresh(ctx);
+        });
+        self.poll_gate(ctx);
+    }
     pub fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         let apply: Arc<dyn Fn(&mut Self, DeviceGateStatus) + Send + Sync> =

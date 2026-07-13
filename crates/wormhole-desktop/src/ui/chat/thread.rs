@@ -251,6 +251,46 @@ impl ChatThreadView {
         self.rebuild_bubbles(ctx);
     }
 
+    pub fn apply_incoming_message(
+        &mut self,
+        message: ChatMessageDto,
+        conv_id: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.loaded_for.as_deref() != Some(conv_id) {
+            return;
+        }
+        let mut base = self
+            .message_cache
+            .get(conv_id)
+            .cloned()
+            .unwrap_or_else(|| self.messages.clone());
+        if base.iter().any(|existing| existing.id == message.id) {
+            return;
+        }
+        base.push(message);
+        base.sort_by_key(|msg| msg.sent_at);
+        let merged = merge_pending_messages(
+            &base,
+            &self.pending_for_conv(conv_id),
+            self.local_endpoint.as_deref(),
+        );
+        if messages_snapshot_equal(&self.messages, &merged) {
+            return;
+        }
+        self.messages = merged.clone();
+        self.message_cache.insert(conv_id.to_string(), merged);
+        self.rebuild_bubbles(ctx);
+        self.update_hint_bubble(ctx);
+    }
+
+    pub fn force_sync_messages(&mut self, conv_id: &str, ctx: &mut ViewContext<Self>) {
+        if self.loaded_for.as_deref() != Some(conv_id) {
+            return;
+        }
+        self.fetch_messages(conv_id.to_string(), ctx);
+    }
+
     fn hint_text(&self) -> String {
         let pending_open = self
             .shell_state
