@@ -9,9 +9,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
-use crate::ui::chat::attach_panel::{
-    attachment_kind_for_path, pick_file_for_kind, AttachKind,
-};
+use crate::ui::chat::attach_panel::{attachment_kind_for_path, pick_file_for_kind, AttachKind};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingAttachment, SharedChatShellState};
 use crate::ui::chat::sticker_picker::{StickerPickerEvent, StickerPickerView};
@@ -384,7 +382,9 @@ impl ChatComposeView {
                     .finish(),
             )
             .with_background(icon_bg)
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ATTACH_ICON_SIZE / 2.0)))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+                ATTACH_ICON_SIZE / 2.0,
+            )))
             .finish(),
         )
         .with_width(ATTACH_ICON_SIZE)

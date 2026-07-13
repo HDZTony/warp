@@ -201,11 +201,16 @@ impl LoginModalView {
         }
     }
 
-    fn map_edit_action(edit_action: &LoginModalAction, action: TextFieldEditAction) -> LoginModalAction {
+    fn map_edit_action(
+        edit_action: &LoginModalAction,
+        action: TextFieldEditAction,
+    ) -> LoginModalAction {
         match edit_action {
             LoginModalAction::EmailEdit(_) => LoginModalAction::EmailEdit(action),
             LoginModalAction::PasswordEdit(_) => LoginModalAction::PasswordEdit(action),
-            LoginModalAction::ConfirmPasswordEdit(_) => LoginModalAction::ConfirmPasswordEdit(action),
+            LoginModalAction::ConfirmPasswordEdit(_) => {
+                LoginModalAction::ConfirmPasswordEdit(action)
+            }
             _ => LoginModalAction::EmailEdit(action),
         }
     }

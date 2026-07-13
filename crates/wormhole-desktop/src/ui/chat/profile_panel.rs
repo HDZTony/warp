@@ -19,7 +19,9 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::chat_commands::{chat_set_peer_display_name, SetChatPeerDisplayNameParams};
+use wormhole_desktop_core::chat_commands::{
+    chat_set_peer_display_name, SetChatPeerDisplayNameParams,
+};
 use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::{
     display_name_with_remark, load_device_remarks, set_device_remark,
@@ -132,9 +134,12 @@ impl ChatProfilePanelView {
                 let app = runtime.ctx.as_ref();
                 let state = runtime.state.clone();
                 let conversations =
-                    wormhole_desktop_core::chat_commands::chat_list_conversations(app, &state).await;
+                    wormhole_desktop_core::chat_commands::chat_list_conversations(app, &state)
+                        .await;
                 let cluster = cluster_status_hud(&state).await;
-                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                let remarks = load_device_remarks(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
                 (conversations, cluster, remarks)
             },
             |view, output, ctx| {
@@ -153,9 +158,9 @@ impl ChatProfilePanelView {
                     .map(|state| state.remote_desktop_active)
                     .unwrap_or(false);
                 let (conversations, cluster, remarks) = output;
-                let conv = conversations.ok().and_then(|list| {
-                    list.into_iter().find(|conv| conv.id == selected)
-                });
+                let conv = conversations
+                    .ok()
+                    .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
                 if let Some(ref conv) = conv {
                     view.conv_id = Some(conv.id.clone());
                 } else {
@@ -182,14 +187,10 @@ impl ChatProfilePanelView {
                         view.node_id = node.node_id.clone();
                         view.os_label = node.os.clone();
                         view.online = node.online;
-                        view.remark = remarks
-                            .get(&node.node_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        view.title = display_name_with_remark(
-                            Some(view.remark.as_str()),
-                            || view.default_title.clone(),
-                        );
+                        view.remark = remarks.get(&node.node_id).cloned().unwrap_or_default();
+                        view.title = display_name_with_remark(Some(view.remark.as_str()), || {
+                            view.default_title.clone()
+                        });
                         view.status = if remote_active {
                             "远程桌面 · 已连接".into()
                         } else if node.online {
@@ -206,10 +207,7 @@ impl ChatProfilePanelView {
                         view.node_id = peer_key.to_string();
                         view.os_label = "—".into();
                         view.online = false;
-                        view.remark = remarks
-                            .get(&view.node_id)
-                            .cloned()
-                            .unwrap_or_default();
+                        view.remark = remarks.get(&view.node_id).cloned().unwrap_or_default();
                         if !view.remark.is_empty() {
                             view.title = view.remark.clone();
                         }
@@ -227,12 +225,15 @@ impl ChatProfilePanelView {
         }
         let node_id = self.node_id.clone();
         let conv_id = self.conv_id.clone();
-        let remark = self.remark.chars().take(MAX_REMARK_CHARS).collect::<String>();
+        let remark = self
+            .remark
+            .chars()
+            .take(MAX_REMARK_CHARS)
+            .collect::<String>();
         let remark_for_save = remark.trim().to_string();
         self.remark = remark_for_save.clone();
-        self.title = display_name_with_remark(Some(self.remark.as_str()), || {
-            self.default_title.clone()
-        });
+        self.title =
+            display_name_with_remark(Some(self.remark.as_str()), || self.default_title.clone());
         self.remark_dirty = false;
         let core = self.core.clone();
         ctx.spawn(
@@ -334,11 +335,7 @@ impl ChatProfilePanelView {
             .finish()
     }
 
-    fn profile_section(
-        &self,
-        title: &str,
-        rows: Vec<(String, String)>,
-    ) -> Box<dyn Element> {
+    fn profile_section(&self, title: &str, rows: Vec<(String, String)>) -> Box<dyn Element> {
         let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
         col.add_child(
             Container::new(ui_title(title.to_string(), self.font))
@@ -543,9 +540,11 @@ impl View for ChatProfilePanelView {
             Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    self.profile_action("通话", "chat-header-phone.svg", ChatProfileAction::Call),
-                )
+                .with_child(self.profile_action(
+                    "通话",
+                    "chat-header-phone.svg",
+                    ChatProfileAction::Call,
+                ))
                 .with_child(self.profile_action(
                     "远程桌面",
                     "chat-header-rdp.svg",
@@ -561,10 +560,8 @@ impl View for ChatProfilePanelView {
         .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
         .finish();
 
-        let cluster_section = self.profile_section(
-            "集群",
-            vec![("集群".into(), self.cluster_name.clone())],
-        );
+        let cluster_section =
+            self.profile_section("集群", vec![("集群".into(), self.cluster_name.clone())]);
 
         Flex::column()
             .with_main_axis_size(MainAxisSize::Max)

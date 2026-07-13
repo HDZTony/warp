@@ -15,10 +15,7 @@ use crate::ui::theme;
 const MENU_WIDTH: f32 = 220.0;
 const FLYOUT_WIDTH: f32 = 200.0;
 
-pub fn header_menu_panel(
-    font: FamilyId,
-    mute_flyout_open: bool,
-) -> Box<dyn Element> {
+pub fn header_menu_panel(font: FamilyId, mute_flyout_open: bool) -> Box<dyn Element> {
     let mut col = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -135,14 +132,12 @@ fn mute_flyout(font: FamilyId) -> Box<dyn Element> {
             DispatchEventResult::StopPropagation
         },
     ));
-    Container::new(
-        popover_shell(
-            FLYOUT_WIDTH,
-            Container::new(col.finish())
-                .with_uniform_padding(6.0)
-                .finish(),
-        ),
-    )
+    Container::new(popover_shell(
+        FLYOUT_WIDTH,
+        Container::new(col.finish())
+            .with_uniform_padding(6.0)
+            .finish(),
+    ))
     .with_margin_left(8.0)
     .finish()
 }
@@ -159,11 +154,7 @@ pub fn header_button(
     } else {
         ColorU::transparent_black()
     };
-    let icon_color = if active {
-        theme::accent_cool()
-    } else {
-        color
-    };
+    let icon_color = if active { theme::accent_cool() } else { color };
     EventHandler::new(
         Container::new(
             warpui::elements::Align::new(crate::ui::icons::chat_header_icon(icon_path, icon_color))

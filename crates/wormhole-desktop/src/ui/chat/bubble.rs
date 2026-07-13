@@ -1,10 +1,10 @@
+use chrono::TimeZone;
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded,
     Flex, MainAxisSize, ParentElement, Radius, Shrinkable,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, View, ViewContext};
-use chrono::TimeZone;
 
 use crate::ui::chat::layout::bubble_corner_radius;
 use crate::ui::icons;
@@ -164,7 +164,11 @@ impl ChatBubbleView {
                         Flex::row()
                             .with_main_axis_alignment(warpui::elements::MainAxisAlignment::Center)
                             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_child(icons::icon(icon_path, ATTACH_CHIP_ICON, theme::accent_cool()))
+                            .with_child(icons::icon(
+                                icon_path,
+                                ATTACH_CHIP_ICON,
+                                theme::accent_cool(),
+                            ))
                             .finish(),
                     )
                     .with_width(28.0)
@@ -177,20 +181,16 @@ impl ChatBubbleView {
             )
             .with_child(
                 Container::new({
-                    let mut text_col =
-                        Flex::column().with_main_axis_size(MainAxisSize::Min);
+                    let mut text_col = Flex::column().with_main_axis_size(MainAxisSize::Min);
                     text_col.add_child(
                         ui_text::chat_bubble_meta(attachment.name.clone(), self.font)
                             .with_color(theme::text())
                             .finish(),
                     );
                     text_col.add_child(
-                        ui_text::chat_bubble_meta(
-                            format_file_size(attachment.size),
-                            self.font,
-                        )
-                        .with_color(theme::muted())
-                        .finish(),
+                        ui_text::chat_bubble_meta(format_file_size(attachment.size), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
                     );
                     text_col.finish()
                 })
@@ -399,10 +399,7 @@ mod tests {
     #[test]
     fn normalize_timestamp_ms_treats_legacy_seconds() {
         assert_eq!(normalize_timestamp_ms(1_731_637_500), 1_731_637_500_000);
-        assert_eq!(
-            normalize_timestamp_ms(1_731_637_500_000),
-            1_731_637_500_000
-        );
+        assert_eq!(normalize_timestamp_ms(1_731_637_500_000), 1_731_637_500_000);
     }
 
     #[test]
@@ -422,10 +419,7 @@ mod tests {
     #[test]
     fn format_message_time_accepts_second_precision_legacy_values() {
         let secs = 1_731_637_500u64;
-        assert_eq!(
-            format_message_time(secs),
-            format_message_time(secs * 1000)
-        );
+        assert_eq!(format_message_time(secs), format_message_time(secs * 1000));
     }
 
     #[test]

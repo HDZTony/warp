@@ -13,11 +13,11 @@ use crate::ui::chat::layout::{
     bubble_max_width, message_is_grouped, message_row_margin_bottom, thread_search_matches,
     TG_THREAD_PAD_BOTTOM, TG_THREAD_PAD_TOP, TG_THREAD_PAD_X,
 };
-use crate::ui::panel_primitives::{status_line, TG_BUBBLE_MAX_WIDTH, StatusTone};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
 use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::{status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
 use wormhole_desktop_core::chat_commands::{
     chat_config, chat_list_messages, ChatAttachmentDto, ChatMessageDto, ListChatMessagesParams,
 };
@@ -44,6 +44,10 @@ pub struct ChatThreadView {
     bubbles: Vec<BubbleEntry>,
     hint_bubble: warpui::ViewHandle<ChatBubbleView>,
     loading_conv: Option<String>,
+    loading_older_conv: Option<String>,
+    fetch_generations: HashMap<String, u64>,
+    next_fetch_seq: u64,
+    history_exhausted: HashMap<String, bool>,
     fetch_error: Option<String>,
     scroll: ClippedScrollStateHandle,
     thread_content_width: f32,
@@ -59,6 +63,31 @@ fn messages_snapshot_equal(a: &[ChatMessageDto], b: &[ChatMessageDto]) -> bool {
 }
 
 const PENDING_DEDUP_WINDOW_MS: u64 = 30_000;
+const RECENT_MESSAGE_PAGE: usize = 50;
+
+/// Merge `incoming` into `existing` by message id; newer `sent_at` wins on conflict.
+pub(crate) fn merge_messages_by_id(
+    existing: &[ChatMessageDto],
+    incoming: &[ChatMessageDto],
+) -> Vec<ChatMessageDto> {
+    let mut by_id: HashMap<String, ChatMessageDto> = HashMap::new();
+    for message in existing {
+        by_id.insert(message.id.clone(), message.clone());
+    }
+    for message in incoming {
+        by_id
+            .entry(message.id.clone())
+            .and_modify(|current| {
+                if message.sent_at >= current.sent_at {
+                    *current = message.clone();
+                }
+            })
+            .or_insert_with(|| message.clone());
+    }
+    let mut merged: Vec<_> = by_id.into_values().collect();
+    merged.sort_by_key(|msg| msg.sent_at);
+    merged
+}
 
 pub(crate) fn merge_pending_messages(
     messages: &[ChatMessageDto],
@@ -131,6 +160,10 @@ impl ChatThreadView {
             bubbles: Vec::new(),
             hint_bubble,
             loading_conv: None,
+            loading_older_conv: None,
+            fetch_generations: HashMap::new(),
+            next_fetch_seq: 0,
+            history_exhausted: HashMap::new(),
             fetch_error: None,
             scroll: ClippedScrollStateHandle::new(),
             thread_content_width: 0.0,
@@ -179,7 +212,10 @@ impl ChatThreadView {
         }
         if selection_changed {
             self.loaded_for = current.clone();
-            self.last_search_query = self.search_query();
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.close_thread_search();
+            }
+            self.last_search_query = String::new();
             self.fetch_error = None;
             if let Some(conv_id) = current.as_ref() {
                 let cached = self.message_cache.get(conv_id).cloned();
@@ -189,6 +225,8 @@ impl ChatThreadView {
                 } else {
                     Some(conv_id.clone())
                 };
+                self.loading_older_conv = None;
+                self.history_exhausted.remove(conv_id);
                 let base = cached.unwrap_or_default();
                 let merged = self.merge_messages_for_conv(&base, conv_id);
                 if !messages_snapshot_equal(&self.messages, &merged) {
@@ -200,6 +238,7 @@ impl ChatThreadView {
                 self.messages.clear();
                 self.bubbles.clear();
                 self.loading_conv = None;
+                self.loading_older_conv = None;
                 self.update_hint_bubble(ctx);
             }
             ctx.notify();
@@ -247,8 +286,92 @@ impl ChatThreadView {
             return;
         }
         self.messages = merged.clone();
-        self.message_cache.insert(conv_id.to_string(), merged);
+        self.message_cache.insert(conv_id.to_string(), base);
         self.rebuild_bubbles(ctx);
+    }
+
+    fn next_fetch_generation(&mut self, conv_id: &str) -> u64 {
+        self.next_fetch_seq = self.next_fetch_seq.saturating_add(1);
+        self.fetch_generations
+            .insert(conv_id.to_string(), self.next_fetch_seq);
+        self.next_fetch_seq
+    }
+
+    fn fetch_generation_matches(&self, conv_id: &str, generation: u64) -> bool {
+        self.fetch_generations
+            .get(conv_id)
+            .copied()
+            .is_some_and(|current| current == generation)
+    }
+
+    fn apply_fetched_messages(
+        &mut self,
+        conv_id: &str,
+        generation: u64,
+        fetched: Vec<ChatMessageDto>,
+        before: Option<u64>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.fetch_generation_matches(conv_id, generation) {
+            return;
+        }
+        if before.is_none() {
+            self.loading_conv = None;
+        } else {
+            self.loading_older_conv = None;
+        }
+        self.fetch_error = None;
+
+        let existing = self.message_cache.get(conv_id).cloned().unwrap_or_default();
+        if fetched.is_empty() {
+            if before.is_some() {
+                self.history_exhausted.insert(conv_id.to_string(), true);
+            } else if existing.is_empty() && self.messages.is_empty() {
+                self.messages.clear();
+                self.message_cache.insert(conv_id.to_string(), Vec::new());
+                self.rebuild_bubbles(ctx);
+            }
+            self.update_hint_bubble(ctx);
+            ctx.notify();
+            return;
+        }
+
+        let merged_base = merge_messages_by_id(&existing, &fetched);
+        let merged = merge_pending_messages(
+            &merged_base,
+            &self.pending_for_conv(conv_id),
+            self.local_endpoint.as_deref(),
+        );
+        self.message_cache
+            .insert(conv_id.to_string(), merged_base.clone());
+
+        if before.is_some() && fetched.len() < RECENT_MESSAGE_PAGE {
+            self.history_exhausted.insert(conv_id.to_string(), true);
+        }
+
+        if self.loaded_for.as_deref() == Some(conv_id) {
+            if !messages_snapshot_equal(&self.messages, &merged) {
+                self.messages = merged;
+                self.rebuild_bubbles(ctx);
+            }
+            self.update_hint_bubble(ctx);
+            ctx.notify();
+        }
+
+        if before.is_none()
+            && fetched.len() >= RECENT_MESSAGE_PAGE
+            && !self
+                .history_exhausted
+                .get(conv_id)
+                .copied()
+                .unwrap_or(false)
+            && self.loading_older_conv.is_none()
+        {
+            let earliest = merged_base.first().map(|msg| msg.sent_at);
+            if let Some(sent_at) = earliest {
+                self.fetch_older_messages(conv_id.to_string(), Some(sent_at), ctx);
+            }
+        }
     }
 
     pub fn apply_incoming_message(
@@ -260,7 +383,7 @@ impl ChatThreadView {
         if self.loaded_for.as_deref() != Some(conv_id) {
             return;
         }
-        let mut base = self
+        let base = self
             .message_cache
             .get(conv_id)
             .cloned()
@@ -268,10 +391,9 @@ impl ChatThreadView {
         if base.iter().any(|existing| existing.id == message.id) {
             return;
         }
-        base.push(message);
-        base.sort_by_key(|msg| msg.sent_at);
+        let merged_base = merge_messages_by_id(&base, std::slice::from_ref(&message));
         let merged = merge_pending_messages(
-            &base,
+            &merged_base,
             &self.pending_for_conv(conv_id),
             self.local_endpoint.as_deref(),
         );
@@ -279,7 +401,7 @@ impl ChatThreadView {
             return;
         }
         self.messages = merged.clone();
-        self.message_cache.insert(conv_id.to_string(), merged);
+        self.message_cache.insert(conv_id.to_string(), merged_base);
         self.rebuild_bubbles(ctx);
         self.update_hint_bubble(ctx);
     }
@@ -309,6 +431,16 @@ impl ChatThreadView {
         if self.loading_conv.is_some() {
             return "加载中…".into();
         }
+        if self.loading_older_conv.is_some() {
+            return "加载更早消息…".into();
+        }
+        let query = self.search_query();
+        if !query.trim().is_empty()
+            && !self.messages.is_empty()
+            && self.bubbles.iter().all(|bubble| !bubble.visible)
+        {
+            return "无匹配消息".into();
+        }
         "暂无消息，发送第一条吧".into()
     }
 
@@ -330,6 +462,7 @@ impl ChatThreadView {
             self.loading_conv = Some(conv_id.clone());
             self.update_hint_bubble(ctx);
         }
+        let generation = self.next_fetch_generation(&conv_id);
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -339,50 +472,94 @@ impl ChatThreadView {
                 let cfg = chat_config(app, &state).await;
                 let params = ListChatMessagesParams {
                     conv_id: conv_id.clone(),
-                    limit: Some(50),
+                    limit: Some(RECENT_MESSAGE_PAGE as u32),
                     before: None,
                 };
                 let messages =
                     chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await;
-                (conv_id, cfg, messages)
+                (conv_id, generation, cfg, messages, None)
             },
             |view, output, ctx| {
-                let (conv_id, cfg, messages) = output;
+                let (conv_id, generation, cfg, messages, before) = output;
                 if let Ok(c) = cfg {
                     view.local_endpoint = Some(c.endpoint_id);
                 }
                 match messages {
                     Ok(messages) => {
+                        view.apply_fetched_messages(&conv_id, generation, messages, before, ctx);
+                    }
+                    Err(err) if view.fetch_generation_matches(&conv_id, generation) => {
                         view.loading_conv = None;
-                        view.fetch_error = None;
-                        let pending = view.pending_for_conv(&conv_id);
-                        let merged = merge_pending_messages(
-                            &messages,
-                            &pending,
-                            view.local_endpoint.as_deref(),
-                        );
-                        view.message_cache
-                            .insert(conv_id.clone(), merged.clone());
+                        view.loading_older_conv = None;
                         if view.loaded_for.as_deref() == Some(conv_id.as_str()) {
-                            if !messages_snapshot_equal(&view.messages, &merged) {
-                                view.messages = merged;
-                                view.rebuild_bubbles(ctx);
+                            if view.messages.is_empty() {
+                                view.fetch_error = Some(format!("无法加载消息: {err}"));
+                                view.bubbles.clear();
                             }
                             view.update_hint_bubble(ctx);
                             ctx.notify();
                         }
                     }
-                    Err(err) if view.loaded_for.as_deref() == Some(conv_id.as_str()) => {
-                        view.loading_conv = None;
-                        view.fetch_error = Some(format!("无法加载消息: {err}"));
-                        if view.messages.is_empty() {
-                            view.bubbles.clear();
-                            view.update_hint_bubble(ctx);
-                        }
-                        ctx.notify();
-                    }
                     Err(_) => {
                         view.loading_conv = None;
+                        view.loading_older_conv = None;
+                    }
+                }
+            },
+        );
+    }
+
+    fn fetch_older_messages(
+        &mut self,
+        conv_id: String,
+        before: Option<u64>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self
+            .history_exhausted
+            .get(&conv_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if self.loading_older_conv.as_deref() == Some(conv_id.as_str()) {
+            return;
+        }
+        self.loading_older_conv = Some(conv_id.clone());
+        self.update_hint_bubble(ctx);
+        let generation = self.next_fetch_generation(&conv_id);
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let app = runtime.ctx.as_ref();
+                let state = runtime.state.clone();
+                let params = ListChatMessagesParams {
+                    conv_id: conv_id.clone(),
+                    limit: Some(RECENT_MESSAGE_PAGE as u32),
+                    before,
+                };
+                let messages =
+                    chat_list_messages(runtime.ctx.as_ref(), &runtime.state, params).await;
+                (conv_id, generation, messages, before)
+            },
+            |view, output, ctx| {
+                let (conv_id, generation, messages, before) = output;
+                match messages {
+                    Ok(messages) => {
+                        view.apply_fetched_messages(&conv_id, generation, messages, before, ctx);
+                    }
+                    Err(err) if view.fetch_generation_matches(&conv_id, generation) => {
+                        view.loading_older_conv = None;
+                        if view.loaded_for.as_deref() == Some(conv_id.as_str()) {
+                            view.fetch_error = Some(format!("无法加载更早消息: {err}"));
+                            view.update_hint_bubble(ctx);
+                            ctx.notify();
+                        }
+                    }
+                    Err(_) => {
+                        view.loading_older_conv = None;
                     }
                 }
             },
@@ -429,21 +606,20 @@ impl ChatThreadView {
             let timestamp = format_message_time_pub(msg.sent_at);
             let read = outgoing
                 && !msg.id.starts_with("pending:")
-                && outgoing_message_read(
-                    msg.sent_at,
-                    last_outgoing_index == Some(index),
-                );
+                && outgoing_message_read(msg.sent_at, last_outgoing_index == Some(index));
             let search_hit = !query.trim().is_empty()
                 && (thread_search_matches(&query, &body)
-                    || msg.attachments.iter().any(|attachment| {
-                        thread_search_matches(&query, &attachment.name)
-                    }));
+                    || msg
+                        .attachments
+                        .iter()
+                        .any(|attachment| thread_search_matches(&query, &attachment.name)));
             let visible = search_hit
                 || query.trim().is_empty()
                 || thread_search_matches(&query, &body)
-                || msg.attachments.iter().any(|attachment| {
-                    thread_search_matches(&query, &attachment.name)
-                });
+                || msg
+                    .attachments
+                    .iter()
+                    .any(|attachment| thread_search_matches(&query, &attachment.name));
             let handle = ctx.add_view(move |ctx| {
                 ChatBubbleView::new(
                     ctx,
@@ -497,8 +673,7 @@ impl View for ChatThreadView {
                     .bubbles
                     .get(index + 1)
                     .map(|next| {
-                        next.visible
-                            && message_is_grouped(Some(bubble.outgoing), next.outgoing)
+                        next.visible && message_is_grouped(Some(bubble.outgoing), next.outgoing)
                     })
                     .unwrap_or(false);
                 let margin_bottom = message_row_margin_bottom(grouped_with_next);
@@ -534,7 +709,11 @@ impl View for ChatThreadView {
                 )
                 .finish(),
             );
-        if let Some(error) = self.fetch_error.as_ref().filter(|_| self.messages.is_empty()) {
+        if let Some(error) = self
+            .fetch_error
+            .as_ref()
+            .filter(|_| self.messages.is_empty())
+        {
             body.add_child(status_line(error.clone(), self.font, StatusTone::Danger));
         }
 
@@ -561,9 +740,15 @@ mod tests {
     fn messages_snapshot_equal_compares_id_sent_at_and_body() {
         let a = sample_message("m1", "hello", 1_731_637_500_000);
         let mut b = a.clone();
-        assert!(messages_snapshot_equal(std::slice::from_ref(&a), std::slice::from_ref(&b)));
+        assert!(messages_snapshot_equal(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b)
+        ));
         b.body = "other".into();
-        assert!(!messages_snapshot_equal(std::slice::from_ref(&a), std::slice::from_ref(&b)));
+        assert!(!messages_snapshot_equal(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b)
+        ));
     }
 
     #[test]
@@ -595,5 +780,31 @@ mod tests {
         let merged = merge_pending_messages(&base, &pending, Some("local"));
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "m2");
+    }
+
+    #[test]
+    fn merge_messages_by_id_dedupes_and_sorts() {
+        let existing = vec![
+            sample_message("a", "one", 10),
+            sample_message("b", "two", 20),
+        ];
+        let incoming = vec![
+            sample_message("b", "two-updated", 25),
+            sample_message("c", "three", 30),
+        ];
+        let merged = merge_messages_by_id(&existing, &incoming);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].id, "a");
+        assert_eq!(merged[1].id, "b");
+        assert_eq!(merged[1].body, "two-updated");
+        assert_eq!(merged[2].id, "c");
+    }
+
+    #[test]
+    fn merge_messages_by_id_keeps_existing_when_incoming_empty() {
+        let existing = vec![sample_message("a", "one", 10)];
+        let merged = merge_messages_by_id(&existing, &[]);
+        assert_eq!(merged.len(), existing.len());
+        assert_eq!(merged[0].id, existing[0].id);
     }
 }

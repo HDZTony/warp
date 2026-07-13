@@ -32,7 +32,7 @@ use wormhole_desktop_core::cluster_commands::{
     ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
     LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
-    RemoveClusterNodeParams, ShareEntryDto, SwitchActiveClusterParams,
+    RemoveClusterNodeParams, ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
@@ -225,11 +225,7 @@ impl DevicesView {
     }
 
     /// Instantly drop a cluster from the local HUD; control-plane delete continues in the background.
-    fn apply_optimistic_remove_cluster(
-        &mut self,
-        cluster_id: &str,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn apply_optimistic_remove_cluster(&mut self, cluster_id: &str, ctx: &mut ViewContext<Self>) {
         let Some(mut status) = self.cluster.take() else {
             return;
         };
@@ -238,7 +234,9 @@ impl DevicesView {
                 .clusters
                 .iter()
                 .any(|entry| entry.active && entry.cluster_id == cluster_id);
-        status.clusters.retain(|entry| entry.cluster_id != cluster_id);
+        status
+            .clusters
+            .retain(|entry| entry.cluster_id != cluster_id);
         if was_active {
             if self.mode == ViewMode::Files {
                 self.mode = ViewMode::Grid;
@@ -252,7 +250,11 @@ impl DevicesView {
                 self.share_status = None;
                 self.share_add_modal_open = false;
             }
-            if let Some(next_id) = status.clusters.first().map(|entry| entry.cluster_id.clone()) {
+            if let Some(next_id) = status
+                .clusters
+                .first()
+                .map(|entry| entry.cluster_id.clone())
+            {
                 for entry in &mut status.clusters {
                     entry.active = entry.cluster_id == next_id;
                 }
@@ -315,7 +317,9 @@ impl DevicesView {
             async move {
                 let state = core.runtime().state.clone();
                 let status = fetch_cluster_for_ui(&state).await;
-                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                let remarks = load_device_remarks(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
                 (status, remarks)
             },
             move |view, output, ctx| {
@@ -350,7 +354,9 @@ impl DevicesView {
             async move {
                 let state = core.runtime().state.clone();
                 let status = fetch_cluster_for_ui(&state).await;
-                let remarks = load_device_remarks(&state.data_dir).await.unwrap_or_default();
+                let remarks = load_device_remarks(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
                 (status, remarks)
             },
             move |view, output, ctx| {
@@ -734,6 +740,22 @@ impl DevicesView {
         (node_id, path, String::new())
     }
 
+    fn share_action_params(&self, entry_name: &str) -> ShareEntryActionParams {
+        let node_id = self.browsing_node_id.clone().unwrap_or_default();
+        let share_path = self.share_path_string();
+        let entry = self
+            .share_entries
+            .iter()
+            .find(|entry| entry.name == entry_name);
+        ShareEntryActionParams {
+            node_id,
+            share_path,
+            entry_name: entry_name.to_string(),
+            remote_size: entry.map(|entry| entry.size),
+            remote_modified_at: entry.map(|entry| entry.modified_at),
+        }
+    }
+
     fn run_share_file_action<F>(
         &mut self,
         entry_name: String,
@@ -744,9 +766,7 @@ impl DevicesView {
     ) where
         F: FnOnce(
                 wormhole_desktop_core::state::AppState,
-                String,
-                String,
-                String,
+                ShareEntryActionParams,
             ) -> std::pin::Pin<
                 Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
             > + Send
@@ -755,8 +775,7 @@ impl DevicesView {
         if self.share_file_busy {
             return;
         }
-        let (node_id, share_path, _) = self.share_file_context();
-        let name = entry_name.clone();
+        let params = self.share_action_params(&entry_name);
         self.share_file_busy = true;
         self.share_status = Some(busy_label.to_string());
         self.close_share_context_menu(ctx);
@@ -766,7 +785,7 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                op(state, node_id, share_path, name).await
+                op(state, params).await
             },
             move |view, output, ctx| {
                 view.share_file_busy = false;
@@ -789,11 +808,7 @@ impl DevicesView {
             entry_name.clone(),
             "正在打开…",
             "已打开",
-            |state, node_id, share_path, name| {
-                Box::pin(
-                    async move { open_share_entry(&state, &node_id, &share_path, &name).await },
-                )
-            },
+            |state, params| Box::pin(async move { open_share_entry(&state, params).await }),
             ctx,
         );
     }
@@ -803,11 +818,7 @@ impl DevicesView {
             entry_name.clone(),
             "正在同步…",
             "已同步",
-            |state, node_id, share_path, name| {
-                Box::pin(
-                    async move { sync_share_entry(&state, &node_id, &share_path, &name).await },
-                )
-            },
+            |state, params| Box::pin(async move { sync_share_entry(&state, params).await }),
             ctx,
         );
     }
@@ -817,11 +828,7 @@ impl DevicesView {
             entry_name.clone(),
             "正在远程打开…",
             "已请求远程打开",
-            |state, node_id, share_path, name| {
-                Box::pin(async move {
-                    remote_open_share_entry(&state, &node_id, &share_path, &name).await
-                })
-            },
+            |state, params| Box::pin(async move { remote_open_share_entry(&state, params).await }),
             ctx,
         );
     }
@@ -830,12 +837,12 @@ impl DevicesView {
         self.run_share_file_action(
             entry_name.clone(),
             "正在删除…",
-            "已删除",
-            |state, node_id, share_path, name| {
-                Box::pin(
-                    async move { delete_share_entry(&state, &node_id, &share_path, &name).await },
-                )
+            if self.browsing_local() {
+                "已删除"
+            } else {
+                "已删除本地副本"
             },
+            |state, params| Box::pin(async move { delete_share_entry(&state, params).await }),
             ctx,
         );
     }
@@ -968,14 +975,12 @@ impl DevicesView {
 
     fn active_cluster_is_owner(cluster: &ClusterStatusDto) -> bool {
         Self::active_cluster_membership_fresh(cluster)
-            && Self::active_cluster_entry(cluster)
-                .is_some_and(|entry| entry.role == "owner")
+            && Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role == "owner")
     }
 
     fn active_cluster_can_leave(cluster: &ClusterStatusDto) -> bool {
         Self::active_cluster_membership_fresh(cluster)
-            && Self::active_cluster_entry(cluster)
-                .is_some_and(|entry| entry.role != "owner")
+            && Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role != "owner")
     }
 
     fn membership_gate_message(cluster: &ClusterStatusDto) -> Option<&'static str> {
@@ -985,9 +990,7 @@ impl DevicesView {
         if cluster.role_stale
             || Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role_stale)
         {
-            return Some(
-                "MEMBERSHIP · 控面成员状态未同步 · 请刷新；若仍失败请重新加入或创建集群",
-            );
+            return Some("MEMBERSHIP · 控面成员状态未同步 · 请刷新；若仍失败请重新加入或创建集群");
         }
         if !Self::active_cluster_can_invite(cluster)
             && Self::active_cluster_entry(cluster).is_some_and(|entry| !entry.revoked)
@@ -1610,9 +1613,7 @@ impl DevicesView {
             if !Self::active_cluster_can_invite(cluster) {
                 self.status_flash = Some(
                     Self::membership_gate_message(cluster)
-                        .unwrap_or(
-                            "当前设备不是该集群成员，请用原设备操作或重新加入",
-                        )
+                        .unwrap_or("当前设备不是该集群成员，请用原设备操作或重新加入")
                         .to_string(),
                 );
                 self.cluster_picker_open = false;
@@ -3463,8 +3464,9 @@ impl DevicesView {
             return Flex::column().finish();
         };
         let entry = self.share_entries.iter().find(|entry| entry.name == name);
-        let is_local = entry.map(|entry| entry.local).unwrap_or(true);
-        let can_unshare = self.browsing_local()
+        let browsing_local = self.browsing_local();
+        let has_local_replica = entry.map(|entry| entry.local).unwrap_or(false);
+        let can_unshare = browsing_local
             && entry
                 .map(|entry| entry.local && entry.volume_id.is_some())
                 .unwrap_or(false);
@@ -3488,12 +3490,14 @@ impl DevicesView {
             DevicesAction::ShareOpenFile(name.clone()),
             false,
         ));
-        if !is_local {
+        if !browsing_local && !is_folder && !has_local_replica {
             menu.add_child(self.share_context_item(
                 "同步",
                 DevicesAction::ShareSyncFile(name.clone()),
                 false,
             ));
+        }
+        if !browsing_local {
             menu.add_child(self.share_context_item(
                 "远程打开",
                 DevicesAction::ShareRemoteOpenFile(name.clone()),
@@ -3506,9 +3510,15 @@ impl DevicesView {
                 DevicesAction::OpenShareUnshareModal(name.clone()),
                 true,
             ));
-        } else if !is_folder || !is_local {
+        } else if browsing_local && (!is_folder || !has_local_replica) {
             menu.add_child(self.share_context_item(
                 "删除",
+                DevicesAction::ShareDeleteFile(name.clone()),
+                true,
+            ));
+        } else if !browsing_local && !is_folder && has_local_replica {
+            menu.add_child(self.share_context_item(
+                "删除本地副本",
                 DevicesAction::ShareDeleteFile(name),
                 true,
             ));
@@ -3528,7 +3538,10 @@ impl DevicesView {
     }
 
     fn share_unshare_modal(&self) -> Box<dyn Element> {
-        let name = self.share_unshare_name.clone().unwrap_or_else(|| "—".into());
+        let name = self
+            .share_unshare_name
+            .clone()
+            .unwrap_or_else(|| "—".into());
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
             ui_text::title("取消共享", self.font)

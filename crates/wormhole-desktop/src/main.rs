@@ -34,7 +34,9 @@ use wormhole_desktop_core::bootstrap_desktop;
 use wormhole_desktop_core::shutdown_desktop;
 use wormhole_desktop_core::MAIN_WINDOW_TITLE;
 #[cfg(unix)]
-use wormhole_desktop_core::{acquire_gui_instance_or_exit, acquire_headless_instance_or_exit, DesktopInstanceKind};
+use wormhole_desktop_core::{
+    acquire_gui_instance_or_exit, acquire_headless_instance_or_exit, DesktopInstanceKind,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "wormhole-desktop", about = "Wormhole desktop (Warp native UI)")]
@@ -231,8 +233,7 @@ fn main() -> Result<()> {
                     #[cfg(unix)]
                     {
                         use tokio::signal::unix::{signal, SignalKind};
-                        let mut sigterm =
-                            signal(SignalKind::terminate()).ok();
+                        let mut sigterm = signal(SignalKind::terminate()).ok();
                         let mut sigint = signal(SignalKind::interrupt()).ok();
                         tokio::select! {
                             _ = async {
@@ -252,9 +253,7 @@ fn main() -> Result<()> {
                         }
                     }
                     let runtime = core_for_signal.runtime();
-                    if let Err(err) =
-                        shutdown_desktop(&runtime.state, &runtime.ctx).await
-                    {
+                    if let Err(err) = shutdown_desktop(&runtime.state, &runtime.ctx).await {
                         tracing::warn!("signal shutdown: {err:#}");
                     }
                     std::process::exit(0);

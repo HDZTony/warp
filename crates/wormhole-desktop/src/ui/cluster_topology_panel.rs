@@ -461,13 +461,9 @@ fn node_card(
     if !is_local {
         body.add_child(
             Align::new(
-                Container::new(remote_desktop_button(
-                    node_id.clone(),
-                    node.online,
-                    mono,
-                ))
-                .with_vertical_margin(2.0)
-                .finish(),
+                Container::new(remote_desktop_button(node_id.clone(), node.online, mono))
+                    .with_vertical_margin(2.0)
+                    .finish(),
             )
             .left()
             .finish(),

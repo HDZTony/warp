@@ -16,10 +16,9 @@ use composer_add::{
     DEMO_MEDIA,
 };
 use composer_menus::{access_label, composer_model_chip_label};
+use pathfinder_color::ColorU;
 use project_create_modal::{ProjectCreateState, ProjectCreateStep};
 use project_delete_modal::ProjectDeleteState;
-use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
-use pathfinder_color::ColorU;
 use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
@@ -31,12 +30,14 @@ use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmChatParams};
-use wormhole_desktop_core::warp_embed_prefs::{self, AgentAccessMode, AgentModelRate, PreferredAgent};
+use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
+use wormhole_desktop_core::warp_embed_prefs::{
+    self, AgentAccessMode, AgentModelRate, PreferredAgent,
+};
 use wormhole_desktop_core::{
-    agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback,
-    agent_list_sessions, agent_read_local_session_events,
-    agent_start_session_with_codex_fallback, agent_status, AgentSessionDto, AgentStartRequest,
-    AgentTurnBackend,
+    agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback, agent_list_sessions,
+    agent_read_local_session_events, agent_start_session_with_codex_fallback, agent_status,
+    AgentSessionDto, AgentStartRequest, AgentTurnBackend,
 };
 
 use crate::ui::clipboard::write_clipboard_text;
@@ -363,10 +364,7 @@ impl AgentPanelView {
                     return Err(format!("未找到项目 {pid}"));
                 };
                 if !project.folder_path.is_dir() {
-                    return Err(format!(
-                        "项目目录不存在：{}",
-                        project.folder_path.display()
-                    ));
+                    return Err(format!("项目目录不存在：{}", project.folder_path.display()));
                 }
                 Ok(Some(project.folder_path.display().to_string()))
             }
@@ -455,10 +453,9 @@ impl AgentPanelView {
                                 existing.prompt = prompt;
                             }
                         } else if !project_id.is_empty() {
-                            panel.sidebar_sessions.push(Self::map_session_dto(
-                                dto,
-                                Some(project_id.clone()),
-                            ));
+                            panel
+                                .sidebar_sessions
+                                .push(Self::map_session_dto(dto, Some(project_id.clone())));
                         }
                     }
                     drop(panel);
@@ -1264,7 +1261,10 @@ impl AgentPanelView {
             .map(|s| s.id.clone())
     }
 
-    fn next_session_after_archive(panel: &PanelState, session: &sidebar::AgentSession) -> Option<String> {
+    fn next_session_after_archive(
+        panel: &PanelState,
+        session: &sidebar::AgentSession,
+    ) -> Option<String> {
         if let Some(pid) = &session.project_id {
             Self::next_active_session_in_project(panel, pid, Some(&session.id))
         } else {
@@ -1284,7 +1284,11 @@ impl AgentPanelView {
                 .find(|s| s.id == session_id)
                 .cloned();
             panel.archived_ids.insert(session_id.clone());
-            if let Some(session) = panel.sidebar_sessions.iter_mut().find(|s| s.id == session_id) {
+            if let Some(session) = panel
+                .sidebar_sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+            {
                 session.running = false;
             }
             if panel.active_sidebar_session_id == session_id {
@@ -1488,10 +1492,8 @@ impl AgentPanelView {
                 }
             } else if folder_path.exists() {
                 if let Ok(mut panel) = self.state.lock() {
-                    panel.status = format!(
-                        "无法删除本地路径（不是文件夹）：{}",
-                        folder_path.display()
-                    );
+                    panel.status =
+                        format!("无法删除本地路径（不是文件夹）：{}", folder_path.display());
                 }
                 ctx.notify();
                 return;
@@ -1516,8 +1518,11 @@ impl AgentPanelView {
             let data_dir = self.core.data_dir();
             Self::persist_projects(&panel, &data_dir);
             if was_active {
-                panel.active_project_id =
-                    panel.projects.first().map(|p| p.id.clone()).unwrap_or_default();
+                panel.active_project_id = panel
+                    .projects
+                    .first()
+                    .map(|p| p.id.clone())
+                    .unwrap_or_default();
                 true
             } else {
                 false
@@ -2141,12 +2146,9 @@ impl AgentPanelView {
                 match output {
                     Ok(result) => {
                         if result.backend == AgentTurnBackend::CursorFallback {
-                            let reason = result
-                                .codex_error
-                                .as_deref()
-                                .unwrap_or("Codex 终端不可用");
-                            state.status =
-                                format!("已改用 Cursor 终端（后备）: {reason}");
+                            let reason =
+                                result.codex_error.as_deref().unwrap_or("Codex 终端不可用");
+                            state.status = format!("已改用 Cursor 终端（后备）: {reason}");
                         }
                     }
                     Err(err) => {
@@ -2634,9 +2636,11 @@ impl AgentPanelView {
         if model_menu_open {
             stack.add_child(
                 Align::new(
-                    Container::new(composer_menus::render_model_rate_menu(self.font, model_rate))
-                        .with_margin_bottom(bar_lift)
-                        .finish(),
+                    Container::new(composer_menus::render_model_rate_menu(
+                        self.font, model_rate,
+                    ))
+                    .with_margin_bottom(bar_lift)
+                    .finish(),
                 )
                 .bottom_right()
                 .finish(),
@@ -2825,7 +2829,8 @@ impl View for AgentPanelView {
             thinking,
         };
 
-        let mut composer_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let mut composer_col =
+            Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         if let Some(chips) =
             composer_add::render_composer_chips(self.font, plan_mode, goal_mode, &attachments)
         {
@@ -2964,7 +2969,8 @@ impl View for AgentPanelView {
                 .finish();
 
             main_stack.add_child(thread_column);
-            main_stack.add_child(self.composer_bottom_layer(composer_folder.clone(), composer_surface));
+            main_stack
+                .add_child(self.composer_bottom_layer(composer_folder.clone(), composer_surface));
             if access_menu_open || model_menu_open || add_menu_open {
                 main_stack.add_child(self.render_composer_popovers(
                     access_mode,
@@ -3040,19 +3046,10 @@ impl View for AgentPanelView {
             let (label, path) = projects
                 .iter()
                 .find(|p| p.id == delete.project_id)
-                .map(|p| {
-                    (
-                        p.label.clone(),
-                        p.folder_path.display().to_string(),
-                    )
-                })
+                .map(|p| (p.label.clone(), p.folder_path.display().to_string()))
                 .unwrap_or_else(|| ("—".into(), String::new()));
             root_stack.add_child(project_delete_modal::render_project_delete_modal(
-                self.font,
-                self.mono,
-                delete,
-                &label,
-                &path,
+                self.font, self.mono, delete, &label, &path,
             ));
         }
         if let Some(files) = &files_modal {
@@ -3096,9 +3093,7 @@ impl View for AgentPanelView {
                             ctx.dispatch_typed_action(AgentPanelAction::DismissComposerMenus);
                             return DispatchEventResult::StopPropagation;
                         }
-                        if let Some(action) =
-                            Self::keystroke_action(&state, keystroke)
-                        {
+                        if let Some(action) = Self::keystroke_action(&state, keystroke) {
                             ctx.dispatch_typed_action(action);
                             return DispatchEventResult::StopPropagation;
                         }
@@ -3240,9 +3235,7 @@ impl TypedActionView for AgentPanelView {
                 }
                 ctx.notify();
             }
-            AgentPanelAction::OpenProjectRowMenu(id) => {
-                self.open_project_row_menu(id.clone(), ctx)
-            }
+            AgentPanelAction::OpenProjectRowMenu(id) => self.open_project_row_menu(id.clone(), ctx),
             AgentPanelAction::OpenProjectDeleteModal(id) => {
                 self.open_project_delete_modal(id.clone(), ctx)
             }
@@ -3252,9 +3245,7 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::ConfirmDeleteProject => self.confirm_delete_project(ctx),
             AgentPanelAction::RenameProject(id) => self.rename_project(id.clone(), ctx),
-            AgentPanelAction::DeleteActiveStandaloneChat => {
-                self.delete_active_standalone_chat(ctx)
-            }
+            AgentPanelAction::DeleteActiveStandaloneChat => self.delete_active_standalone_chat(ctx),
             AgentPanelAction::FocusSidebarSearch => {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.sidebar_search_focused = true;
@@ -3664,16 +3655,24 @@ mod tests {
 
     #[test]
     fn is_local_sidebar_session_matches_ephemeral_ids() {
-        assert!(AgentPanelView::is_local_sidebar_session("session-1710000000"));
+        assert!(AgentPanelView::is_local_sidebar_session(
+            "session-1710000000"
+        ));
         assert!(!AgentPanelView::is_local_sidebar_session("codex-abc123"));
     }
 
     #[test]
     fn composer_send_on_enter_requires_non_empty_draft() {
-        assert!(AgentPanelView::composer_send_on_enter(false, false, "hello"));
+        assert!(AgentPanelView::composer_send_on_enter(
+            false, false, "hello"
+        ));
         assert!(!AgentPanelView::composer_send_on_enter(false, false, "   "));
-        assert!(!AgentPanelView::composer_send_on_enter(true, false, "hello"));
-        assert!(!AgentPanelView::composer_send_on_enter(false, true, "hello"));
+        assert!(!AgentPanelView::composer_send_on_enter(
+            true, false, "hello"
+        ));
+        assert!(!AgentPanelView::composer_send_on_enter(
+            false, true, "hello"
+        ));
     }
 
     #[test]

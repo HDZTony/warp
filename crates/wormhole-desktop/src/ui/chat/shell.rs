@@ -1,25 +1,29 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast::error::RecvError;
-use warpui::elements::{    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+use warpui::elements::{
+    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
     EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle};
+use warpui::{
+    AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
+};
 
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
-use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
 };
-use wormhole_desktop_core::chat_commands::ChatEventDto;use crate::ui::chat::thread::ChatThreadView;
+use crate::ui::chat::sidebar::ChatSidebarView;
+use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
 use crate::ui::panel_primitives::{status_line, tab_content_fill, StatusTone};
 use crate::ui::theme;
+use wormhole_desktop_core::chat_commands::ChatEventDto;
 
 pub const SIDEBAR_WIDTH: f32 = 300.0;
 pub const PROFILE_PANEL_WIDTH: f32 = 300.0;
@@ -43,8 +47,11 @@ pub struct ChatShellView {
     gate: DeviceGateStatus,
     selection: ConversationSelection,
     shell_state: SharedChatShellState,
-    event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
-    sidebar: ViewHandle<ChatSidebarView>,    header: ViewHandle<ChatHeaderView>,
+    event_rx: Arc<
+        tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>,
+    >,
+    sidebar: ViewHandle<ChatSidebarView>,
+    header: ViewHandle<ChatHeaderView>,
     thread_search: ViewHandle<ChatThreadSearchView>,
     thread: ViewHandle<ChatThreadView>,
     compose: ViewHandle<ChatComposeView>,
@@ -56,19 +63,13 @@ impl ChatShellView {
         let selection = Arc::new(Mutex::new(None));
         let shell_state = new_shared_shell_state();
         let sidebar = ctx.add_typed_action_view(|ctx| {
-            ChatSidebarView::new(
-                ctx,
-                core.clone(),
-                selection.clone(),
-                shell_state.clone(),
-            )
+            ChatSidebarView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
         let header = ctx.add_typed_action_view(|ctx| {
             ChatHeaderView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
-        let thread_search = ctx.add_typed_action_view(|ctx| {
-            ChatThreadSearchView::new(ctx, shell_state.clone())
-        });
+        let thread_search =
+            ctx.add_typed_action_view(|ctx| ChatThreadSearchView::new(ctx, shell_state.clone()));
         let thread = ctx.add_view(|ctx| {
             ChatThreadView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
@@ -78,23 +79,17 @@ impl ChatShellView {
         let profile = ctx.add_typed_action_view(|ctx| {
             ChatProfilePanelView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
-        ctx.subscribe_to_view(&profile, |_, _, event, ctx| {
-            match event {
-                ChatProfileEvent::BrowseNodeShares(node_id) => {
-                    ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
-                }
-                ChatProfileEvent::OpenRemoteDesktop { peer } => {
-                    ctx.emit(ChatShellEvent::OpenRemoteDesktop {
-                        peer: peer.clone(),
-                    });
-                }
+        ctx.subscribe_to_view(&profile, |_, _, event, ctx| match event {
+            ChatProfileEvent::BrowseNodeShares(node_id) => {
+                ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
+            }
+            ChatProfileEvent::OpenRemoteDesktop { peer } => {
+                ctx.emit(ChatShellEvent::OpenRemoteDesktop { peer: peer.clone() });
             }
         });
         ctx.subscribe_to_view(&header, |_, _, event, ctx| {
             if let ChatHeaderEvent::OpenRemoteDesktop { peer } = event {
-                ctx.emit(ChatShellEvent::OpenRemoteDesktop {
-                    peer: peer.clone(),
-                });
+                ctx.emit(ChatShellEvent::OpenRemoteDesktop { peer: peer.clone() });
             }
         });
         let font = crate::ui::fonts::load_ui_font(ctx);
@@ -108,7 +103,8 @@ impl ChatShellView {
             selection,
             shell_state,
             event_rx,
-            sidebar,            header,
+            sidebar,
+            header,
             thread_search,
             thread,
             compose,
@@ -125,19 +121,16 @@ impl ChatShellView {
         let sidebar = self.sidebar.clone();
         let thread = self.thread.clone();
         let selection = self.selection.clone();
-        Self::poll_chat_event_once(
-            ctx,
-            event_rx,
-            shell_state,
-            sidebar,
-            thread,
-            selection,
-        );
+        Self::poll_chat_event_once(ctx, event_rx, shell_state, sidebar, thread, selection);
     }
 
     fn poll_chat_event_once(
         ctx: &mut ViewContext<Self>,
-        event_rx: Arc<tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>>,
+        event_rx: Arc<
+            tokio::sync::Mutex<
+                tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>,
+            >,
+        >,
         shell_state: SharedChatShellState,
         sidebar: ViewHandle<ChatSidebarView>,
         thread: ViewHandle<ChatThreadView>,
@@ -197,14 +190,7 @@ impl ChatShellView {
                     });
                     ctx.notify();
                 }
-                Self::poll_chat_event_once(
-                    ctx,
-                    event_rx,
-                    shell_state,
-                    sidebar,
-                    thread,
-                    selection,
-                );
+                Self::poll_chat_event_once(ctx, event_rx, shell_state, sidebar, thread, selection);
             },
         );
     }
@@ -237,11 +223,7 @@ impl ChatShellView {
     fn overlay_open(&self) -> bool {
         self.shell_state
             .lock()
-            .map(|state| {
-                state.header_menu_open
-                    || state.profile_open
-                    || state.thread_search_open
-            })
+            .map(|state| state.header_menu_open || state.profile_open || state.thread_search_open)
             .unwrap_or(false)
     }
 

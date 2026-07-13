@@ -115,19 +115,15 @@ fn text_field(
         theme::text()
     };
     EventHandler::new(
-        Container::new(
-            ui_text::body(display, font)
-                .with_color(color)
-                .finish(),
-        )
-        .with_padding_left(12.0)
-        .with_padding_right(12.0)
-        .with_padding_top(10.0)
-        .with_padding_bottom(10.0)
-        .with_background(theme::canvas())
-        .with_border(Border::all(1.0).with_border_color(border))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-        .finish(),
+        Container::new(ui_text::body(display, font).with_color(color).finish())
+            .with_padding_left(12.0)
+            .with_padding_right(12.0)
+            .with_padding_top(10.0)
+            .with_padding_bottom(10.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_color(border))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish(),
     )
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(focus_action.clone());
@@ -278,16 +274,12 @@ pub fn render_project_create_modal(font: FamilyId, state: &ProjectCreateState) -
         ProjectCreateStep::TypeSelect => type_select_step(font),
         ProjectCreateStep::Name => name_step(font, state),
     };
-    let dialog = Container::new(
-        ConstrainedBox::new(body)
-            .with_max_width(480.0)
-            .finish(),
-    )
-    .with_uniform_padding(20.0)
-    .with_background(theme::panel_elevated())
-    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
-    .finish();
+    let dialog = Container::new(ConstrainedBox::new(body).with_max_width(480.0).finish())
+        .with_uniform_padding(20.0)
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
+        .finish();
 
     let scrim = EventHandler::new(
         Container::new(Flex::row().finish())
@@ -302,9 +294,6 @@ pub fn render_project_create_modal(font: FamilyId, state: &ProjectCreateState) -
 
     Stack::new()
         .with_child(scrim)
-        .with_child(
-            Align::new(dialog)
-                .finish(),
-        )
+        .with_child(Align::new(dialog).finish())
         .finish()
 }
