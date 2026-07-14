@@ -32,8 +32,9 @@ use wormhole_desktop_core::cluster_commands::{
     sync_share_entry, AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto,
     CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
-    LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
-    RemoveClusterNodeParams, RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto,
+    LeaveClusterParams, ListShareDirectoryParams, NODE_PRESENCE_HANDSHAKE_FAILED,
+    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
+    ShareEntryActionParams, ShareEntryDto,
     SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
@@ -371,6 +372,10 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
+                let _ = wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
+                    &state,
+                )
+                .await;
                 let status = fetch_cluster_for_ui(&state).await;
                 let remarks = load_device_remarks(&state.data_dir)
                     .await
@@ -1234,6 +1239,28 @@ impl DevicesView {
         }
         let n = cluster.nodes.len();
         let online = cluster.nodes.iter().filter(|node| node.online).count();
+        let pending = cluster
+            .nodes
+            .iter()
+            .filter(|node| node.pending_handshake)
+            .count();
+        let failed = cluster
+            .nodes
+            .iter()
+            .filter(|node| node.presence_status == NODE_PRESENCE_HANDSHAKE_FAILED)
+            .count();
+        if pending > 0 {
+            if failed > 0 {
+                return format!(
+                    "CLUSTER · {n} NODE{} · {online} ONLINE · {pending} 握手中 · {failed} 连接失败 · 请确认对端在线且 relay 一致",
+                    if n == 1 { "" } else { "S" }
+                );
+            }
+            return format!(
+                "CLUSTER · {n} NODE{} · {online} ONLINE · {pending} 握手中 · 后台重试连接中",
+                if n == 1 { "" } else { "S" }
+            );
+        }
         format!(
             "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 双击终端浏览共享文件夹",
             if n == 1 { "" } else { "S" }

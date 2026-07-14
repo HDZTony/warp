@@ -31,7 +31,8 @@ use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    ClusterNodeDto, NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
+    ClusterNodeDto, NODE_PRESENCE_HANDSHAKE_FAILED, NODE_PRESENCE_HANDSHAKING,
+    NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::device_remarks::display_name_with_remark;
 
@@ -595,6 +596,8 @@ fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
     match node.presence_status.as_str() {
         NODE_PRESENCE_ONLINE => ("在线", StatusTone::Success),
         NODE_PRESENCE_SIGNED_IN => ("已登录 · 连接中", StatusTone::Warn),
+        NODE_PRESENCE_HANDSHAKING => ("握手中", StatusTone::Warn),
+        NODE_PRESENCE_HANDSHAKE_FAILED => ("连接失败", StatusTone::Danger),
         _ => ("离线", StatusTone::Placeholder),
     }
 }

@@ -18,8 +18,9 @@ use wormhole_desktop_core::sync_commands::{
 };
 use wormhole_desktop_core::{
     clear_cloud_auth_token, clear_desktop_error_events, cloud_auth_status,
-    configure_desktop_error_settings, desktop_error_status, sync_desktop_errors_now,
-    DesktopErrorSettingsParams, DesktopErrorStatusDto,
+    configure_desktop_error_settings, desktop_error_status, get_network_relay_status,
+    save_network_relay_config, sync_desktop_errors_now, DesktopErrorSettingsParams,
+    DesktopErrorStatusDto, NetworkRelayStatusDto, SaveNetworkRelayParams,
 };
 
 #[derive(Debug, Clone)]
@@ -44,6 +45,9 @@ pub enum SettingsAction {
     ToggleArchiveSection,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
+    RefreshRelay,
+    SelectRelay(String),
+    ApplyRelay,
 }
 
 pub struct SettingsView {
@@ -64,6 +68,11 @@ pub struct SettingsView {
     diagnostic_busy: bool,
     archive_expanded: bool,
     agent_providers: warpui::ViewHandle<AgentProvidersView>,
+    relay_status: Option<NetworkRelayStatusDto>,
+    relay_mode: String,
+    relay_message: String,
+    relay_tone: StatusTone,
+    relay_busy: bool,
 }
 
 impl SettingsView {
@@ -89,10 +98,16 @@ impl SettingsView {
             diagnostic_busy: false,
             archive_expanded: false,
             agent_providers,
+            relay_status: None,
+            relay_mode: "auto".into(),
+            relay_message: String::new(),
+            relay_tone: StatusTone::Placeholder,
+            relay_busy: false,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
         view.refresh_diagnostics(ctx);
+        view.refresh_relay(ctx);
         view
     }
 
@@ -160,6 +175,37 @@ impl SettingsView {
                     Err(err) => {
                         view.diagnostic_message = format!("读取诊断状态失败: {err}");
                         view.diagnostic_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_relay(&mut self, ctx: &mut ViewContext<Self>) {
+        self.relay_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                get_network_relay_status(&state).await
+            },
+            |view, output, ctx| {
+                view.relay_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.relay_mode = status.relay_mode.clone();
+                        view.relay_status = Some(status);
+                        if view.relay_message.is_empty() {
+                            view.relay_message =
+                                "切换 Relay 后会重启 P2P 节点；集群成员需使用相同 Relay。".into();
+                            view.relay_tone = StatusTone::Placeholder;
+                        }
+                    }
+                    Err(err) => {
+                        view.relay_message = format!("读取 Relay 配置失败: {err}");
+                        view.relay_tone = StatusTone::Danger;
                     }
                 }
                 ctx.notify();
@@ -258,6 +304,138 @@ impl SettingsView {
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
+    }
+
+    fn relay_option_button(&self, mode: &str, label: &str) -> Box<dyn Element> {
+        let selected = self.relay_mode == mode;
+        let mode = mode.to_string();
+        let label = if selected {
+            format!("● {label}")
+        } else {
+            format!("○ {label}")
+        };
+        Container::new(
+            EventHandler::new(
+                ui_text::body(label, self.font)
+                    .with_color(if selected {
+                        theme::accent_cool()
+                    } else {
+                        theme::text()
+                    })
+                    .finish(),
+            )
+            .on_left_mouse_down({
+                let mode = mode.clone();
+                move |ctx, _, _| {
+                    ctx.dispatch_typed_action(SettingsAction::SelectRelay(mode.clone()));
+                    DispatchEventResult::StopPropagation
+                }
+            })
+            .finish(),
+        )
+        .with_uniform_padding(8.0)
+        .with_background(if selected {
+            theme::accent_cool_bg(24)
+        } else {
+            theme::accent_bg(12)
+        })
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
+    }
+
+    fn relay_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("P2P · Relay", self.font));
+        col.add_child(section_hint(
+            "集群 P2P 穿透依赖 Relay。自动模式会并行探测国内/海外节点并选择最快可达者。",
+            self.font,
+        ));
+
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(
+            Container::new(self.relay_option_button("auto", "自动"))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        row.add_child(
+            Container::new(self.relay_option_button("domestic", "国内"))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        row.add_child(
+            Container::new(self.relay_option_button("overseas", "海外"))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        col.add_child(row.finish());
+
+        if let Some(status) = &self.relay_status {
+            if status.env_override {
+                col.add_child(
+                    ui_text::body("环境变量 WORMHOLE_IROH_RELAYS 已接管 Relay", self.font)
+                        .with_color(theme::danger())
+                        .finish(),
+                );
+            }
+            if let Some(url) = status.resolved_relay.as_deref() {
+                col.add_child(self.path_row("当前生效", url));
+            } else if !status.effective_urls.is_empty() {
+                col.add_child(self.path_row("当前生效", &status.effective_urls.join(", ")));
+            }
+            for probe in &status.probe_results {
+                let line = if probe.reachable {
+                    format!(
+                        "{} {} — {}ms",
+                        probe.mode,
+                        probe.url,
+                        probe.latency_ms.unwrap_or(0)
+                    )
+                } else {
+                    format!(
+                        "{} {} — 不可达{}",
+                        probe.mode,
+                        probe.url,
+                        probe
+                            .error
+                            .as_deref()
+                            .map(|err| format!(" ({err})"))
+                            .unwrap_or_default()
+                    )
+                };
+                col.add_child(
+                    ui_text::mono(line, self.font)
+                        .with_color(if probe.reachable {
+                            theme::muted()
+                        } else {
+                            theme::danger()
+                        })
+                        .finish(),
+                );
+            }
+        }
+
+        let mut actions = Flex::row();
+        actions.add_child(
+            Container::new(self.action_button("应用并重启 P2P", SettingsAction::ApplyRelay))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        actions.add_child(
+            Container::new(self.action_button("刷新", SettingsAction::RefreshRelay))
+                .with_horizontal_margin(4.0)
+                .finish(),
+        );
+        col.add_child(actions.finish());
+
+        if !self.relay_message.is_empty() {
+            col.add_child(status_line(
+                self.relay_message.clone(),
+                self.font,
+                self.relay_tone,
+            ));
+        }
+        section_card(col.finish())
     }
 
     fn shared_path_block(&self) -> Box<dyn Element> {
@@ -631,6 +809,7 @@ impl View for SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("设置", self.font));
         col.add_child(self.account_block());
+        col.add_child(self.relay_block());
         col.add_child(self.diagnostics_block());
         col.add_child(self.shared_path_block());
         col.add_child(self.archive_block());
@@ -652,6 +831,45 @@ impl TypedActionView for SettingsView {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::RefreshDiagnostics => self.refresh_diagnostics(ctx),
+            SettingsAction::RefreshRelay => self.refresh_relay(ctx),
+            SettingsAction::SelectRelay(mode) => {
+                self.relay_mode = mode.clone();
+                ctx.notify();
+            }
+            SettingsAction::ApplyRelay => {
+                self.relay_busy = true;
+                self.relay_message = "正在应用 Relay 并重启 P2P 节点…".into();
+                self.relay_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                let relay_mode = self.relay_mode.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        save_network_relay_config(
+                            &state,
+                            SaveNetworkRelayParams { relay_mode },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.relay_busy = false;
+                        match output {
+                            Ok(status) => {
+                                view.relay_mode = status.relay_mode.clone();
+                                view.relay_status = Some(status);
+                                view.relay_message = "Relay 已应用，P2P 节点已重启。".into();
+                                view.relay_tone = StatusTone::Success;
+                            }
+                            Err(err) => {
+                                view.relay_message = format!("应用 Relay 失败: {err}");
+                                view.relay_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
             SettingsAction::ToggleDiagnosticUpload => {
                 self.diagnostic_busy = true;
                 self.diagnostic_message = "正在保存诊断上传设置…".into();
