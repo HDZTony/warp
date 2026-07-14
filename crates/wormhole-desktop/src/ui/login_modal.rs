@@ -140,9 +140,7 @@ impl LoginModalView {
             .email
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let password = prefs
-            .saved_password
-            .filter(|value| !value.is_empty());
+        let password = prefs.saved_password.filter(|value| !value.is_empty());
         let (Some(email), Some(password)) = (email, password) else {
             return false;
         };
@@ -385,7 +383,12 @@ impl LoginModalView {
         .finish()
     }
 
-    fn checkbox_row(&self, label: &str, checked: bool, action: LoginModalAction) -> Box<dyn Element> {
+    fn checkbox_row(
+        &self,
+        label: &str,
+        checked: bool,
+        action: LoginModalAction,
+    ) -> Box<dyn Element> {
         let mark = if checked { "✓" } else { "" };
         let box_el = Container::new(
             ConstrainedBox::new(

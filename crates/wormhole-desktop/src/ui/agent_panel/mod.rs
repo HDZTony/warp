@@ -122,10 +122,16 @@ pub enum AgentPanelAction {
     FocusSidebarSearch,
     Stop,
     ToggleChatsMenu,
+    SetChatsFlyout(Option<sidebar::ChatsFlyout>),
+    ToggleProjectsMenu,
     DismissSidebarMenus,
     DeleteActiveProject,
     ArchiveSession(String),
+    ArchiveAllStandaloneChats,
     ArchiveActiveSession,
+    ExpandAllProjects,
+    CollapseAllProjects,
+    SetChatsSort(sidebar::ChatsSort),
     RestoreSession(String),
     DeleteSession(String),
     OpenSessionContextMenu {
@@ -173,6 +179,9 @@ struct PanelState {
     /// Delete confirmation — HTML `#project-delete-modal`.
     project_delete: Option<ProjectDeleteState>,
     chats_menu_open: bool,
+    chats_flyout: Option<sidebar::ChatsFlyout>,
+    projects_menu_open: bool,
+    chats_sort: sidebar::ChatsSort,
     session_context_menu: Option<(String, bool, f32, f32)>,
     access_menu_open: bool,
     model_menu_open: bool,
@@ -185,6 +194,27 @@ struct PanelState {
     field_state: TextFieldState,
     sidebar_hover: Option<String>,
     project_head_hover: Option<String>,
+}
+
+impl PanelState {
+    fn toggle_chats_menu(&mut self) {
+        self.chats_menu_open = !self.chats_menu_open;
+        self.chats_flyout = None;
+    }
+
+    fn set_chats_flyout(&mut self, flyout: Option<sidebar::ChatsFlyout>) {
+        self.chats_flyout = if self.chats_menu_open { flyout } else { None };
+    }
+
+    fn close_chats_menu(&mut self) {
+        self.chats_menu_open = false;
+        self.chats_flyout = None;
+    }
+
+    fn select_chats_sort(&mut self, sort: sidebar::ChatsSort) {
+        self.chats_sort = sort;
+        self.close_chats_menu();
+    }
 }
 
 pub struct AgentPanelView {
@@ -246,6 +276,9 @@ impl AgentPanelView {
                 project_row_menu: None,
                 project_delete: None,
                 chats_menu_open: false,
+                chats_flyout: None,
+                projects_menu_open: false,
+                chats_sort: sidebar::ChatsSort::Updated,
                 session_context_menu: None,
                 access_menu_open: false,
                 model_menu_open: false,
@@ -1088,6 +1121,8 @@ impl AgentPanelView {
             panel.active_project_id = project_id;
             panel.project_row_menu = next;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+            panel.projects_menu_open = false;
             panel.session_context_menu = None;
         }
         ctx.notify();
@@ -1100,6 +1135,8 @@ impl AgentPanelView {
             }
             panel.project_row_menu = None;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+            panel.projects_menu_open = false;
             panel.session_context_menu = None;
             panel.project_delete = Some(ProjectDeleteState::new(project_id));
         }
@@ -1179,9 +1216,11 @@ impl AgentPanelView {
     fn dismiss_sidebar_menus(&mut self, ctx: &mut ViewContext<Self>) {
         let mut changed = false;
         if let Ok(mut panel) = self.state.lock() {
-            if panel.project_row_menu.is_some() || panel.chats_menu_open {
+            if panel.project_row_menu.is_some() || panel.chats_menu_open || panel.projects_menu_open
+            {
                 panel.project_row_menu = None;
-                panel.chats_menu_open = false;
+                panel.close_chats_menu();
+                panel.projects_menu_open = false;
                 Self::clear_sidebar_hover(&mut panel);
                 changed = true;
             }
@@ -1189,6 +1228,92 @@ impl AgentPanelView {
         if changed {
             ctx.notify();
         }
+    }
+
+    fn toggle_chats_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.project_row_menu = None;
+            panel.projects_menu_open = false;
+            panel.session_context_menu = None;
+            panel.toggle_chats_menu();
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            Self::clear_sidebar_hover(&mut panel);
+        }
+        ctx.notify();
+    }
+
+    fn set_chats_flyout(
+        &mut self,
+        flyout: Option<sidebar::ChatsFlyout>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.set_chats_flyout(flyout);
+        }
+        ctx.notify();
+    }
+
+    fn toggle_projects_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.project_row_menu = None;
+            panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+            panel.session_context_menu = None;
+            panel.projects_menu_open = !panel.projects_menu_open;
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            Self::clear_sidebar_hover(&mut panel);
+        }
+        ctx.notify();
+    }
+
+    fn expand_or_collapse_all_projects(&mut self, expand: bool, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            if expand {
+                let ids: Vec<String> = panel.projects.iter().map(|p| p.id.clone()).collect();
+                for id in ids {
+                    panel.expanded_project_ids.insert(id);
+                }
+            } else {
+                panel.expanded_project_ids.clear();
+            }
+            panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+            let data_dir = self.core.data_dir();
+            Self::persist_projects(&panel, &data_dir);
+        }
+        ctx.notify();
+    }
+
+    fn archive_all_standalone_chats(&mut self, ctx: &mut ViewContext<Self>) {
+        let ids: Vec<String> = {
+            let panel = self.state.lock().expect("agent panel state");
+            sidebar::standalone_chats_sorted(
+                &panel.sidebar_sessions,
+                &panel.archived_ids,
+                &panel.sidebar_search,
+                panel.chats_sort,
+            )
+            .into_iter()
+            .map(|s| s.id.clone())
+            .collect()
+        };
+        for id in ids {
+            self.archive_session(id, ctx);
+        }
+        if let Ok(mut panel) = self.state.lock() {
+            panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+        }
+        ctx.notify();
+    }
+
+    fn set_chats_sort(&mut self, sort: sidebar::ChatsSort, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.select_chats_sort(sort);
+        }
+        ctx.notify();
     }
 
     fn close_session_context_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1208,18 +1333,6 @@ impl AgentPanelView {
         self.close_session_context_menu(ctx);
         self.dismiss_sidebar_menus(ctx);
         self.dismiss_composer_menus(ctx);
-    }
-
-    fn toggle_chats_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
-            panel.project_row_menu = None;
-            panel.session_context_menu = None;
-            panel.chats_menu_open = !panel.chats_menu_open;
-            panel.access_menu_open = false;
-            panel.model_menu_open = false;
-            Self::clear_sidebar_hover(&mut panel);
-        }
-        ctx.notify();
     }
 
     pub fn restore_archived_session(&mut self, session_id: String, ctx: &mut ViewContext<Self>) {
@@ -1297,6 +1410,7 @@ impl AgentPanelView {
             }
             panel.session_context_menu = None;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
             let was_active = panel.active_sidebar_session_id == session_id;
             let archived = panel.archived_ids.clone();
             self.persist_archived_ids(&archived);
@@ -1434,6 +1548,7 @@ impl AgentPanelView {
             panel.sidebar_sessions.retain(|s| s.id != session_id);
             panel.archived_ids.remove(&session_id);
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
             if panel.active_sidebar_session_id == session_id {
                 panel.active_sidebar_session_id.clear();
                 panel.thread_title = "新会话".into();
@@ -1596,6 +1711,7 @@ impl AgentPanelView {
         if let Ok(mut panel) = self.state.lock() {
             panel.project_row_menu = None;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
             panel.session_context_menu = None;
             panel.access_menu_open = false;
             panel.model_menu_open = false;
@@ -1722,6 +1838,7 @@ impl AgentPanelView {
         if let Ok(mut panel) = self.state.lock() {
             panel.project_row_menu = None;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
             panel.session_context_menu = None;
             panel.model_menu_open = false;
             panel.add_menu_open = false;
@@ -1734,6 +1851,7 @@ impl AgentPanelView {
         if let Ok(mut panel) = self.state.lock() {
             panel.project_row_menu = None;
             panel.chats_menu_open = false;
+            panel.chats_flyout = None;
             panel.session_context_menu = None;
             panel.access_menu_open = false;
             panel.add_menu_open = false;
@@ -2801,6 +2919,9 @@ impl View for AgentPanelView {
         let archived_ids = state.archived_ids.clone();
         let project_row_menu = state.project_row_menu.clone();
         let chats_menu_open = state.chats_menu_open;
+        let chats_flyout = state.chats_flyout;
+        let projects_menu_open = state.projects_menu_open;
+        let chats_sort = state.chats_sort;
         let session_context_menu = state.session_context_menu.clone();
         let project_create = state.project_create.clone();
         let project_delete = state.project_delete.clone();
@@ -3004,6 +3125,9 @@ impl View for AgentPanelView {
                     sidebar_search_focused,
                     &archived_ids,
                     chats_menu_open,
+                    chats_flyout,
+                    projects_menu_open,
+                    chats_sort,
                     project_row_menu.as_deref(),
                     sidebar_hover.as_deref(),
                     project_head_hover.as_deref(),
@@ -3025,12 +3149,10 @@ impl View for AgentPanelView {
             .with_background(theme::canvas())
             .finish();
 
-        // Project-row menu is in-tree (no scrim) so the dropdown stays clickable.
-        // Files/media modals bring their own scrim.
-        let overlay_open = chats_menu_open
-            || session_context_menu.is_some()
-            || project_create.is_some()
-            || project_delete.is_some();
+        // Sidebar dropdowns stay in-tree (positioned overlays) — no dim scrim, matching HTML.
+        // Files/media/session-context/modals bring their own scrim or root-stack layer.
+        let overlay_open =
+            session_context_menu.is_some() || project_create.is_some() || project_delete.is_some();
 
         let mut root_stack = Stack::new();
         root_stack.add_child(panel);
@@ -3067,6 +3189,7 @@ impl View for AgentPanelView {
                 archived,
                 x,
                 y,
+                sidebar_hover.as_deref(),
             ));
         }
 
@@ -3255,7 +3378,15 @@ impl TypedActionView for AgentPanelView {
                 ctx.notify();
             }
             AgentPanelAction::ToggleChatsMenu => self.toggle_chats_menu(ctx),
+            AgentPanelAction::SetChatsFlyout(flyout) => self.set_chats_flyout(*flyout, ctx),
+            AgentPanelAction::ToggleProjectsMenu => self.toggle_projects_menu(ctx),
             AgentPanelAction::DismissSidebarMenus => self.dismiss_sidebar_menus(ctx),
+            AgentPanelAction::ArchiveAllStandaloneChats => self.archive_all_standalone_chats(ctx),
+            AgentPanelAction::ExpandAllProjects => self.expand_or_collapse_all_projects(true, ctx),
+            AgentPanelAction::CollapseAllProjects => {
+                self.expand_or_collapse_all_projects(false, ctx)
+            }
+            AgentPanelAction::SetChatsSort(sort) => self.set_chats_sort(*sort, ctx),
             AgentPanelAction::DeleteActiveProject => {
                 let id = self
                     .state
@@ -3283,6 +3414,8 @@ impl TypedActionView for AgentPanelView {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.project_row_menu = None;
                     panel.chats_menu_open = false;
+                    panel.chats_flyout = None;
+                    panel.projects_menu_open = false;
                     panel.session_context_menu = Some((id.clone(), *archived, *x, *y));
                 }
                 ctx.notify();
@@ -3464,14 +3597,20 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::FocusSidebarSearch => {
                 AccessibilityContent::new_without_help("聚焦会话搜索", WarpA11yRole::TextfieldRole)
             }
-            AgentPanelAction::ToggleChatsMenu => {
+            AgentPanelAction::ToggleChatsMenu
+            | AgentPanelAction::SetChatsFlyout(_)
+            | AgentPanelAction::ToggleProjectsMenu => {
                 AccessibilityContent::new_without_help("侧栏菜单", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::DismissSidebarMenus | AgentPanelAction::CloseSessionContextMenu => {
                 return ActionAccessibilityContent::Empty;
             }
             AgentPanelAction::ArchiveSession(_)
+            | AgentPanelAction::ArchiveAllStandaloneChats
             | AgentPanelAction::ArchiveActiveSession
+            | AgentPanelAction::ExpandAllProjects
+            | AgentPanelAction::CollapseAllProjects
+            | AgentPanelAction::SetChatsSort(_)
             | AgentPanelAction::RestoreSession(_)
             | AgentPanelAction::DeleteSession(_) => {
                 AccessibilityContent::new_without_help("侧栏操作", WarpA11yRole::MenuItemRole)
@@ -3552,6 +3691,9 @@ mod tests {
             project_row_menu: None,
             project_delete: None,
             chats_menu_open: false,
+            chats_flyout: None,
+            projects_menu_open: false,
+            chats_sort: sidebar::ChatsSort::Updated,
             session_context_menu: None,
             access_menu_open: false,
             model_menu_open: false,
@@ -3580,6 +3722,33 @@ mod tests {
     fn is_idle_composer_state_when_no_session_selected() {
         assert!(AgentPanelView::is_idle_composer_state(""));
         assert!(!AgentPanelView::is_idle_composer_state("session-1"));
+    }
+
+    #[test]
+    fn chats_flyout_only_opens_with_main_menu_and_switches_exclusively() {
+        let mut panel = sample_panel(vec![], "");
+        panel.set_chats_flyout(Some(sidebar::ChatsFlyout::Organize));
+        assert_eq!(panel.chats_flyout, None);
+
+        panel.toggle_chats_menu();
+        panel.set_chats_flyout(Some(sidebar::ChatsFlyout::Organize));
+        assert_eq!(panel.chats_flyout, Some(sidebar::ChatsFlyout::Organize));
+
+        panel.set_chats_flyout(Some(sidebar::ChatsFlyout::Sort));
+        assert_eq!(panel.chats_flyout, Some(sidebar::ChatsFlyout::Sort));
+    }
+
+    #[test]
+    fn selecting_chat_sort_closes_main_menu_and_flyout() {
+        let mut panel = sample_panel(vec![], "");
+        panel.toggle_chats_menu();
+        panel.set_chats_flyout(Some(sidebar::ChatsFlyout::Sort));
+
+        panel.select_chats_sort(sidebar::ChatsSort::Created);
+
+        assert_eq!(panel.chats_sort, sidebar::ChatsSort::Created);
+        assert!(!panel.chats_menu_open);
+        assert_eq!(panel.chats_flyout, None);
     }
 
     #[test]

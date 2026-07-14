@@ -18,6 +18,7 @@ pub const SHARE_ICON_SIZE: f32 = 18.0;
 pub const SHARE_NAV_BTN_SIZE: f32 = 28.0;
 pub const SHARE_NAV_ICON_SIZE: f32 = 14.0;
 pub const AGENT_ICON_SIZE: f32 = 15.0;
+pub const AGENT_MENU_ICON_SIZE: f32 = 18.0;
 pub const AGENT_COMPOSER_ICON_SIZE: f32 = 16.0;
 pub const CHAT_HEADER_ICON_SIZE: f32 = 18.0;
 pub const CHAT_COMPOSE_ICON_SIZE: f32 = 20.0;

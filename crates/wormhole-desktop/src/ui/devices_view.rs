@@ -32,10 +32,9 @@ use wormhole_desktop_core::cluster_commands::{
     sync_share_entry, AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto,
     CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
-    LeaveClusterParams, ListShareDirectoryParams, NODE_PRESENCE_HANDSHAKE_FAILED,
-    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
-    ShareEntryActionParams, ShareEntryDto,
-    SwitchActiveClusterParams,
+    LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
+    RemoveClusterNodeParams, RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto,
+    SwitchActiveClusterParams, NODE_PRESENCE_HANDSHAKE_FAILED,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
@@ -768,11 +767,7 @@ impl DevicesView {
         ctx.notify();
     }
 
-    fn edit_share_rename_field(
-        &mut self,
-        edit: &TextFieldEditAction,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn edit_share_rename_field(&mut self, edit: &TextFieldEditAction, ctx: &mut ViewContext<Self>) {
         self.share_rename_field
             .apply(&mut self.share_rename_draft, edit);
         self.share_rename_focused = true;
@@ -792,7 +787,8 @@ impl DevicesView {
             return;
         };
         let new_name = self.share_rename_draft.trim().to_string();
-        if let Err(err) = wormhole_desktop_core::cluster_commands::validate_share_entry_name(&new_name)
+        if let Err(err) =
+            wormhole_desktop_core::cluster_commands::validate_share_entry_name(&new_name)
         {
             self.share_rename_feedback = Some((StatusTone::Warn, err));
             ctx.notify();
@@ -3706,7 +3702,11 @@ impl DevicesView {
             !is_folder && has_local_replica
         };
 
-        let open_label = if is_folder { "打开文件夹" } else { "打开" };
+        let open_label = if is_folder {
+            "打开文件夹"
+        } else {
+            "打开"
+        };
         let open_action = if is_folder {
             DevicesAction::ShareNavigate {
                 volume_id: entry.and_then(|e| e.volume_id.clone()),
@@ -3974,11 +3974,7 @@ impl DevicesView {
     ) -> Box<dyn Element> {
         let icon_el = icons::share_file_icon(if is_folder { "folder" } else { "a.txt" }, is_folder);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-        row.add_child(
-            Container::new(icon_el)
-                .with_horizontal_margin(2.0)
-                .finish(),
-        );
+        row.add_child(Container::new(icon_el).with_horizontal_margin(2.0).finish());
         row.add_child(
             Container::new(
                 ui_text::body(label.to_string(), self.font)
@@ -4002,16 +3998,8 @@ impl DevicesView {
 
     fn share_new_menu(&self) -> Box<dyn Element> {
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        menu.add_child(self.share_new_menu_item(
-            "文件夹",
-            true,
-            DevicesAction::ShareCreateFolder,
-        ));
-        menu.add_child(self.share_new_menu_item(
-            "txt 文件",
-            false,
-            DevicesAction::ShareCreateTxt,
-        ));
+        menu.add_child(self.share_new_menu_item("文件夹", true, DevicesAction::ShareCreateFolder));
+        menu.add_child(self.share_new_menu_item("txt 文件", false, DevicesAction::ShareCreateTxt));
         let panel = Container::new(
             ConstrainedBox::new(menu.finish())
                 .with_width(148.0)

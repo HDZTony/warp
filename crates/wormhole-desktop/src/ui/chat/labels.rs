@@ -178,6 +178,8 @@ mod tests {
                 removable: false,
                 revoked: false,
                 server_member_confirmed: false,
+                pending_handshake: false,
+                handshake_error: None,
             }],
             storage_volumes: Vec::new(),
             normal_replica_target: 0,

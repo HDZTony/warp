@@ -4,12 +4,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use serde::{Deserialize, Serialize};
 use warpui::elements::Fill;
 use warpui::elements::{
-    Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth, Shrinkable, Stack,
+    Align, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
+    MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
+    ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -28,8 +30,26 @@ pub const SIDEBAR_WIDTH: f32 = 260.0;
 const ARCHIVE_FILE: &str = "agent-archived.json";
 const ARCHIVED_SESSIONS_FILE: &str = "agent-archived-sessions.json";
 const PROJECTS_FILE: &str = "agent-projects.json";
-const SIDEBAR_MENU_WIDTH: f32 = 168.0;
+const SIDEBAR_MENU_MIN_WIDTH: f32 = 120.0;
+const SIDEBAR_MENU_MAX_WIDTH: f32 = 180.0;
+const CHATS_MENU_WIDTH: f32 = 200.0;
+const CHATS_FLYOUT_WIDTH: f32 = 180.0;
 const SIDEBAR_MENU_ANCHOR_GAP: f32 = 4.0;
+
+/// Standalone-chat list sort — `#agent-sort-flyout` in `desktop-current.html`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatsSort {
+    Created,
+    #[default]
+    Updated,
+}
+
+/// Open submenu in `#agent-chats-menu`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatsFlyout {
+    Organize,
+    Sort,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProject {
@@ -89,12 +109,30 @@ pub fn standalone_chats<'a>(
     archived_ids: &HashSet<String>,
     query: &str,
 ) -> Vec<&'a AgentSession> {
-    sessions
+    standalone_chats_sorted(sessions, archived_ids, query, ChatsSort::Updated)
+}
+
+pub fn standalone_chats_sorted<'a>(
+    sessions: &'a [AgentSession],
+    archived_ids: &HashSet<String>,
+    query: &str,
+    sort: ChatsSort,
+) -> Vec<&'a AgentSession> {
+    let mut out: Vec<&'a AgentSession> = sessions
         .iter()
         .filter(|s| {
             is_standalone(s) && !archived_ids.contains(&s.id) && session_matches_query(s, query)
         })
-        .collect()
+        .collect();
+    match sort {
+        ChatsSort::Updated => {
+            // `time` is a relative display string; keep insertion / list order as "recent".
+        }
+        ChatsSort::Created => {
+            out.reverse();
+        }
+    }
+    out
 }
 
 pub fn archived_sessions_all<'a>(
@@ -308,7 +346,7 @@ fn agent_sidebar_icon_btn_dynamic(
 
 /// Section header matching `.agent-sidebar-head` (`space-between`, actions `gap: 2px`).
 ///
-/// Pass `more` as `Some` for chats (`⋯` + new); `None` for projects (new only, HTML).
+/// Menus are `add_positioned_overlay_child` (HTML `position: fixed`) so they do not expand row height.
 fn sidebar_section_head(
     font: FamilyId,
     label: &str,
@@ -316,7 +354,7 @@ fn sidebar_section_head(
     new_hover_key: &'static str,
     new_action: AgentPanelAction,
     new_icon: &'static str,
-    menu_open: bool,
+    menu: Option<Box<dyn Element>>,
     sidebar_hover: Option<&str>,
 ) -> Box<dyn Element> {
     let new_btn = agent_sidebar_icon_btn(
@@ -348,15 +386,15 @@ fn sidebar_section_head(
 
     let mut actions_stack = Stack::new();
     actions_stack.add_child(actions_row);
-    if menu_open {
-        actions_stack.add_child(
-            Align::new(
-                Container::new(render_sidebar_empty_menu())
-                    .with_margin_top(SIDEBAR_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP)
-                    .finish(),
-            )
-            .top_right()
-            .finish(),
+    if let Some(menu_el) = menu {
+        actions_stack.add_positioned_overlay_child(
+            menu_el,
+            OffsetPositioning::offset_from_parent(
+                vec2f(0.0, SIDEBAR_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP),
+                ParentOffsetBounds::Unbounded,
+                ParentAnchor::TopRight,
+                ChildAnchor::TopRight,
+            ),
         );
     }
 
@@ -368,22 +406,293 @@ fn sidebar_section_head(
         .finish()
 }
 
-fn render_sidebar_empty_menu() -> Box<dyn Element> {
-    let panel = Container::new(
-        ConstrainedBox::new(Flex::row().finish())
-            .with_min_width(SIDEBAR_MENU_WIDTH)
-            .with_width(SIDEBAR_MENU_WIDTH)
-            .with_min_height(32.0)
-            .finish(),
-    )
-    .with_uniform_padding(5.0)
-    .with_background(theme::panel_elevated())
-    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)))
-    .finish();
-    EventHandler::new(panel)
+fn render_projects_section_menu(
+    font: FamilyId,
+    project_id: &str,
+    can_delete: bool,
+    sidebar_hover: Option<&str>,
+) -> Box<dyn Element> {
+    let id = project_id.to_string();
+    let items = vec![
+        (
+            "重命名",
+            false,
+            false,
+            AgentPanelAction::RenameProject(id.clone()),
+        ),
+        (
+            "删除项目",
+            !can_delete,
+            true,
+            AgentPanelAction::OpenProjectDeleteModal(id),
+        ),
+    ];
+    EventHandler::new(sidebar_dropdown_menu(font, items, sidebar_hover))
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
+}
+
+fn render_chats_section_menu(
+    font: FamilyId,
+    sort: ChatsSort,
+    flyout: Option<ChatsFlyout>,
+    sidebar_hover: Option<&str>,
+) -> Box<dyn Element> {
+    let mut col = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    col.add_child(chats_menu_item(
+        font,
+        "归档所有聊天",
+        Some("agent-menu-archive.svg"),
+        "chats-archive-all",
+        sidebar_hover,
+        false,
+        false,
+        false,
+        None,
+        AgentPanelAction::ArchiveAllStandaloneChats,
+    ));
+    col.add_child(menu_separator());
+    col.add_child(chats_flyout_parent(
+        font,
+        "整理侧边栏",
+        "agent-menu-organize.svg",
+        "chats-organize",
+        sidebar_hover,
+        flyout == Some(ChatsFlyout::Organize),
+        ChatsFlyout::Organize,
+        render_organize_flyout(font, sidebar_hover),
+    ));
+    col.add_child(chats_flyout_parent(
+        font,
+        "排序条件",
+        "agent-menu-sort.svg",
+        "chats-sort",
+        sidebar_hover,
+        flyout == Some(ChatsFlyout::Sort),
+        ChatsFlyout::Sort,
+        render_sort_flyout(font, sort, sidebar_hover),
+    ));
+
+    EventHandler::new(menu_shell(CHATS_MENU_WIDTH, 6.0, 12.0, col.finish()))
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chats_menu_item(
+    font: FamilyId,
+    label: &str,
+    icon_path: Option<&'static str>,
+    hover_key: &'static str,
+    sidebar_hover: Option<&str>,
+    active: bool,
+    has_flyout: bool,
+    checked: bool,
+    flyout: Option<ChatsFlyout>,
+    action: AgentPanelAction,
+) -> Box<dyn Element> {
+    let highlighted = active || sidebar_hover == Some(hover_key);
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    if let Some(path) = icon_path {
+        row.add_child(icons::icon(
+            path,
+            icons::AGENT_MENU_ICON_SIZE,
+            theme::muted(),
+        ));
+    }
+    row.add_child(
+        Expanded::new(
+            1.0,
+            Container::new(
+                ui_text::body(label.to_string(), font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_margin_left(if icon_path.is_some() { 10.0 } else { 0.0 })
+            .finish(),
+        )
+        .finish(),
+    );
+    if has_flyout {
+        row.add_child(ui_text::body("›", font).with_color(theme::muted()).finish());
+    } else if checked {
+        row.add_child(
+            ui_text::body("✓", font)
+                .with_color(theme::accent_cool())
+                .finish(),
+        );
+    }
+
+    let mut container = Container::new(row.finish())
+        .with_padding_left(10.0)
+        .with_padding_right(10.0)
+        .with_padding_top(9.0)
+        .with_padding_bottom(9.0)
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)));
+    if highlighted {
+        container = container.with_background(theme::accent_cool_bg(20));
+    }
+
+    EventHandler::new(container.finish())
+        .on_mouse_in(
+            move |ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
+                    hover_key.to_string(),
+                )));
+                ctx.dispatch_typed_action(AgentPanelAction::SetChatsFlyout(flyout));
+                DispatchEventResult::PropagateToParent
+            },
+            None,
+        )
+        .on_mouse_out(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(hover_key.to_string()));
+            DispatchEventResult::PropagateToParent
+        })
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chats_flyout_parent(
+    font: FamilyId,
+    label: &str,
+    icon_path: &'static str,
+    hover_key: &'static str,
+    sidebar_hover: Option<&str>,
+    open: bool,
+    flyout: ChatsFlyout,
+    flyout_panel: Box<dyn Element>,
+) -> Box<dyn Element> {
+    let mut stack = Stack::new();
+    stack.add_child(chats_menu_item(
+        font,
+        label,
+        Some(icon_path),
+        hover_key,
+        sidebar_hover,
+        open,
+        true,
+        false,
+        Some(flyout),
+        AgentPanelAction::SetChatsFlyout(Some(flyout)),
+    ));
+    if open {
+        stack.add_positioned_overlay_child(
+            flyout_panel,
+            OffsetPositioning::offset_from_parent(
+                vec2f(SIDEBAR_MENU_ANCHOR_GAP, 0.0),
+                ParentOffsetBounds::Unbounded,
+                ParentAnchor::TopRight,
+                ChildAnchor::TopLeft,
+            ),
+        );
+    }
+    stack.finish()
+}
+
+fn render_organize_flyout(font: FamilyId, sidebar_hover: Option<&str>) -> Box<dyn Element> {
+    let mut col = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    col.add_child(chats_menu_item(
+        font,
+        "折叠所有项目",
+        None,
+        "chats-collapse-all",
+        sidebar_hover,
+        false,
+        false,
+        false,
+        Some(ChatsFlyout::Organize),
+        AgentPanelAction::CollapseAllProjects,
+    ));
+    col.add_child(chats_menu_item(
+        font,
+        "展开所有项目",
+        None,
+        "chats-expand-all",
+        sidebar_hover,
+        false,
+        false,
+        false,
+        Some(ChatsFlyout::Organize),
+        AgentPanelAction::ExpandAllProjects,
+    ));
+    flyout_shell(col.finish())
+}
+
+fn render_sort_flyout(
+    font: FamilyId,
+    sort: ChatsSort,
+    sidebar_hover: Option<&str>,
+) -> Box<dyn Element> {
+    let mut col = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    col.add_child(chats_menu_item(
+        font,
+        "创建时间",
+        Some("agent-menu-created.svg"),
+        "chats-sort-created",
+        sidebar_hover,
+        false,
+        false,
+        sort == ChatsSort::Created,
+        Some(ChatsFlyout::Sort),
+        AgentPanelAction::SetChatsSort(ChatsSort::Created),
+    ));
+    col.add_child(chats_menu_item(
+        font,
+        "最近更新",
+        Some("agent-menu-updated.svg"),
+        "chats-sort-updated",
+        sidebar_hover,
+        false,
+        false,
+        sort == ChatsSort::Updated,
+        Some(ChatsFlyout::Sort),
+        AgentPanelAction::SetChatsSort(ChatsSort::Updated),
+    ));
+    flyout_shell(col.finish())
+}
+
+fn flyout_shell(child: Box<dyn Element>) -> Box<dyn Element> {
+    EventHandler::new(menu_shell(CHATS_FLYOUT_WIDTH, 6.0, 12.0, child))
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish()
+}
+
+fn menu_shell(width: f32, padding: f32, radius: f32, child: Box<dyn Element>) -> Box<dyn Element> {
+    Container::new(
+        ConstrainedBox::new(child)
+            .with_min_width(width)
+            .with_width(width)
+            .finish(),
+    )
+    .with_uniform_padding(padding)
+    .with_background(theme::panel_elevated())
+    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(radius)))
+    .finish()
+}
+
+fn menu_separator() -> Box<dyn Element> {
+    Container::new(
+        ConstrainedBox::new(Flex::row().finish())
+            .with_height(1.0)
+            .finish(),
+    )
+    .with_background(theme::border())
+    .with_vertical_margin(4.0)
+    .with_horizontal_margin(8.0)
+    .finish()
 }
 
 fn search_box(font: FamilyId, search: &str, search_focused: bool) -> Box<dyn Element> {
@@ -652,14 +961,15 @@ fn project_row_more_btn(
     let mut stack = Stack::new();
     stack.add_child(btn);
     if menu_open {
-        stack.add_child(
-            Align::new(
-                Container::new(project_row_menu_panel(font, &project_id))
-                    .with_margin_top(PROJECT_HEAD_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP)
-                    .finish(),
-            )
-            .top_left()
-            .finish(),
+        // Overlay: does not contribute to Stack size (HTML `position: fixed`).
+        stack.add_positioned_overlay_child(
+            project_row_menu_panel(font, &project_id, sidebar_hover),
+            OffsetPositioning::offset_from_parent(
+                vec2f(0.0, PROJECT_HEAD_ICON_BTN + SIDEBAR_MENU_ANCHOR_GAP),
+                ParentOffsetBounds::Unbounded,
+                ParentAnchor::TopLeft,
+                ChildAnchor::TopLeft,
+            ),
         );
     }
     stack.finish()
@@ -869,7 +1179,10 @@ fn sidebar_menu_item(
     disabled: bool,
     danger: bool,
     action: AgentPanelAction,
+    sidebar_hover: Option<&str>,
 ) -> Box<dyn Element> {
+    let hover_key = format!("sidebar-menu:{label}");
+    let hovered = sidebar_hover == Some(hover_key.as_str());
     let color = if disabled {
         theme::placeholder()
     } else if danger {
@@ -878,22 +1191,47 @@ fn sidebar_menu_item(
         theme::text()
     };
     let action_for_click = action.clone();
-    let row = Container::new(
+    let mut row = Container::new(
         ui_text::body(label.to_string(), font)
             .with_color(color)
             .finish(),
     )
     .with_padding_left(12.0)
     .with_padding_right(12.0)
-    .with_padding_top(8.0)
-    .with_padding_bottom(8.0)
-    .finish();
+    .with_padding_top(7.0)
+    .with_padding_bottom(7.0)
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(7.0)));
+    if hovered {
+        let hover_bg = if danger {
+            let mut color = theme::danger();
+            color.a = 31;
+            color
+        } else {
+            theme::accent_cool_bg(20)
+        };
+        row = row.with_background(hover_bg);
+    }
+    let row = row.finish();
 
     if disabled {
         return row;
     }
 
+    let hover_key_in = hover_key.clone();
     EventHandler::new(row)
+        .on_mouse_in(
+            move |ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
+                    hover_key_in.clone(),
+                )));
+                DispatchEventResult::PropagateToParent
+            },
+            None,
+        )
+        .on_mouse_out(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AgentPanelAction::ClearSidebarHoverIf(hover_key.clone()));
+            DispatchEventResult::PropagateToParent
+        })
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action_for_click.clone());
             DispatchEventResult::StopPropagation
@@ -904,15 +1242,25 @@ fn sidebar_menu_item(
 fn sidebar_dropdown_menu(
     font: FamilyId,
     items: Vec<(&str, bool, bool, AgentPanelAction)>,
+    sidebar_hover: Option<&str>,
 ) -> Box<dyn Element> {
-    let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
+    let mut col = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     for (label, disabled, danger, action) in items {
-        col.add_child(sidebar_menu_item(font, label, disabled, danger, action));
+        col.add_child(sidebar_menu_item(
+            font,
+            label,
+            disabled,
+            danger,
+            action,
+            sidebar_hover,
+        ));
     }
     Container::new(
         ConstrainedBox::new(col.finish())
-            .with_min_width(SIDEBAR_MENU_WIDTH)
-            .with_width(SIDEBAR_MENU_WIDTH)
+            .with_min_width(SIDEBAR_MENU_MIN_WIDTH)
+            .with_max_width(SIDEBAR_MENU_MAX_WIDTH)
             .finish(),
     )
     .with_uniform_padding(4.0)
@@ -928,6 +1276,7 @@ pub fn render_session_context_menu(
     archived: bool,
     x: f32,
     y: f32,
+    sidebar_hover: Option<&str>,
 ) -> Box<dyn Element> {
     let id = session_id.to_string();
     let mut items: Vec<(&str, bool, bool, AgentPanelAction)> = Vec::new();
@@ -952,18 +1301,22 @@ pub fn render_session_context_menu(
             AgentPanelAction::ArchiveSession(id.clone()),
         ));
     }
-    positioned_context_menu(x, y, sidebar_dropdown_menu(font, items))
+    positioned_context_menu(x, y, sidebar_dropdown_menu(font, items, sidebar_hover))
 }
 
 /// Project-row ⋯ dropdown panel — HTML `#agent-projects-menu` (anchored in-tree).
-fn project_row_menu_panel(font: FamilyId, project_id: &str) -> Box<dyn Element> {
+fn project_row_menu_panel(
+    font: FamilyId,
+    project_id: &str,
+    sidebar_hover: Option<&str>,
+) -> Box<dyn Element> {
     let items = vec![(
         "删除项目",
         false,
         true,
         AgentPanelAction::OpenProjectDeleteModal(project_id.to_string()),
     )];
-    EventHandler::new(sidebar_dropdown_menu(font, items))
+    EventHandler::new(sidebar_dropdown_menu(font, items, sidebar_hover))
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
 }
@@ -980,6 +1333,9 @@ pub fn render_sidebar(
     search_focused: bool,
     archived_ids: &HashSet<String>,
     chats_menu_open: bool,
+    chats_flyout: Option<ChatsFlyout>,
+    projects_menu_open: bool,
+    chats_sort: ChatsSort,
     project_row_menu: Option<&str>,
     sidebar_hover: Option<&str>,
     project_head_hover: Option<&str>,
@@ -988,15 +1344,26 @@ pub fn render_sidebar(
 
     scroll_col.add_child(search_box(font, search, search_focused));
 
+    let can_delete_project = projects.len() > 1;
+    let projects_menu = if projects_menu_open && !active_project_id.is_empty() {
+        Some(render_projects_section_menu(
+            font,
+            active_project_id,
+            can_delete_project,
+            sidebar_hover,
+        ))
+    } else {
+        None
+    };
     scroll_col.add_child(
         Container::new(sidebar_section_head(
             font,
             "项目",
-            None,
+            Some(("projects-more", AgentPanelAction::ToggleProjectsMenu)),
             "new-project",
             AgentPanelAction::OpenProjectCreateModal,
             "agent-edit.svg",
-            false,
+            projects_menu,
             sidebar_hover,
         ))
         .with_horizontal_padding(6.0)
@@ -1035,6 +1402,16 @@ pub fn render_sidebar(
         }
     }
 
+    let chats_menu = if chats_menu_open {
+        Some(render_chats_section_menu(
+            font,
+            chats_sort,
+            chats_flyout,
+            sidebar_hover,
+        ))
+    } else {
+        None
+    };
     scroll_col.add_child(
         Container::new(sidebar_section_head(
             font,
@@ -1043,7 +1420,7 @@ pub fn render_sidebar(
             "new-chat",
             AgentPanelAction::NewStandaloneChat,
             "agent-edit.svg",
-            chats_menu_open,
+            chats_menu,
             sidebar_hover,
         ))
         .with_horizontal_padding(6.0)
@@ -1052,7 +1429,7 @@ pub fn render_sidebar(
         .finish(),
     );
 
-    let standalone = standalone_chats(sessions, archived_ids, search);
+    let standalone = standalone_chats_sorted(sessions, archived_ids, search, chats_sort);
     if standalone.is_empty() {
         let empty = if search.trim().is_empty() {
             "暂无独立对话"
@@ -1061,7 +1438,10 @@ pub fn render_sidebar(
         };
         scroll_col.add_child(
             Container::new(section_hint(empty, font))
-                .with_horizontal_padding(10.0)
+                .with_padding_left(10.0)
+                .with_padding_right(10.0)
+                .with_padding_top(4.0)
+                .with_padding_bottom(8.0)
                 .finish(),
         );
     } else {
@@ -1127,8 +1507,8 @@ mod tests {
     use super::{
         archived_count_all, is_standalone, load_archived_ids, load_archived_snapshots,
         load_projects_state, project_threads, remove_archived_snapshot, save_archived_ids,
-        save_projects_state, standalone_chats, upsert_archived_snapshot, AgentProject,
-        AgentSession, ArchivedSessionSnapshot,
+        save_projects_state, standalone_chats, standalone_chats_sorted, upsert_archived_snapshot,
+        AgentProject, AgentSession, ArchivedSessionSnapshot, ChatsSort,
     };
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -1190,6 +1570,10 @@ mod tests {
         let archived = HashSet::new();
         assert_eq!(project_threads("p1", &sessions, &archived, "").len(), 1);
         assert_eq!(standalone_chats(&sessions, &archived, "").len(), 1);
+        assert_eq!(
+            standalone_chats_sorted(&sessions, &archived, "", ChatsSort::Created).len(),
+            1
+        );
         assert!(is_standalone(&sessions[1]));
         assert!(!is_standalone(&sessions[0]));
     }
