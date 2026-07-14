@@ -1,6 +1,7 @@
 use warpui::elements::{
-    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Expanded, Flex, MainAxisSize, ParentElement, Radius,
+    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
+    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
+    MainAxisSize, ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
@@ -8,8 +9,9 @@ use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, Vie
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{
-    section_card, section_hint, section_title, status_line, view_panel, StatusTone,
+use crate::ui::panel_primitives::{section_hint, section_title, status_line, StatusTone};
+use crate::ui::text_field_input::{
+    render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -32,6 +34,9 @@ pub enum SettingsEvent {
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
     BrowseMigrate,
+    SaveMigration,
+    FocusPath,
+    TextFieldEdit(TextFieldEditAction),
     Refresh,
     Login,
     Logout,
@@ -48,6 +53,9 @@ pub struct SettingsView {
     core: CoreHandle,
     font: FamilyId,
     storage: Option<SharedStorageInfoDto>,
+    storage_draft: String,
+    storage_field: TextFieldState,
+    storage_focused: bool,
     status: String,
     status_tone: StatusTone,
     busy: bool,
@@ -63,17 +71,32 @@ pub struct SettingsView {
     relay_message: String,
     relay_tone: StatusTone,
     relay_busy: bool,
+    scroll: ClippedScrollStateHandle,
 }
 
 impl SettingsView {
+    fn archive_expanded_path(core: &CoreHandle) -> std::path::PathBuf {
+        core.data_dir().join("settings-archive-expanded")
+    }
+
+    fn load_archive_expanded(core: &CoreHandle) -> bool {
+        std::fs::read_to_string(Self::archive_expanded_path(core))
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false)
+    }
+
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let archive_expanded = Self::load_archive_expanded(&core);
         let agent_providers =
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
             storage: None,
+            storage_draft: String::new(),
+            storage_field: TextFieldState::new(),
+            storage_focused: false,
             status: String::new(),
             status_tone: StatusTone::Placeholder,
             busy: false,
@@ -82,13 +105,14 @@ impl SettingsView {
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
             auth_device_id: None,
-            archive_expanded: false,
+            archive_expanded,
             agent_providers,
             relay_status: None,
             relay_mode: "auto".into(),
             relay_message: String::new(),
             relay_tone: StatusTone::Placeholder,
             relay_busy: false,
+            scroll: ClippedScrollStateHandle::new(),
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
@@ -130,10 +154,6 @@ impl SettingsView {
                 ctx.notify();
             },
         );
-    }
-
-    pub fn agent_providers_view(&self) -> &warpui::ViewHandle<AgentProvidersView> {
-        &self.agent_providers
     }
 
     fn refresh_relay(&mut self, ctx: &mut ViewContext<Self>) {
@@ -180,6 +200,10 @@ impl SettingsView {
                 view.busy = false;
                 match output {
                     Ok(s) => {
+                        let was_dirty = view.storage_dirty();
+                        if !was_dirty {
+                            view.storage_draft = s.sync_entry_path.clone();
+                        }
                         view.storage = Some(s);
                         if view.status.is_empty() {
                             view.status = "点击「浏览…」可选择新位置并迁移共享文件。".into();
@@ -218,7 +242,32 @@ impl SettingsView {
         col.finish()
     }
 
+    fn storage_dirty(&self) -> bool {
+        self.storage
+            .as_ref()
+            .map(|storage| storage_paths_differ(&storage.sync_entry_path, &self.storage_draft))
+            .unwrap_or(false)
+    }
+
+    fn flat_section(&self, body: Box<dyn Element>) -> Box<dyn Element> {
+        Container::new(body)
+            .with_padding_top(16.0)
+            .with_padding_bottom(16.0)
+            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .finish()
+    }
+
     fn action_button(&self, label: &str, action: SettingsAction) -> Box<dyn Element> {
+        self.stateful_action_button(label, action, false, false)
+    }
+
+    fn stateful_action_button(
+        &self,
+        label: &str,
+        action: SettingsAction,
+        disabled: bool,
+        primary: bool,
+    ) -> Box<dyn Element> {
         let label = label.to_string();
         Container::new(
             EventHandler::new(
@@ -227,20 +276,31 @@ impl SettingsView {
                     .finish(),
             )
             .on_left_mouse_down(move |ctx, _, _| {
+                if disabled {
+                    return DispatchEventResult::StopPropagation;
+                }
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
             })
             .finish(),
         )
-        .with_uniform_padding(8.0)
-        .with_background(theme::accent_bg(24))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+        .with_padding_left(12.0)
+        .with_padding_right(12.0)
+        .with_padding_top(7.0)
+        .with_padding_bottom(7.0)
+        .with_background(if primary {
+            theme::accent_cool_bg(if disabled { 16 } else { 40 })
+        } else {
+            theme::accent_bg(if disabled { 8 } else { 24 })
+        })
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
     }
 
     fn relay_option_button(&self, mode: &str, label: &str) -> Box<dyn Element> {
         let selected = self.relay_mode == mode;
+        let disabled = self.relay_busy;
         let mode = mode.to_string();
         let label = if selected {
             format!("● {label}")
@@ -260,6 +320,9 @@ impl SettingsView {
             .on_left_mouse_down({
                 let mode = mode.clone();
                 move |ctx, _, _| {
+                    if disabled {
+                        return DispatchEventResult::StopPropagation;
+                    }
                     ctx.dispatch_typed_action(SettingsAction::SelectRelay(mode.clone()));
                     DispatchEventResult::StopPropagation
                 }
@@ -350,14 +413,28 @@ impl SettingsView {
 
         let mut actions = Flex::row();
         actions.add_child(
-            Container::new(self.action_button("应用并重启 P2P", SettingsAction::ApplyRelay))
-                .with_horizontal_margin(4.0)
-                .finish(),
+            Container::new(self.stateful_action_button(
+                if self.relay_busy {
+                    "正在应用…"
+                } else {
+                    "应用并重启 P2P"
+                },
+                SettingsAction::ApplyRelay,
+                self.relay_busy,
+                true,
+            ))
+            .with_horizontal_margin(4.0)
+            .finish(),
         );
         actions.add_child(
-            Container::new(self.action_button("刷新", SettingsAction::RefreshRelay))
-                .with_horizontal_margin(4.0)
-                .finish(),
+            Container::new(self.stateful_action_button(
+                "刷新",
+                SettingsAction::RefreshRelay,
+                self.relay_busy,
+                false,
+            ))
+            .with_horizontal_margin(4.0)
+            .finish(),
         );
         col.add_child(actions.finish());
 
@@ -368,7 +445,7 @@ impl SettingsView {
                 self.relay_tone,
             ));
         }
-        section_card(col.finish())
+        self.flat_section(col.finish())
     }
 
     fn shared_path_block(&self) -> Box<dyn Element> {
@@ -380,7 +457,48 @@ impl SettingsView {
         ));
 
         if let Some(info) = &self.storage {
-            col.add_child(self.path_row("当前同步目录", &info.sync_entry_path));
+            col.add_child(
+                ui_text::body("当前同步目录", self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+            let draft = self.storage_draft.clone();
+            let marked = self.storage_field.marked_text.clone();
+            let field = TextFieldInput::builder(
+                EventHandler::new(
+                    Container::new(render_field_with_caret(
+                        &draft,
+                        &marked,
+                        "选择共享文件存放位置",
+                        self.font,
+                        self.storage_focused,
+                        self.busy,
+                        true,
+                    ))
+                    .with_uniform_padding(10.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_fill(if self.storage_dirty() {
+                        theme::accent_cool()
+                    } else {
+                        theme::border()
+                    }))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                    .finish(),
+                )
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(SettingsAction::FocusPath);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+                |ctx, action| {
+                    ctx.dispatch_typed_action(SettingsAction::TextFieldEdit(action));
+                },
+            )
+            .focused(self.storage_focused)
+            .disabled(self.busy)
+            .ime_preedit(!marked.is_empty())
+            .finish();
+            col.add_child(field);
             if info.physical_path != info.sync_entry_path {
                 col.add_child(
                     Container::new(self.path_row("物理存放", &info.physical_path))
@@ -407,28 +525,35 @@ impl SettingsView {
             );
         }
 
-        col.add_child(
-            Container::new(self.action_button("浏览…", SettingsAction::BrowseMigrate))
-                .with_vertical_margin(8.0)
-                .finish(),
-        );
-
-        col.add_child(
-            Container::new(
-                EventHandler::new(
-                    ui_text::body("刷新", self.font)
-                        .with_color(theme::accent_cool())
-                        .finish(),
-                )
-                .on_left_mouse_down(|ctx, _, _| {
-                    ctx.dispatch_typed_action(SettingsAction::Refresh);
-                    DispatchEventResult::StopPropagation
-                })
-                .finish(),
-            )
+        let mut actions = Flex::row();
+        actions.add_child(
+            Container::new(self.stateful_action_button(
+                "浏览…",
+                SettingsAction::BrowseMigrate,
+                self.busy,
+                false,
+            ))
             .with_vertical_margin(8.0)
             .finish(),
         );
+        actions.add_child(
+            Container::new(self.stateful_action_button(
+                if self.busy { "保存中…" } else { "保存" },
+                SettingsAction::SaveMigration,
+                self.busy || !self.storage_dirty(),
+                true,
+            ))
+            .with_vertical_margin(8.0)
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        actions.add_child(
+            Container::new(self.action_button("刷新", SettingsAction::Refresh))
+                .with_vertical_margin(8.0)
+                .with_margin_left(8.0)
+                .finish(),
+        );
+        col.add_child(actions.finish());
 
         if !self.status.is_empty() {
             col.add_child(status_line(
@@ -437,7 +562,7 @@ impl SettingsView {
                 self.status_tone,
             ));
         }
-        section_card(col.finish())
+        self.flat_section(col.finish())
     }
 
     fn account_block(&self) -> Box<dyn Element> {
@@ -447,6 +572,13 @@ impl SettingsView {
             "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一设备。",
             self.font,
         ));
+        if let Some(user_id) = &self.auth_user_id {
+            col.add_child(
+                ui_text::mono(format!("用户 ID: {user_id}"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+        }
         if let Some(device_id) = &self.auth_device_id {
             col.add_child(
                 ui_text::mono(format!("设备 ID: {device_id}"), self.font)
@@ -463,44 +595,42 @@ impl SettingsView {
         }
         if self.auth_user_id.is_none() {
             col.add_child(
-                Container::new(
-                    EventHandler::new(
-                        ui_text::body("登录 Wormhole", self.font)
-                            .with_color(theme::accent_cool())
-                            .finish(),
-                    )
-                    .on_left_mouse_down(|ctx, _, _| {
-                        ctx.dispatch_typed_action(SettingsAction::Login);
-                        DispatchEventResult::StopPropagation
-                    })
-                    .finish(),
-                )
-                .with_uniform_padding(10.0)
+                Container::new(self.stateful_action_button(
+                    if self.auth_busy {
+                        "正在读取账号…"
+                    } else {
+                        "登录 Wormhole"
+                    },
+                    SettingsAction::Login,
+                    self.auth_busy,
+                    true,
+                ))
                 .with_vertical_margin(8.0)
-                .with_background(theme::accent_bg(24))
-                .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
                 .finish(),
             );
         } else {
             col.add_child(
-                Container::new(
-                    EventHandler::new(
-                        ui_text::body("退出登录", self.font)
-                            .with_color(theme::accent_cool())
-                            .finish(),
-                    )
-                    .on_left_mouse_down(|ctx, _, _| {
-                        ctx.dispatch_typed_action(SettingsAction::Logout);
-                        DispatchEventResult::StopPropagation
-                    })
-                    .finish(),
-                )
+                Container::new(self.stateful_action_button(
+                    if self.auth_busy {
+                        "正在退出…"
+                    } else {
+                        "退出登录"
+                    },
+                    SettingsAction::Logout,
+                    self.auth_busy,
+                    false,
+                ))
                 .with_vertical_margin(8.0)
                 .finish(),
             );
         }
-        section_card(col.finish())
+        col.add_child(self.stateful_action_button(
+            "刷新账号状态",
+            SettingsAction::RefreshAccount,
+            self.auth_busy,
+            false,
+        ));
+        self.flat_section(col.finish())
     }
 
     fn archive_block(&self) -> Box<dyn Element> {
@@ -577,7 +707,7 @@ impl SettingsView {
             );
         }
 
-        section_card(col.finish())
+        self.flat_section(col.finish())
     }
 
     fn archived_session_row(&self, snapshot: ArchivedSessionSnapshot) -> Box<dyn Element> {
@@ -663,12 +793,34 @@ impl View for SettingsView {
         col.add_child(self.shared_path_block());
         col.add_child(self.archive_block());
         col.add_child(
+            Container::new(ChildView::new(&self.agent_providers).finish())
+                .with_padding_top(16.0)
+                .with_padding_bottom(16.0)
+                .finish(),
+        );
+        col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
                 .with_color(theme::placeholder())
                 .finish(),
         );
 
-        view_panel(col.finish())
+        let body = Container::new(
+            ConstrainedBox::new(col.finish())
+                .with_max_width(760.0)
+                .finish(),
+        )
+        .with_uniform_padding(20.0)
+        .with_background(theme::canvas())
+        .finish();
+        ClippedScrollable::vertical(
+            self.scroll.clone(),
+            body,
+            ScrollbarWidth::Auto,
+            Fill::None,
+            Fill::None,
+            Fill::None,
+        )
+        .finish()
     }
 }
 
@@ -681,10 +833,17 @@ impl TypedActionView for SettingsView {
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::RefreshRelay => self.refresh_relay(ctx),
             SettingsAction::SelectRelay(mode) => {
-                self.relay_mode = mode.clone();
-                ctx.notify();
+                if is_relay_mode(mode) && !self.relay_busy {
+                    self.relay_mode = mode.clone();
+                    self.relay_message = "Relay 模式已修改，点击「应用并重启 P2P」生效。".into();
+                    self.relay_tone = StatusTone::Placeholder;
+                    ctx.notify();
+                }
             }
             SettingsAction::ApplyRelay => {
+                if self.relay_busy {
+                    return;
+                }
                 self.relay_busy = true;
                 self.relay_message = "正在应用 Relay 并重启 P2P 节点…".into();
                 self.relay_tone = StatusTone::Placeholder;
@@ -752,9 +911,8 @@ impl TypedActionView for SettingsView {
                 if self.busy {
                     return;
                 }
-                let core = self.core.clone();
                 self.busy = true;
-                self.status = "正在迁移…".into();
+                self.status = "正在选择文件夹…".into();
                 self.status_tone = StatusTone::Placeholder;
                 ctx.notify();
                 ctx.spawn(
@@ -770,28 +928,62 @@ impl TypedActionView for SettingsView {
                         let picked: Option<std::path::PathBuf> = None;
 
                         let Some(path) = picked else {
-                            return Ok::<Option<SharedStorageInfoDto>, String>(None);
+                            return None;
                         };
-
-                        let target = path.display().to_string();
-                        let state = core.runtime().state.clone();
-                        let info = migrate_shared_storage(&state, target).await?;
-                        Ok(Some(info))
+                        Some(path.display().to_string())
                     },
                     |view, output, ctx| {
                         view.busy = false;
                         match output {
-                            Ok(Some(info)) => {
+                            Some(path) => {
+                                view.storage_draft = path;
+                                view.storage_field.clear_marked();
+                                view.storage_focused = true;
+                                view.status = "已选择文件夹，点击「保存」开始迁移。".into();
+                                view.status_tone = StatusTone::Placeholder;
+                            }
+                            None => {
+                                view.status = "已取消选择。".into();
+                                view.status_tone = StatusTone::Placeholder;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::SaveMigration => {
+                if self.busy || !self.storage_dirty() {
+                    return;
+                }
+                let target = self.storage_draft.trim().to_string();
+                if target.is_empty() {
+                    self.status = "共享文件路径不能为空。".into();
+                    self.status_tone = StatusTone::Danger;
+                    ctx.notify();
+                    return;
+                }
+                self.busy = true;
+                self.storage_focused = false;
+                self.status = "正在迁移共享文件…".into();
+                self.status_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                ctx.notify();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        migrate_shared_storage(&state, target).await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(info) => {
+                                view.storage_draft = info.sync_entry_path.clone();
                                 view.status = format!("已迁移共享文件至 {}", info.sync_entry_path);
                                 view.storage = Some(info);
                                 view.status_tone = StatusTone::Success;
                             }
-                            Ok(None) => {
-                                view.status = "已取消选择。".into();
-                                view.status_tone = StatusTone::Placeholder;
-                            }
-                            Err(e) => {
-                                view.status = format!("迁移失败: {e}");
+                            Err(error) => {
+                                view.status = format!("迁移失败: {error}");
                                 view.status_tone = StatusTone::Danger;
                             }
                         }
@@ -799,8 +991,26 @@ impl TypedActionView for SettingsView {
                     },
                 );
             }
+            SettingsAction::FocusPath => {
+                if !self.busy {
+                    self.storage_focused = true;
+                    ctx.notify();
+                }
+            }
+            SettingsAction::TextFieldEdit(action) => {
+                if !self.busy {
+                    self.storage_field.apply(&mut self.storage_draft, action);
+                    self.status.clear();
+                    ctx.notify();
+                }
+            }
             SettingsAction::ToggleArchiveSection => {
                 self.archive_expanded = !self.archive_expanded;
+                let value = if self.archive_expanded { "1" } else { "0" };
+                if let Err(error) = std::fs::write(Self::archive_expanded_path(&self.core), value) {
+                    self.status = format!("保存归档折叠状态失败: {error}");
+                    self.status_tone = StatusTone::Danger;
+                }
                 ctx.notify();
             }
             SettingsAction::RestoreArchivedSession(id) => {
@@ -810,5 +1020,32 @@ impl TypedActionView for SettingsView {
                 ctx.emit(SettingsEvent::DeleteArchivedSession(id.clone()));
             }
         }
+    }
+}
+
+fn storage_paths_differ(current: &str, draft: &str) -> bool {
+    current.trim() != draft.trim()
+}
+
+fn is_relay_mode(mode: &str) -> bool {
+    matches!(mode, "auto" | "domestic" | "overseas")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_relay_mode, storage_paths_differ};
+
+    #[test]
+    fn storage_dirty_state_ignores_outer_whitespace_only() {
+        assert!(!storage_paths_differ("D:\\Wormhole", " D:\\Wormhole "));
+        assert!(storage_paths_differ("D:\\Wormhole", "E:\\Wormhole"));
+    }
+
+    #[test]
+    fn relay_mode_accepts_only_backend_modes() {
+        assert!(is_relay_mode("auto"));
+        assert!(is_relay_mode("domestic"));
+        assert!(is_relay_mode("overseas"));
+        assert!(!is_relay_mode("fastest"));
     }
 }

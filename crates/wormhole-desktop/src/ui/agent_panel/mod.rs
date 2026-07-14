@@ -49,8 +49,8 @@ use crate::ui::panel_primitives::{
     AGENT_THREAD_MAX_WIDTH,
 };
 use crate::ui::text_field_input::{
-    render_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction,
-    TextFieldInput, TextFieldState,
+    render_compose_field_with_caret, sync_caret_blink, CaretBlink, CaretBlinkHost,
+    TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -141,7 +141,7 @@ pub enum AgentPanelAction {
         y: f32,
     },
     CloseSessionContextMenu,
-    CopyUserPrompt,
+    CopyUserPrompt(String),
     ClearAndUnfocus,
     ToggleComposerFocus,
     TextFieldEdit(TextFieldEditAction),
@@ -164,6 +164,7 @@ struct PanelState {
     polling_session: bool,
     input_focused: bool,
     pending_send: bool,
+    run_started_at: Option<SystemTime>,
     projects: Vec<sidebar::AgentProject>,
     sidebar_sessions: Vec<sidebar::AgentSession>,
     active_project_id: String,
@@ -230,6 +231,7 @@ pub struct AgentPanelView {
     sidebar_scroll: ClippedScrollStateHandle,
     thread_scroll: ClippedScrollStateHandle,
     caret_blink: CaretBlink,
+    run_timer_running: bool,
     generation_notify_tx: async_channel::Sender<()>,
     generation_notify_rx: async_channel::Receiver<()>,
 }
@@ -263,6 +265,7 @@ impl AgentPanelView {
                 polling_session: false,
                 input_focused: false,
                 pending_send: false,
+                run_started_at: None,
                 projects,
                 sidebar_sessions: Vec::new(),
                 active_project_id: String::new(),
@@ -300,6 +303,7 @@ impl AgentPanelView {
             sidebar_scroll: ClippedScrollStateHandle::default(),
             thread_scroll: ClippedScrollStateHandle::default(),
             caret_blink: CaretBlink::new(),
+            run_timer_running: false,
             generation_notify_tx,
             generation_notify_rx,
         }
@@ -432,6 +436,7 @@ impl AgentPanelView {
         panel.event_cursor = 0;
         panel.polling_session = false;
         panel.busy = false;
+        panel.run_started_at = None;
         panel.draft.clear();
         panel.sidebar_search.clear();
         panel.input_focused = true;
@@ -529,9 +534,11 @@ impl AgentPanelView {
                         if running && page.status == "running" {
                             panel.polling_session = true;
                             panel.busy = true;
+                            panel.run_started_at.get_or_insert_with(SystemTime::now);
                         } else {
                             panel.polling_session = false;
                             panel.busy = false;
+                            panel.run_started_at = None;
                         }
                         drop(panel);
                         view.bump();
@@ -543,6 +550,7 @@ impl AgentPanelView {
                         let mut panel = shared.lock().expect("agent panel state");
                         panel.polling_session = false;
                         panel.busy = false;
+                        panel.run_started_at = None;
                     }
                 }
                 ctx.notify();
@@ -587,6 +595,26 @@ impl AgentPanelView {
             *gen = gen.saturating_add(1);
         }
         self.notify_generation();
+    }
+
+    fn ensure_run_timer(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.run_timer_running {
+            return;
+        }
+        self.run_timer_running = true;
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            },
+            |view, _, ctx| {
+                view.run_timer_running = false;
+                let busy = view.state.lock().map(|panel| panel.busy).unwrap_or(false);
+                if busy {
+                    ctx.notify();
+                    view.ensure_run_timer(ctx);
+                }
+            },
+        );
     }
 
     fn start_session_poll(&self, ctx: &mut ViewContext<Self>) {
@@ -649,6 +677,7 @@ impl AgentPanelView {
                         if matches!(page.status.as_str(), "completed" | "failed") {
                             panel.polling_session = false;
                             panel.busy = false;
+                            panel.run_started_at = None;
                             panel.status = format!("任务{}", page.status);
                             if !panel.active_sidebar_session_id.is_empty() {
                                 let id = panel.active_sidebar_session_id.clone();
@@ -942,6 +971,7 @@ impl AgentPanelView {
             panel.event_cursor = 0;
             panel.polling_session = false;
             panel.busy = false;
+            panel.run_started_at = None;
             panel.chat_messages.clear();
             panel.resume_id = None;
             panel.active_session_id = None;
@@ -1407,6 +1437,7 @@ impl AgentPanelView {
             if panel.active_sidebar_session_id == session_id {
                 panel.polling_session = false;
                 panel.busy = false;
+                panel.run_started_at = None;
             }
             panel.session_context_menu = None;
             panel.chats_menu_open = false;
@@ -1557,6 +1588,7 @@ impl AgentPanelView {
                 panel.resume_id = None;
                 panel.active_session_id = None;
                 panel.busy = false;
+                panel.run_started_at = None;
             }
             let archived = panel.archived_ids.clone();
             self.persist_archived_ids(&archived);
@@ -1655,32 +1687,10 @@ impl AgentPanelView {
         }
     }
 
-    fn copy_user_prompt(&mut self, ctx: &mut ViewContext<Self>) {
-        let text = {
-            let panel = self.state.lock().expect("agent panel state");
-            panel
-                .lines
-                .iter()
-                .find(|line| line.channel == "user")
-                .map(|line| line.text.clone())
-                .or_else(|| {
-                    if panel.active_sidebar_session_id.is_empty() {
-                        None
-                    } else {
-                        panel
-                            .sidebar_sessions
-                            .iter()
-                            .find(|s| s.id == panel.active_sidebar_session_id)
-                            .map(|s| s.prompt.clone())
-                            .filter(|p| !p.trim().is_empty())
-                    }
-                })
-        };
-        if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
-            if write_clipboard_text(&text).is_ok() {
-                if let Ok(mut panel) = self.state.lock() {
-                    panel.status = "已复制指令".into();
-                }
+    fn copy_user_prompt(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        if !text.trim().is_empty() && write_clipboard_text(text).is_ok() {
+            if let Ok(mut panel) = self.state.lock() {
+                panel.status = "已复制指令".into();
             }
         }
         ctx.notify();
@@ -1916,6 +1926,7 @@ impl AgentPanelView {
             state.event_cursor = 0;
             state.polling_session = false;
             state.busy = false;
+            state.run_started_at = None;
             state.draft.clear();
             state.status = "已开启新对话".into();
             state.active_sidebar_session_id.clear();
@@ -1970,6 +1981,7 @@ impl AgentPanelView {
             }
             Self::ensure_sidebar_session_for_send(&mut state);
             state.busy = true;
+            state.run_started_at = Some(SystemTime::now());
             state.draft.clear();
             let title = Self::session_label_from_dto(&AgentSessionDto {
                 id: String::new(),
@@ -2005,6 +2017,7 @@ impl AgentPanelView {
             state.status = "执行中…".into();
             (text, state.mode)
         };
+        self.ensure_run_timer(ctx);
         self.bump();
         ctx.notify();
         match mode {
@@ -2129,6 +2142,7 @@ impl AgentPanelView {
                     }
                 }
                 panel.busy = false;
+                panel.run_started_at = None;
                 drop(panel);
                 if let Ok(mut gen) = generation_callback.lock() {
                     *gen = gen.saturating_add(1);
@@ -2233,10 +2247,12 @@ impl AgentPanelView {
                         );
                         panel.status = err;
                         panel.busy = false;
+                        panel.run_started_at = None;
                     }
                 }
                 if panel.active_session_id.is_none() {
                     panel.busy = false;
+                    panel.run_started_at = None;
                 }
                 drop(panel);
                 if let Ok(mut gen) = generation.lock() {
@@ -2530,7 +2546,7 @@ impl AgentPanelView {
         busy: bool,
         placeholder: &str,
     ) -> Box<dyn Element> {
-        let field = render_field_with_caret(
+        let field = render_compose_field_with_caret(
             draft,
             marked,
             placeholder,
@@ -2893,6 +2909,7 @@ impl View for AgentPanelView {
         let draft = state.draft.clone();
         let marked = state.field_state.marked_text.clone();
         let busy = state.busy;
+        let elapsed_seconds = run_elapsed_seconds(state.run_started_at, SystemTime::now());
         let _mode = state.mode;
         let input_focused = state.input_focused;
         let caret_blink = self.caret_blink.visible;
@@ -2948,6 +2965,7 @@ impl View for AgentPanelView {
         let transcript_model = TranscriptViewModel {
             lines: lines.to_vec(),
             thinking,
+            elapsed_seconds,
         };
 
         let mut composer_col =
@@ -3421,7 +3439,7 @@ impl TypedActionView for AgentPanelView {
                 ctx.notify();
             }
             AgentPanelAction::CloseSessionContextMenu => self.close_session_context_menu(ctx),
-            AgentPanelAction::CopyUserPrompt => self.copy_user_prompt(ctx),
+            AgentPanelAction::CopyUserPrompt(text) => self.copy_user_prompt(text, ctx),
             AgentPanelAction::ClearAndUnfocus => {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.draft.clear();
@@ -3451,6 +3469,7 @@ impl TypedActionView for AgentPanelView {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.busy = false;
                     panel.polling_session = false;
+                    panel.run_started_at = None;
                     if !panel.active_sidebar_session_id.is_empty() {
                         let id = panel.active_sidebar_session_id.clone();
                         if let Some(session) =
@@ -3618,7 +3637,7 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::OpenSessionContextMenu { .. } => {
                 AccessibilityContent::new_without_help("会话上下文菜单", WarpA11yRole::MenuItemRole)
             }
-            AgentPanelAction::CopyUserPrompt => {
+            AgentPanelAction::CopyUserPrompt(_) => {
                 AccessibilityContent::new_without_help("复制指令", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::ClearAndUnfocus | AgentPanelAction::ToggleComposerFocus => {
@@ -3657,6 +3676,14 @@ impl CaretBlinkHost for AgentPanelView {
     }
 }
 
+fn run_elapsed_seconds(started_at: Option<SystemTime>, now: SystemTime) -> Option<u64> {
+    started_at.and_then(|started| {
+        now.duration_since(started)
+            .ok()
+            .map(|elapsed| elapsed.as_secs())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3678,6 +3705,7 @@ mod tests {
             polling_session: false,
             input_focused: false,
             pending_send: false,
+            run_started_at: None,
             projects,
             sidebar_sessions: Vec::new(),
             active_project_id: active_project_id.to_string(),
@@ -3749,6 +3777,26 @@ mod tests {
         assert_eq!(panel.chats_sort, sidebar::ChatsSort::Created);
         assert!(!panel.chats_menu_open);
         assert_eq!(panel.chats_flyout, None);
+    }
+
+    #[test]
+    fn run_elapsed_seconds_requires_start_and_never_wraps() {
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        assert_eq!(
+            run_elapsed_seconds(
+                Some(started),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(17)
+            ),
+            Some(7)
+        );
+        assert_eq!(run_elapsed_seconds(None, SystemTime::now()), None);
+        assert_eq!(
+            run_elapsed_seconds(
+                Some(SystemTime::UNIX_EPOCH + Duration::from_secs(20)),
+                started
+            ),
+            None
+        );
     }
 
     #[test]

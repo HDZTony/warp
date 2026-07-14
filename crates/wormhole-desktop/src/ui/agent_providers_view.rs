@@ -9,7 +9,7 @@ use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
-    section_card, section_hint, section_title, status_line, truncate_middle, StatusTone,
+    section_hint, section_title, status_line, truncate_middle, StatusTone,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -29,6 +29,7 @@ pub struct AgentProvidersView {
     active_provider_id: Option<String>,
     llm_summary: String,
     status: String,
+    busy: bool,
 }
 
 impl AgentProvidersView {
@@ -41,12 +42,16 @@ impl AgentProvidersView {
             active_provider_id: None,
             llm_summary: "加载 Codex 上游…".into(),
             status: String::new(),
+            busy: false,
         };
         view.refresh(ctx);
         view
     }
 
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在刷新供应商…".into();
+        ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -57,9 +62,15 @@ impl AgentProvidersView {
             },
             |view, output, ctx| {
                 let (providers, llm) = output;
-                if let Ok(list) = providers {
-                    view.active_provider_id = list.active_provider_id.clone();
-                    view.providers = list.providers;
+                match providers {
+                    Ok(list) => {
+                        view.active_provider_id = list.active_provider_id.clone();
+                        view.providers = list.providers;
+                        view.status = "供应商列表已刷新".into();
+                    }
+                    Err(error) => {
+                        view.status = format!("刷新供应商失败: {error}");
+                    }
                 }
                 view.llm_summary = match llm {
                     Ok(cfg) => format!(
@@ -68,12 +79,16 @@ impl AgentProvidersView {
                     ),
                     Err(err) => format!("LLM 配置错误: {err}"),
                 };
+                view.busy = false;
                 ctx.notify();
             },
         );
     }
 
     fn activate(&mut self, id: String, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在启用供应商…".into();
+        ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -81,6 +96,7 @@ impl AgentProvidersView {
                 agent_provider_commands::activate_agent_provider(&state, id).await
             },
             |view, output, ctx| {
+                view.busy = false;
                 view.status = match output {
                     Ok(_) => "已切换供应商".into(),
                     Err(err) => err,
@@ -91,6 +107,9 @@ impl AgentProvidersView {
     }
 
     fn delete(&mut self, id: String, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在删除供应商…".into();
+        ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -98,6 +117,7 @@ impl AgentProvidersView {
                 agent_provider_commands::delete_agent_provider(&state, id).await
             },
             |view, output, ctx| {
+                view.busy = false;
                 view.status = match output {
                     Ok(_) => "已删除供应商".into(),
                     Err(err) => err,
@@ -108,6 +128,9 @@ impl AgentProvidersView {
     }
 
     fn query_usage(&mut self, id: String, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在查询用量…".into();
+        ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -115,6 +138,7 @@ impl AgentProvidersView {
                 agent_provider_commands::query_agent_provider_usage(&state, id).await
             },
             |view, output, ctx| {
+                view.busy = false;
                 view.status = match output {
                     Ok(result) => format_usage_result(&result),
                     Err(err) => err,
@@ -126,6 +150,7 @@ impl AgentProvidersView {
 
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
+        let disabled = self.busy;
         Container::new(
             EventHandler::new(
                 ui_text::body(label, self.font)
@@ -133,6 +158,9 @@ impl AgentProvidersView {
                     .finish(),
             )
             .on_left_mouse_down(move |ctx, _, _| {
+                if disabled {
+                    return DispatchEventResult::StopPropagation;
+                }
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
             })
@@ -157,7 +185,7 @@ impl View for AgentProvidersView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("Codex 供应商", self.font));
+        col.add_child(section_title("AGENT · Codex 供应商", self.font));
         col.add_child(section_hint(
             "登录后使用 control plane Key Pool（control_plane）。不拦截 ccswitch://；CC Switch 桌面程序可独立使用。",
             self.font,
@@ -173,16 +201,7 @@ impl View for AgentProvidersView {
         col.add_child(toolbar.finish());
 
         if !self.status.is_empty() {
-            let tone = if self.status.contains("错误")
-                || self.status.contains("失败")
-                || self.status.contains("未找到")
-            {
-                StatusTone::Danger
-            } else if self.status.contains("已") {
-                StatusTone::Success
-            } else {
-                StatusTone::Neutral
-            };
+            let tone = provider_status_tone(&self.status);
             col.add_child(status_line(self.status.clone(), self.font, tone));
         }
 
@@ -211,7 +230,13 @@ impl View for AgentProvidersView {
                     ),
                     120,
                 );
-                col.add_child(ui_text::mono(line, self.font).finish());
+                let mut provider_col =
+                    Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                provider_col.add_child(
+                    ui_text::mono(line, self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                );
                 let mut row = Flex::row();
                 if !active {
                     let id = provider.id.clone();
@@ -225,11 +250,29 @@ impl View for AgentProvidersView {
                 }
                 let delete_id = provider.id.clone();
                 row.add_child(self.action_button("删除", AgentProvidersAction::Delete(delete_id)));
-                col.add_child(row.finish());
+                provider_col.add_child(Container::new(row.finish()).with_margin_top(6.0).finish());
+                col.add_child(
+                    Container::new(provider_col.finish())
+                        .with_uniform_padding(10.0)
+                        .with_margin_top(6.0)
+                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                        .finish(),
+                );
             }
         }
 
-        section_card(col.finish())
+        col.finish()
+    }
+}
+
+fn provider_status_tone(status: &str) -> StatusTone {
+    if status.contains("错误") || status.contains("失败") || status.contains("未找到") {
+        StatusTone::Danger
+    } else if status.contains("已") || status.contains("成功") {
+        StatusTone::Success
+    } else {
+        StatusTone::Neutral
     }
 }
 
@@ -266,6 +309,24 @@ fn format_usage_result(result: &agent_provider_commands::AgentUsageResultDto) ->
         "用量查询成功".into()
     } else {
         parts.join(" · ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{provider_status_tone, StatusTone};
+
+    #[test]
+    fn provider_operation_status_has_explicit_tone() {
+        assert_eq!(
+            provider_status_tone("刷新供应商失败: timeout"),
+            StatusTone::Danger
+        );
+        assert_eq!(
+            provider_status_tone("供应商列表已刷新"),
+            StatusTone::Success
+        );
+        assert_eq!(provider_status_tone("正在查询用量…"), StatusTone::Neutral);
     }
 }
 

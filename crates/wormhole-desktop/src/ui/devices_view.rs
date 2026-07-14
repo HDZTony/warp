@@ -1611,6 +1611,15 @@ impl DevicesView {
                 true,
                 true,
             ));
+        } else if Self::active_cluster_can_leave(cluster) {
+            menu.add_child(Self::cluster_menu_divider());
+            menu.add_child(self.cluster_menu_action(
+                "退出集群",
+                DevicesAction::LeaveCluster,
+                false,
+                true,
+                true,
+            ));
         }
 
         Container::new(
@@ -1731,21 +1740,10 @@ impl DevicesView {
                 .with_horizontal_margin(10.0)
                 .finish(),
         );
-        if Self::active_cluster_can_leave(cluster) {
-            row.add_child(
-                Container::new(self.toolbar_button(
-                    "退出集群",
-                    DevicesAction::LeaveCluster,
-                    false,
-                    104.0,
-                    true,
-                ))
-                .with_horizontal_margin(10.0)
-                .finish(),
-            );
-        } else if Self::active_cluster_id(cluster).is_some()
+        if Self::active_cluster_id(cluster).is_some()
             && !Self::active_cluster_can_invite(cluster)
             && !Self::active_cluster_is_owner(cluster)
+            && !Self::active_cluster_can_leave(cluster)
         {
             row.add_child(
                 Container::new(self.toolbar_button(

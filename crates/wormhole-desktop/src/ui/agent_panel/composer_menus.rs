@@ -8,7 +8,8 @@ use warpui::fonts::FamilyId;
 use warpui::Element;
 
 use super::AgentPanelAction;
-use crate::ui::panel_primitives::{popover_menu_header, popover_shell, section_hint};
+use crate::ui::icons;
+use crate::ui::panel_primitives::{popover_menu_header, popover_shell_with_radius, section_hint};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::warp_embed_prefs::{AgentAccessMode, AgentModelRate};
@@ -31,32 +32,32 @@ fn access_option(
     font: FamilyId,
     title: impl Into<String>,
     detail: impl Into<String>,
+    icon_path: &'static str,
     selected: bool,
     action: AgentPanelAction,
 ) -> Box<dyn Element> {
     let title = title.into();
     let detail = detail.into();
     let mut title_row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+    title_row.add_child(model_radio(selected));
     title_row.add_child(
-        ui_text::body(title, font)
-            .with_color(if selected {
-                theme::text()
-            } else {
-                theme::muted()
-            })
+        Container::new(icons::icon(icon_path, 16.0, theme::muted()))
+            .with_padding_left(10.0)
             .finish(),
     );
-    if selected {
-        title_row.add_child(
-            Container::new(
-                ui_text::body("✓", font)
-                    .with_color(theme::accent_cool())
-                    .finish(),
-            )
-            .with_padding_left(8.0)
-            .finish(),
-        );
-    }
+    title_row.add_child(
+        Container::new(
+            ui_text::body(title, font)
+                .with_color(if selected {
+                    theme::text()
+                } else {
+                    theme::muted()
+                })
+                .finish(),
+        )
+        .with_padding_left(8.0)
+        .finish(),
+    );
     let body = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_child(title_row.finish())
@@ -93,6 +94,7 @@ pub fn render_access_menu(font: FamilyId, mode: AgentAccessMode) -> Box<dyn Elem
         font,
         access_label(AgentAccessMode::FullAccess),
         "可不受限制地访问互联网和您电脑上的任何文件",
+        "agent-warn.svg",
         mode == AgentAccessMode::FullAccess,
         AgentPanelAction::SelectAccessMode(AgentAccessMode::FullAccess),
     ));
@@ -100,10 +102,28 @@ pub fn render_access_menu(font: FamilyId, mode: AgentAccessMode) -> Box<dyn Elem
         font,
         access_label(AgentAccessMode::WorkspaceWrite),
         "仅在工作区内写入与修改文件",
+        "agent-folder.svg",
         mode == AgentAccessMode::WorkspaceWrite,
         AgentPanelAction::SelectAccessMode(AgentAccessMode::WorkspaceWrite),
     ));
-    popover_shell(ACCESS_POPOVER_WIDTH, col.finish())
+    col.add_child(access_footnote(font, mode));
+    popover_shell_with_radius(ACCESS_POPOVER_WIDTH, 14.0, col.finish())
+}
+
+fn access_footnote(font: FamilyId, mode: AgentAccessMode) -> Box<dyn Element> {
+    let detail = match mode {
+        AgentAccessMode::FullAccess => "完全访问会跳过逐项确认，仅在可信任务中使用。",
+        AgentAccessMode::WorkspaceWrite => "写入限制在当前项目或工作区内。",
+    };
+    Container::new(section_hint(detail, font))
+        .with_margin_left(10.0)
+        .with_margin_right(10.0)
+        .with_margin_top(4.0)
+        .with_margin_bottom(8.0)
+        .with_uniform_padding(10.0)
+        .with_background(theme::accent_bg(18))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+        .finish()
 }
 
 fn model_radio_dot() -> Box<dyn Element> {
@@ -247,7 +267,7 @@ pub fn render_model_rate_menu(font: FamilyId, rate: AgentModelRate) -> Box<dyn E
         col.add_child(model_rate_option(font, option, option == rate));
     }
     col.add_child(model_rate_footnote(font, rate));
-    popover_shell(MODEL_RATE_POPOVER_WIDTH, col.finish())
+    popover_shell_with_radius(MODEL_RATE_POPOVER_WIDTH, 14.0, col.finish())
 }
 
 #[cfg(test)]

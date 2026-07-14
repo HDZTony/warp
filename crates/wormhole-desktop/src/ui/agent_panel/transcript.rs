@@ -24,6 +24,7 @@ pub struct TranscriptLine {
 pub struct TranscriptViewModel {
     pub lines: Vec<TranscriptLine>,
     pub thinking: bool,
+    pub elapsed_seconds: Option<u64>,
 }
 
 pub fn channel_color(channel: &str, level: &str) -> ColorU {
@@ -55,6 +56,7 @@ fn user_icon_badge() -> Box<dyn Element> {
 }
 
 fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
+    let prompt = text.to_string();
     let bubble = ConstrainedBox::new(
         Container::new(
             Flex::row()
@@ -92,8 +94,8 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
                 .with_height(14.0)
                 .finish(),
         )
-        .on_left_mouse_down(|ctx, _, _| {
-            ctx.dispatch_typed_action(super::AgentPanelAction::CopyUserPrompt);
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(super::AgentPanelAction::CopyUserPrompt(prompt.clone()));
             DispatchEventResult::StopPropagation
         })
         .finish(),
@@ -118,6 +120,18 @@ fn render_status_line(font: FamilyId, text: &str) -> Box<dyn Element> {
         .finish()
 }
 
+fn render_divider() -> Box<dyn Element> {
+    Container::new(
+        ConstrainedBox::new(Flex::row().finish())
+            .with_height(1.0)
+            .finish(),
+    )
+    .with_margin_top(14.0)
+    .with_margin_bottom(16.0)
+    .with_background(theme::border())
+    .finish()
+}
+
 fn render_assistant_body(
     font: FamilyId,
     mono: FamilyId,
@@ -133,7 +147,7 @@ fn render_assistant_body(
                 .finish(),
         );
     }
-    let use_mono = matches!(line.channel.as_str(), "stdout" | "stderr" | "assistant");
+    let use_mono = matches!(line.channel.as_str(), "stdout" | "stderr");
     if use_mono {
         col.add_child(
             ui_text::mono(line.text.clone(), mono)
@@ -212,9 +226,21 @@ pub fn render_transcript(
     if model.lines.is_empty() && !model.thinking {
         column.add_child(Flex::row().finish());
     } else {
+        let mut assistant_block_started = false;
         for line in &model.lines {
+            if line.channel != "user" && !assistant_block_started {
+                if let Some(elapsed) = model.elapsed_seconds {
+                    column.add_child(render_status_line(font, &format!("已运行 {elapsed} 秒")));
+                    column.add_child(render_divider());
+                }
+                assistant_block_started = true;
+            }
+            if line.channel == "status" && model.elapsed_seconds.is_some() {
+                continue;
+            }
             let bubble = render_live_line(line, font, mono);
-            column.add_child(Container::new(bubble).with_vertical_margin(14.0).finish());
+            let margin = if line.channel == "user" { 14.0 } else { 6.0 };
+            column.add_child(Container::new(bubble).with_vertical_margin(margin).finish());
         }
         if model.thinking {
             column.add_child(render_thinking_indicator(font));
@@ -250,6 +276,7 @@ mod tests {
                 level: "info".into(),
             }],
             thinking: false,
+            elapsed_seconds: None,
         };
         assert_eq!(model.lines.len(), 1);
         assert!(!model.thinking);
@@ -260,6 +287,7 @@ mod tests {
         let model = TranscriptViewModel {
             lines: Vec::new(),
             thinking: true,
+            elapsed_seconds: Some(3),
         };
         assert!(model.thinking);
     }
