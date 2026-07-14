@@ -26,13 +26,15 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
     add_storage_volume, create_cluster as create_cluster_command, create_cluster_invite,
-    delete_cluster, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
-    open_share_entry, remote_open_share_entry, remove_cluster_device, remove_cluster_node,
-    remove_storage_volume, switch_active_cluster, sync_share_entry, AddStorageVolumeParams,
-    ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
+    create_share_entry, delete_cluster, delete_share_entry, join_cluster, leave_cluster,
+    list_share_directory, open_share_entry, remote_open_share_entry, remove_cluster_device,
+    remove_cluster_node, remove_storage_volume, rename_share_entry, switch_active_cluster,
+    sync_share_entry, AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto,
+    CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
     LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
-    RemoveClusterNodeParams, ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
+    RemoveClusterNodeParams, RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto,
+    SwitchActiveClusterParams,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
@@ -78,6 +80,14 @@ pub struct DevicesView {
     share_add_path: String,
     share_add_feedback: Option<(StatusTone, String)>,
     share_add_busy: bool,
+    share_new_menu_open: bool,
+    share_rename_modal_open: bool,
+    share_rename_entry: Option<String>,
+    share_rename_draft: String,
+    share_rename_field: TextFieldState,
+    share_rename_focused: bool,
+    share_rename_feedback: Option<(StatusTone, String)>,
+    share_rename_busy: bool,
     create_cluster_modal_open: bool,
     create_cluster_name: String,
     create_cluster_name_field: TextFieldState,
@@ -147,6 +157,14 @@ impl DevicesView {
             share_add_path: String::new(),
             share_add_feedback: None,
             share_add_busy: false,
+            share_new_menu_open: false,
+            share_rename_modal_open: false,
+            share_rename_entry: None,
+            share_rename_draft: String::new(),
+            share_rename_field: TextFieldState::new(),
+            share_rename_focused: false,
+            share_rename_feedback: None,
+            share_rename_busy: false,
             create_cluster_modal_open: false,
             create_cluster_name: "Wormhole Cluster".to_string(),
             create_cluster_name_field: TextFieldState::new(),
@@ -588,6 +606,10 @@ impl DevicesView {
         self.share_history_forward.clear();
         self.share_status = None;
         self.share_add_modal_open = false;
+        self.share_new_menu_open = false;
+        self.share_rename_modal_open = false;
+        self.share_rename_entry = None;
+        self.share_context_entry = None;
         ctx.notify();
     }
 
@@ -612,6 +634,9 @@ impl DevicesView {
         self.share_history_forward.clear();
         self.share_path = next;
         self.share_status = None;
+        self.share_new_menu_open = false;
+        self.share_context_entry = None;
+        self.share_context_pos = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
         ctx.notify();
@@ -645,6 +670,165 @@ impl DevicesView {
         self.cluster.as_ref().is_some_and(|cluster| {
             self.browsing_node_id.as_deref() == Some(cluster.local_node_id.as_str())
         })
+    }
+
+    fn can_create_share_entry(&self) -> bool {
+        self.browsing_local() && !self.share_path.is_empty()
+    }
+
+    fn close_share_new_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.share_new_menu_open {
+            self.share_new_menu_open = false;
+            ctx.notify();
+        }
+    }
+
+    fn toggle_share_new_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.can_create_share_entry() {
+            return;
+        }
+        self.close_share_context_menu(ctx);
+        self.share_new_menu_open = !self.share_new_menu_open;
+        ctx.notify();
+    }
+
+    fn create_share_item(&mut self, kind: CreateShareEntryKind, ctx: &mut ViewContext<Self>) {
+        if !self.can_create_share_entry() || self.share_file_busy {
+            return;
+        }
+        let Some(node_id) = self.browsing_node_id.clone() else {
+            return;
+        };
+        let share_path = self.share_path_string();
+        self.share_file_busy = true;
+        self.share_new_menu_open = false;
+        self.share_status = Some(match kind {
+            CreateShareEntryKind::Folder => "正在新建文件夹…".into(),
+            CreateShareEntryKind::Txt => "正在新建 txt…".into(),
+        });
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                create_share_entry(
+                    &state,
+                    CreateShareEntryParams {
+                        node_id,
+                        share_path,
+                        kind,
+                        name: None,
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.share_file_busy = false;
+                match output {
+                    Ok(created) => {
+                        view.share_status = Some(format!("已新建 · {}", created.name));
+                        view.load_share_directory(ctx);
+                    }
+                    Err(e) => {
+                        view.share_status = Some(format!("新建失败 · {e}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn open_share_rename_modal(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        if !self.browsing_local() {
+            return;
+        }
+        self.close_share_context_menu(ctx);
+        self.share_rename_entry = Some(entry_name.clone());
+        self.share_rename_draft = entry_name;
+        self.share_rename_field = TextFieldState::new();
+        self.share_rename_focused = true;
+        self.share_rename_feedback = None;
+        self.share_rename_busy = false;
+        self.share_rename_modal_open = true;
+        ctx.notify();
+    }
+
+    fn close_share_rename_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.share_rename_modal_open = false;
+        self.share_rename_entry = None;
+        self.share_rename_draft.clear();
+        self.share_rename_focused = false;
+        self.share_rename_feedback = None;
+        self.share_rename_busy = false;
+        ctx.notify();
+    }
+
+    fn edit_share_rename_field(
+        &mut self,
+        edit: &TextFieldEditAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.share_rename_field
+            .apply(&mut self.share_rename_draft, edit);
+        self.share_rename_focused = true;
+        self.share_rename_feedback = None;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn confirm_share_rename(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.share_rename_busy {
+            return;
+        }
+        let Some(entry_name) = self.share_rename_entry.clone() else {
+            return;
+        };
+        let Some(node_id) = self.browsing_node_id.clone() else {
+            return;
+        };
+        let new_name = self.share_rename_draft.trim().to_string();
+        if let Err(err) = wormhole_desktop_core::cluster_commands::validate_share_entry_name(&new_name)
+        {
+            self.share_rename_feedback = Some((StatusTone::Warn, err));
+            ctx.notify();
+            return;
+        }
+        let share_path = self.share_path_string();
+        self.share_rename_busy = true;
+        self.share_rename_feedback = Some((StatusTone::Neutral, "正在重命名…".into()));
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                rename_share_entry(
+                    &state,
+                    RenameShareEntryParams {
+                        node_id,
+                        share_path,
+                        entry_name,
+                        new_name,
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.share_rename_busy = false;
+                match output {
+                    Ok(name) => {
+                        view.share_rename_modal_open = false;
+                        view.share_rename_entry = None;
+                        view.share_rename_feedback = None;
+                        view.share_status = Some(format!("已重命名 · {name}"));
+                        view.load_share_directory(ctx);
+                    }
+                    Err(e) => {
+                        view.share_rename_feedback = Some((StatusTone::Warn, e));
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn open_share_add_modal(&mut self, ctx: &mut ViewContext<Self>) {
@@ -3261,6 +3445,19 @@ impl DevicesView {
             .finish(),
         );
         if self.browsing_local() {
+            if self.can_create_share_entry() {
+                toolbar.add_child(
+                    Container::new(self.toolbar_button(
+                        "新建",
+                        DevicesAction::ToggleShareNewMenu,
+                        false,
+                        72.0,
+                        true,
+                    ))
+                    .with_horizontal_margin(8.0)
+                    .finish(),
+                );
+            }
             toolbar.add_child(
                 Container::new(self.toolbar_button(
                     "+ 共享文件夹",
@@ -3473,63 +3670,64 @@ impl DevicesView {
         let is_folder = entry
             .map(|entry| entry.kind.eq_ignore_ascii_case("folder"))
             .unwrap_or(false);
+        let needs_sync = !browsing_local && !is_folder && !has_local_replica;
+        let can_remote = !browsing_local && !is_folder;
+        let can_rename = browsing_local;
+        let can_delete = if browsing_local {
+            true
+        } else {
+            !is_folder && has_local_replica
+        };
+
+        let open_label = if is_folder { "打开文件夹" } else { "打开" };
+        let open_action = if is_folder {
+            DevicesAction::ShareNavigate {
+                volume_id: entry.and_then(|e| e.volume_id.clone()),
+                name: name.clone(),
+            }
+        } else {
+            DevicesAction::ShareOpenFile(name.clone())
+        };
 
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        menu.add_child(
-            Container::new(
-                ui_text::body(name.clone(), self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_uniform_padding(10.0)
-            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
-            .finish(),
-        );
+        menu.add_child(self.share_context_item(open_label, Some(open_action), false, true));
         menu.add_child(self.share_context_item(
-            "打开",
-            DevicesAction::ShareOpenFile(name.clone()),
+            "同步",
+            Some(DevicesAction::ShareSyncFile(name.clone())),
             false,
+            needs_sync,
         ));
-        if !browsing_local && !is_folder && !has_local_replica {
-            menu.add_child(self.share_context_item(
-                "同步",
-                DevicesAction::ShareSyncFile(name.clone()),
-                false,
-            ));
-        }
-        if !browsing_local {
-            menu.add_child(self.share_context_item(
-                "远程打开",
-                DevicesAction::ShareRemoteOpenFile(name.clone()),
-                false,
-            ));
-        }
-        if can_unshare {
-            menu.add_child(self.share_context_item(
-                "取消共享",
-                DevicesAction::OpenShareUnshareModal(name.clone()),
-                true,
-            ));
-        } else if browsing_local && (!is_folder || !has_local_replica) {
-            menu.add_child(self.share_context_item(
-                "删除",
-                DevicesAction::ShareDeleteFile(name.clone()),
-                true,
-            ));
-        } else if !browsing_local && !is_folder && has_local_replica {
-            menu.add_child(self.share_context_item(
-                "删除本地副本",
-                DevicesAction::ShareDeleteFile(name),
-                true,
-            ));
-        }
+        menu.add_child(self.share_context_item(
+            "远程打开",
+            Some(DevicesAction::ShareRemoteOpenFile(name.clone())),
+            false,
+            can_remote,
+        ));
+        menu.add_child(self.share_context_item(
+            "重命名",
+            Some(DevicesAction::OpenShareRenameModal(name.clone())),
+            false,
+            can_rename,
+        ));
+        menu.add_child(self.share_context_item(
+            "删除",
+            Some(DevicesAction::ShareDeleteFile(name.clone())),
+            true,
+            can_delete,
+        ));
+        menu.add_child(self.share_context_item(
+            "取消共享",
+            Some(DevicesAction::OpenShareUnshareModal(name)),
+            true,
+            can_unshare,
+        ));
 
         let panel = Container::new(
             ConstrainedBox::new(menu.finish())
-                .with_width(180.0)
+                .with_width(168.0)
                 .finish(),
         )
-        .with_background(theme::panel())
+        .with_background(theme::panel_elevated())
         .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish();
@@ -3707,22 +3905,66 @@ impl DevicesView {
     fn share_context_item(
         &self,
         label: &str,
-        action: DevicesAction,
+        action: Option<DevicesAction>,
         danger: bool,
+        enabled: bool,
     ) -> Box<dyn Element> {
-        let color = if danger {
+        let color = if !enabled {
+            dim_color(theme::muted(), 0.7)
+        } else if danger {
             theme::danger()
         } else {
             theme::text()
         };
-        EventHandler::new(
+        let inner = Container::new(
+            ui_text::body(label.to_string(), self.font)
+                .with_color(color)
+                .finish(),
+        )
+        .with_uniform_padding(10.0)
+        .finish();
+        if enabled {
+            if let Some(action) = action {
+                EventHandler::new(inner)
+                    .on_left_mouse_down(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(action.clone());
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish()
+            } else {
+                inner
+            }
+        } else {
+            inner
+        }
+    }
+
+    fn share_new_menu_item(
+        &self,
+        label: &str,
+        is_folder: bool,
+        action: DevicesAction,
+    ) -> Box<dyn Element> {
+        let icon_el = icons::share_file_icon(if is_folder { "folder" } else { "a.txt" }, is_folder);
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(
+            Container::new(icon_el)
+                .with_horizontal_margin(2.0)
+                .finish(),
+        );
+        row.add_child(
             Container::new(
                 ui_text::body(label.to_string(), self.font)
-                    .with_color(color)
+                    .with_color(theme::text())
                     .finish(),
             )
-            .with_uniform_padding(10.0)
+            .with_horizontal_margin(8.0)
             .finish(),
+        );
+        EventHandler::new(
+            Container::new(row.finish())
+                .with_uniform_padding(10.0)
+                .finish(),
         )
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
@@ -3731,10 +3973,158 @@ impl DevicesView {
         .finish()
     }
 
+    fn share_new_menu(&self) -> Box<dyn Element> {
+        let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        menu.add_child(self.share_new_menu_item(
+            "文件夹",
+            true,
+            DevicesAction::ShareCreateFolder,
+        ));
+        menu.add_child(self.share_new_menu_item(
+            "txt 文件",
+            false,
+            DevicesAction::ShareCreateTxt,
+        ));
+        let panel = Container::new(
+            ConstrainedBox::new(menu.finish())
+                .with_width(148.0)
+                .finish(),
+        )
+        .with_background(theme::panel())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish();
+        let panel = EventHandler::new(panel)
+            .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+            .finish();
+        Align::new(
+            Container::new(panel)
+                .with_margin_top(52.0)
+                .with_margin_right(16.0)
+                .finish(),
+        )
+        .top_right()
+        .finish()
+    }
+
+    fn share_rename_modal(&self) -> Box<dyn Element> {
+        let draft = self.share_rename_draft.clone();
+        let marked = self.share_rename_field.marked_text.clone();
+        let field = render_field_with_caret(
+            &draft,
+            &marked,
+            "新名称",
+            self.font,
+            self.share_rename_focused,
+            false,
+            self.caret_blink.visible,
+        );
+        let input = wrap_text_field_focus_on_click(
+            TextFieldInput::builder(field, |ctx, action| {
+                ctx.dispatch_typed_action(DevicesAction::ShareRenameEdit(action));
+            })
+            .focused(self.share_rename_focused)
+            .ime_preedit(!marked.is_empty())
+            .on_keydown(|ctx, keystroke| match keystroke.key.as_str() {
+                "enter" | "return" => {
+                    ctx.dispatch_typed_action(DevicesAction::ConfirmShareRename);
+                    DispatchEventResult::StopPropagation
+                }
+                "escape" => {
+                    ctx.dispatch_typed_action(DevicesAction::CloseShareRenameModal);
+                    DispatchEventResult::StopPropagation
+                }
+                _ => DispatchEventResult::PropagateToParent,
+            })
+            .finish(),
+            |ctx| ctx.dispatch_typed_action(DevicesAction::FocusShareRenameField),
+        );
+
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("重命名", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(input)
+                .with_vertical_margin(12.0)
+                .with_background(theme::canvas())
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+                .with_uniform_padding(8.0)
+                .finish(),
+        );
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        actions.add_child(Expanded::new(1.0, Flex::column().finish()).finish());
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseShareRenameModal,
+            false,
+            88.0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(self.toolbar_button(
+                if self.share_rename_busy {
+                    "保存中…"
+                } else {
+                    "确定"
+                },
+                DevicesAction::ConfirmShareRename,
+                true,
+                88.0,
+                !self.share_rename_busy,
+            ))
+            .with_horizontal_margin(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_vertical_margin(8.0)
+                .finish(),
+        );
+        if let Some((tone, msg)) = &self.share_rename_feedback {
+            dialog.add_child(status_line(msg.clone(), self.font, *tone));
+        }
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(400.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseShareRenameModal);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
     fn files_shell(&self) -> Box<dyn Element> {
         let has_overlay = self.share_add_modal_open
             || self.share_context_entry.is_some()
-            || self.share_unshare_volume_id.is_some();
+            || self.share_unshare_volume_id.is_some()
+            || self.share_new_menu_open
+            || self.share_rename_modal_open;
         if !has_overlay {
             return self.files_view();
         }
@@ -3742,6 +4132,23 @@ impl DevicesView {
         stack.add_child(self.files_view());
         if self.share_add_modal_open {
             stack.add_child(self.share_add_modal());
+        }
+        if self.share_rename_modal_open {
+            stack.add_child(self.share_rename_modal());
+        }
+        if self.share_new_menu_open {
+            let scrim = EventHandler::new(
+                Container::new(Flex::column().finish())
+                    .with_background(ColorU::new(8, 7, 11, 1))
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseShareNewMenu);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            stack.add_child(scrim);
+            stack.add_child(self.share_new_menu());
         }
         if self.share_context_entry.is_some() {
             let scrim = EventHandler::new(
@@ -3760,12 +4167,13 @@ impl DevicesView {
         if self.share_unshare_volume_id.is_some() {
             stack.add_child(self.share_unshare_modal());
         }
-        let share_menu_open = self.share_context_entry.is_some();
+        let share_menu_open = self.share_context_entry.is_some() || self.share_new_menu_open;
         let body = stack.finish();
         if share_menu_open {
             EventHandler::new(body)
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::CloseShareContextMenu);
+                    ctx.dispatch_typed_action(DevicesAction::CloseShareNewMenu);
                     DispatchEventResult::StopPropagation
                 })
                 .finish()
@@ -3929,6 +4337,8 @@ impl TypedActionView for DevicesView {
             DevicesAction::ShareBack => self.share_back(ctx),
             DevicesAction::ShareForward => self.share_forward(ctx),
             DevicesAction::ShareNavigate { volume_id, name } => {
+                self.close_share_context_menu(ctx);
+                self.close_share_new_menu(ctx);
                 self.navigate_share_to(volume_id.clone(), name.clone(), ctx);
             }
             DevicesAction::OpenShareAddModal => self.open_share_add_modal(ctx),
@@ -3939,18 +4349,38 @@ impl TypedActionView for DevicesView {
                     self.submit_share_add(ctx);
                 }
             }
+            DevicesAction::ToggleShareNewMenu => self.toggle_share_new_menu(ctx),
+            DevicesAction::CloseShareNewMenu => self.close_share_new_menu(ctx),
+            DevicesAction::ShareCreateFolder => {
+                self.create_share_item(CreateShareEntryKind::Folder, ctx);
+            }
+            DevicesAction::ShareCreateTxt => {
+                self.create_share_item(CreateShareEntryKind::Txt, ctx);
+            }
             DevicesAction::ShareOpenFile(name) => self.open_share_file(name.clone(), ctx),
             DevicesAction::ShareSyncFile(name) => self.sync_share_file(name.clone(), ctx),
             DevicesAction::ShareRemoteOpenFile(name) => {
                 self.remote_open_share_file(name.clone(), ctx);
             }
             DevicesAction::ShareDeleteFile(name) => self.delete_share_file(name.clone(), ctx),
+            DevicesAction::OpenShareRenameModal(name) => {
+                self.open_share_rename_modal(name.clone(), ctx);
+            }
+            DevicesAction::CloseShareRenameModal => self.close_share_rename_modal(ctx),
+            DevicesAction::ShareRenameEdit(edit) => self.edit_share_rename_field(edit, ctx),
+            DevicesAction::FocusShareRenameField => {
+                self.share_rename_focused = true;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            DevicesAction::ConfirmShareRename => self.confirm_share_rename(ctx),
             DevicesAction::OpenShareUnshareModal(name) => {
                 self.open_share_unshare_modal(name.clone(), ctx);
             }
             DevicesAction::CloseShareUnshareModal => self.close_share_unshare_modal(ctx),
             DevicesAction::ConfirmShareUnshare => self.confirm_share_unshare(ctx),
             DevicesAction::OpenShareContextMenu { name, x, y } => {
+                self.share_new_menu_open = false;
                 self.share_context_entry = Some(name.clone());
                 self.share_context_pos = Some((*x, *y));
                 ctx.notify();

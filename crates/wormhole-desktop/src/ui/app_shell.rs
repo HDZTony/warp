@@ -802,7 +802,14 @@ impl AppShellView {
                     if auth_resolved {
                         view.refresh_auth_gated_views(ctx);
                     } else if !status.authenticated {
-                        view.prompt_login_if_needed(ctx);
+                        let login = view.login_modal.clone();
+                        let mut auto_started = false;
+                        ctx.update_view(&login, |modal, ctx| {
+                            auto_started = modal.try_auto_login(ctx);
+                        });
+                        if !auto_started {
+                            view.prompt_login_if_needed(ctx);
+                        }
                     }
                     ctx.notify();
                 }

@@ -9,6 +9,7 @@ use warpui::keymap::Keystroke;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::desktop_prefs;
 use crate::ui::panel_primitives::{status_line, StatusTone};
 use crate::ui::text_field_input::{
     render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
@@ -36,6 +37,8 @@ pub enum LoginModalAction {
     Submit,
     ResendConfirmation,
     ToggleMode,
+    ToggleRemember,
+    ToggleAutoLogin,
     EmailEdit(TextFieldEditAction),
     PasswordEdit(TextFieldEditAction),
     ConfirmPasswordEdit(TextFieldEditAction),
@@ -74,6 +77,10 @@ pub struct LoginModalView {
     status: String,
     status_tone: StatusTone,
     pending_confirmation: bool,
+    remember: bool,
+    auto_login: bool,
+    /// Guards against repeated silent auto-login attempts in one process.
+    auto_login_attempted: bool,
 }
 
 impl LoginModalView {
@@ -97,6 +104,9 @@ impl LoginModalView {
             status: String::new(),
             status_tone: StatusTone::Placeholder,
             pending_confirmation: false,
+            remember: false,
+            auto_login: false,
+            auto_login_attempted: false,
         }
     }
 
@@ -109,10 +119,65 @@ impl LoginModalView {
         self.mode = AuthMode::Login;
         self.status.clear();
         self.pending_confirmation = false;
+        self.apply_remembered_credentials();
         self.focus_email_only();
         sync_caret_blink(self, ctx);
         ctx.emit(LoginModalEvent::OpenChanged { open: true });
         ctx.notify();
+    }
+
+    /// Silent login when prefs request auto-login and no session exists (HTML `tryAutoLogin`).
+    /// Returns `true` if a login attempt was started.
+    pub fn try_auto_login(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.busy || self.auto_login_attempted {
+            return false;
+        }
+        let prefs = desktop_prefs::load_login_prefs(&self.core.data_dir());
+        if !prefs.auto_login || !prefs.remember {
+            return false;
+        }
+        let email = prefs
+            .email
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let password = prefs
+            .saved_password
+            .filter(|value| !value.is_empty());
+        let (Some(email), Some(password)) = (email, password) else {
+            return false;
+        };
+        self.auto_login_attempted = true;
+        self.remember = true;
+        self.auto_login = true;
+        self.email = email.clone();
+        self.password = password.clone();
+        self.submit_login(ctx, email, password);
+        true
+    }
+
+    fn apply_remembered_credentials(&mut self) {
+        let prefs = desktop_prefs::load_login_prefs(&self.core.data_dir());
+        self.auto_login = prefs.auto_login;
+        self.remember = prefs.remember || prefs.auto_login;
+        if !prefs.remember {
+            return;
+        }
+        if let Some(email) = prefs.email {
+            self.email = email;
+        }
+        if let Some(password) = prefs.saved_password {
+            self.password = password;
+        }
+    }
+
+    fn persist_current_login_prefs(&self) {
+        let _ = desktop_prefs::persist_login_prefs(
+            &self.core.data_dir(),
+            &self.email,
+            &self.password,
+            self.remember,
+            self.auto_login,
+        );
     }
 
     pub fn close(&mut self, ctx: &mut ViewContext<Self>) {
@@ -320,6 +385,69 @@ impl LoginModalView {
         .finish()
     }
 
+    fn checkbox_row(&self, label: &str, checked: bool, action: LoginModalAction) -> Box<dyn Element> {
+        let mark = if checked { "✓" } else { "" };
+        let box_el = Container::new(
+            ConstrainedBox::new(
+                Align::new(
+                    ui_text::mono(mark.to_string(), self.font)
+                        .with_color(theme::accent())
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_width(15.0)
+            .with_height(15.0)
+            .finish(),
+        )
+        .with_background(theme::canvas())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(2.0)))
+        .finish();
+
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        row.add_child(box_el);
+        row.add_child(
+            Container::new(
+                ui_text::body(label.to_string(), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_horizontal_margin(8.0)
+            .finish(),
+        );
+
+        EventHandler::new(row.finish())
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
+    fn login_options_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        col.add_child(self.checkbox_row(
+            "记住账号密码",
+            self.remember,
+            LoginModalAction::ToggleRemember,
+        ));
+        col.add_child(
+            Container::new(self.checkbox_row(
+                "自动登录",
+                self.auto_login,
+                LoginModalAction::ToggleAutoLogin,
+            ))
+            .with_vertical_margin(5.0)
+            .finish(),
+        );
+        Container::new(col.finish())
+            .with_vertical_margin(4.0)
+            .finish()
+    }
+
     fn dialog(&self) -> Box<dyn Element> {
         let is_register = self.mode == AuthMode::Register;
         let title = if is_register {
@@ -403,6 +531,8 @@ impl LoginModalView {
                 LoginModalAction::FocusConfirmPassword,
                 LoginModalAction::FocusEmail,
             ));
+        } else {
+            col.add_child(self.login_options_block());
         }
 
         if !self.status.is_empty() {
@@ -488,6 +618,7 @@ impl LoginModalView {
         status: CloudAuthStatusDto,
         ctx: &mut ViewContext<Self>,
     ) {
+        view.persist_current_login_prefs();
         view.status.clear();
         view.pending_confirmation = false;
         view.close(ctx);
@@ -606,6 +737,7 @@ impl LoginModalView {
                         if let Some(email) = pending.email {
                             view.email = email;
                         }
+                        view.persist_current_login_prefs();
                     }
                     Err(err) => {
                         view.status = err;
@@ -698,6 +830,20 @@ impl TypedActionView for LoginModalView {
             LoginModalAction::Submit => self.submit(ctx),
             LoginModalAction::ResendConfirmation => self.resend_confirmation(ctx),
             LoginModalAction::ToggleMode => self.toggle_mode(ctx),
+            LoginModalAction::ToggleRemember => {
+                self.remember = !self.remember;
+                if !self.remember {
+                    self.auto_login = false;
+                }
+                ctx.notify();
+            }
+            LoginModalAction::ToggleAutoLogin => {
+                self.auto_login = !self.auto_login;
+                if self.auto_login {
+                    self.remember = true;
+                }
+                ctx.notify();
+            }
             LoginModalAction::FocusEmail => {
                 self.focus_email_only();
                 self.sync_caret(ctx);

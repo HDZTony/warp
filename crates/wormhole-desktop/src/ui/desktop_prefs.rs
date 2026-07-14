@@ -16,6 +16,16 @@ pub struct RedeemHistoryEntry {
     pub amount_credits: i64,
 }
 
+/// Login-modal credential prefs (mirrors HTML `wormhole-auth-*` localStorage keys).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginPrefs {
+    pub remember: bool,
+    pub auto_login: bool,
+    pub email: Option<String>,
+    /// Local-only saved password when `remember` is true (HTML prototype parity).
+    pub saved_password: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DesktopUiPrefs {
     #[serde(default)]
@@ -29,6 +39,15 @@ pub struct DesktopUiPrefs {
     /// Maps server `cardKeyId` → user-entered redeem code for display.
     #[serde(default)]
     pub redeem_code_overrides: HashMap<String, String>,
+    /// Remember / auto-login prefs for the password login modal.
+    #[serde(default)]
+    pub auth_remember: bool,
+    #[serde(default)]
+    pub auth_auto_login: bool,
+    #[serde(default)]
+    pub auth_email: Option<String>,
+    #[serde(default)]
+    pub auth_saved_password: Option<String>,
 }
 
 impl Default for DesktopUiPrefs {
@@ -38,8 +57,53 @@ impl Default for DesktopUiPrefs {
             last_tab: None,
             redeem_history: Vec::new(),
             redeem_code_overrides: HashMap::new(),
+            auth_remember: false,
+            auth_auto_login: false,
+            auth_email: None,
+            auth_saved_password: None,
         }
     }
+}
+
+/// Snapshot of login-modal remember / auto-login prefs.
+pub fn load_login_prefs(data_dir: &Path) -> LoginPrefs {
+    let prefs = load(data_dir);
+    LoginPrefs {
+        remember: prefs.auth_remember,
+        auto_login: prefs.auth_auto_login,
+        email: prefs.auth_email,
+        saved_password: prefs.auth_saved_password,
+    }
+}
+
+/// Persist login prefs. Auto-login forces remember; clearing remember drops the saved password.
+pub fn persist_login_prefs(
+    data_dir: &Path,
+    email: &str,
+    password: &str,
+    remember: bool,
+    auto_login: bool,
+) -> Result<(), String> {
+    let mut remember = remember;
+    let auto_login = auto_login;
+    if auto_login {
+        remember = true;
+    }
+    update(data_dir, |prefs| {
+        prefs.auth_remember = remember;
+        prefs.auth_auto_login = auto_login;
+        if remember {
+            let email = email.trim();
+            if !email.is_empty() {
+                prefs.auth_email = Some(email.to_string());
+            }
+            if !password.is_empty() {
+                prefs.auth_saved_password = Some(password.to_string());
+            }
+        } else {
+            prefs.auth_saved_password = None;
+        }
+    })
 }
 
 pub fn format_account_balance(credits_micro: i64) -> String {
@@ -296,5 +360,55 @@ mod tests {
             redeem_history_time(Some("2026-07-02T18:24:06Z")),
             "2026-07-02 18:24:06"
         );
+    }
+
+    #[test]
+    fn persist_login_prefs_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "wormhole-desktop-login-prefs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login_prefs(&dir, "a@b.com", "secret", true, false).expect("persist");
+        let loaded = load_login_prefs(&dir);
+        assert!(loaded.remember);
+        assert!(!loaded.auto_login);
+        assert_eq!(loaded.email.as_deref(), Some("a@b.com"));
+        assert_eq!(loaded.saved_password.as_deref(), Some("secret"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_login_prefs_auto_forces_remember() {
+        let dir = std::env::temp_dir().join(format!(
+            "wormhole-desktop-login-prefs-auto-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login_prefs(&dir, "a@b.com", "secret", false, true).expect("persist");
+        let loaded = load_login_prefs(&dir);
+        assert!(loaded.remember);
+        assert!(loaded.auto_login);
+        assert_eq!(loaded.saved_password.as_deref(), Some("secret"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_login_prefs_clear_remember_drops_password() {
+        let dir = std::env::temp_dir().join(format!(
+            "wormhole-desktop-login-prefs-clear-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login_prefs(&dir, "a@b.com", "secret", true, false).expect("save");
+        persist_login_prefs(&dir, "a@b.com", "secret", false, false).expect("clear");
+        let loaded = load_login_prefs(&dir);
+        assert!(!loaded.remember);
+        assert!(!loaded.auto_login);
+        assert!(loaded.saved_password.is_none());
+        // Email is kept for HUD display even when remember is off (HTML keeps AUTH_EMAIL_KEY
+        // via setAuthUser; we only clear the password when !remember).
+        assert_eq!(loaded.email.as_deref(), Some("a@b.com"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
