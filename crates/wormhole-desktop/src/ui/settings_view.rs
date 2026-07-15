@@ -1,20 +1,25 @@
 use warpui::elements::{
-    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth,
+    Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, MainAxisSize,
+    ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
-use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{section_hint, section_title, status_line, StatusTone};
+use crate::ui::panel_primitives::{
+    section_hint, section_title, status_line, tab_content_fill, StatusTone,
+};
 use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::cluster_commands::cluster_status_fast;
+use wormhole_desktop_core::settings_cache_commands::{
+    clear_settings_cache, settings_cache_status, ClearSettingsCacheParams, SettingsCacheStatusDto,
+};
 use wormhole_desktop_core::sync_commands::{
     migrate_shared_storage, shared_storage_info, SharedStorageInfoDto,
 };
@@ -27,6 +32,7 @@ use wormhole_desktop_core::{
 pub enum SettingsEvent {
     AccountChanged { authenticated: bool },
     OpenLogin,
+    OpenClusterManagement,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
 }
@@ -41,12 +47,17 @@ pub enum SettingsAction {
     Login,
     Logout,
     RefreshAccount,
+    ToggleClusterSection,
+    OpenClusterManagement,
+    ToggleRelaySection,
     ToggleArchiveSection,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
     RefreshRelay,
     SelectRelay(String),
     ApplyRelay,
+    RefreshCache,
+    ClearCache(String),
 }
 
 pub struct SettingsView {
@@ -64,13 +75,21 @@ pub struct SettingsView {
     auth_status_tone: StatusTone,
     auth_busy: bool,
     auth_device_id: Option<String>,
+    cluster_expanded: bool,
+    cluster_id: Option<String>,
+    cluster_name: Option<String>,
+    cluster_message: String,
     archive_expanded: bool,
-    agent_providers: warpui::ViewHandle<AgentProvidersView>,
+    relay_expanded: bool,
     relay_status: Option<NetworkRelayStatusDto>,
     relay_mode: String,
     relay_message: String,
     relay_tone: StatusTone,
     relay_busy: bool,
+    cache_status: Option<SettingsCacheStatusDto>,
+    cache_message: String,
+    cache_tone: StatusTone,
+    cache_busy: bool,
     scroll: ClippedScrollStateHandle,
 }
 
@@ -88,8 +107,6 @@ impl SettingsView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let archive_expanded = Self::load_archive_expanded(&core);
-        let agent_providers =
-            ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -105,18 +122,28 @@ impl SettingsView {
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
             auth_device_id: None,
+            cluster_expanded: false,
+            cluster_id: None,
+            cluster_name: None,
+            cluster_message: String::new(),
             archive_expanded,
-            agent_providers,
+            relay_expanded: false,
             relay_status: None,
             relay_mode: "auto".into(),
             relay_message: String::new(),
             relay_tone: StatusTone::Placeholder,
             relay_busy: false,
+            cache_status: None,
+            cache_message: String::new(),
+            cache_tone: StatusTone::Placeholder,
+            cache_busy: false,
             scroll: ClippedScrollStateHandle::new(),
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
+        view.refresh_cluster(ctx);
         view.refresh_relay(ctx);
+        view.refresh_cache(ctx);
         view
     }
 
@@ -149,6 +176,66 @@ impl SettingsView {
                     Err(err) => {
                         view.auth_status = format!("读取登录状态失败: {err}");
                         view.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_cluster(&mut self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                cluster_status_fast(&state).await
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok(status) => {
+                        let active = status.clusters.into_iter().find(|cluster| cluster.active);
+                        view.cluster_id = active
+                            .as_ref()
+                            .map(|cluster| cluster.cluster_id.clone())
+                            .or(status.cluster_id);
+                        view.cluster_name =
+                            active.and_then(|cluster| cluster.name.or(Some(cluster.folder_name)));
+                        view.cluster_message.clear();
+                    }
+                    Err(error) => {
+                        view.cluster_message = format!("读取集群状态失败: {error}");
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_cache(&mut self, ctx: &mut ViewContext<Self>) {
+        self.cache_busy = true;
+        if self.cache_message.is_empty() {
+            self.cache_message = "正在统计可安全重建的本地缓存…".into();
+            self.cache_tone = StatusTone::Placeholder;
+        }
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                settings_cache_status(&state).await
+            },
+            |view, output, ctx| {
+                view.cache_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.cache_status = Some(status);
+                        view.cache_message =
+                            "仅统计聊天派生缓存、预览缓存与工作区传输缓存。".into();
+                        view.cache_tone = StatusTone::Placeholder;
+                    }
+                    Err(error) => {
+                        view.cache_message = format!("缓存统计失败: {error}");
+                        view.cache_tone = StatusTone::Danger;
                     }
                 }
                 ctx.notify();
@@ -340,9 +427,50 @@ impl SettingsView {
         .finish()
     }
 
-    fn relay_block(&self) -> Box<dyn Element> {
+    fn collapsible_row(
+        &self,
+        label: &str,
+        summary: &str,
+        expanded: bool,
+        action: SettingsAction,
+    ) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(
+            Expanded::new(
+                1.0,
+                ui_text::body(
+                    format!("{} {label}", if expanded { "▼" } else { "▶" }),
+                    self.font,
+                )
+                .with_color(theme::text())
+                .finish(),
+            )
+            .finish(),
+        );
+        row.add_child(
+            ui_text::body(summary.to_string(), self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        let row = EventHandler::new(
+            Container::new(row.finish())
+                .with_uniform_padding(10.0)
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+        ConstrainedBox::new(row).with_max_width(420.0).finish()
+    }
+
+    fn relay_details(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("P2P · Relay", self.font));
         col.add_child(section_hint(
             "集群 P2P 穿透依赖 Relay。自动模式会并行探测国内/海外节点并选择最快可达者。",
             self.font,
@@ -444,6 +572,28 @@ impl SettingsView {
                 self.font,
                 self.relay_tone,
             ));
+        }
+        ConstrainedBox::new(col.finish())
+            .with_max_width(720.0)
+            .finish()
+    }
+
+    fn relay_block(&self) -> Box<dyn Element> {
+        let summary = relay_mode_label(&self.relay_mode);
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("P2P · Relay", self.font));
+        col.add_child(self.collapsible_row(
+            "网络穿透",
+            summary,
+            self.relay_expanded,
+            SettingsAction::ToggleRelaySection,
+        ));
+        if self.relay_expanded {
+            col.add_child(
+                Container::new(self.relay_details())
+                    .with_margin_top(8.0)
+                    .finish(),
+            );
         }
         self.flat_section(col.finish())
     }
@@ -633,6 +783,184 @@ impl SettingsView {
         self.flat_section(col.finish())
     }
 
+    fn cluster_block(&self) -> Box<dyn Element> {
+        let summary = self
+            .cluster_name
+            .as_deref()
+            .or(self.cluster_id.as_deref())
+            .unwrap_or("未加入集群");
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("CLUSTER · 集群", self.font));
+        col.add_child(self.collapsible_row(
+            "活动集群",
+            summary,
+            self.cluster_expanded,
+            SettingsAction::ToggleClusterSection,
+        ));
+        if self.cluster_expanded {
+            let mut details = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            if let Some(cluster_id) = self.cluster_id.as_deref() {
+                details.add_child(self.path_row("Cluster ID", cluster_id));
+            }
+            if let Some(name) = self.cluster_name.as_deref() {
+                details.add_child(
+                    Container::new(self.path_row("当前名称", name))
+                        .with_margin_top(8.0)
+                        .finish(),
+                );
+            }
+            if self.cluster_id.is_none() {
+                details.add_child(section_hint("当前没有活动集群。", self.font));
+            }
+            details.add_child(
+                Container::new(
+                    self.action_button("前往终端管理", SettingsAction::OpenClusterManagement),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+            if !self.cluster_message.is_empty() {
+                details.add_child(status_line(
+                    self.cluster_message.clone(),
+                    self.font,
+                    StatusTone::Danger,
+                ));
+            }
+            col.add_child(
+                Container::new(
+                    ConstrainedBox::new(details.finish())
+                        .with_max_width(720.0)
+                        .finish(),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        }
+        self.flat_section(col.finish())
+    }
+
+    fn cache_row(
+        &self,
+        label: &str,
+        description: &str,
+        bytes: Option<u64>,
+        kind: &str,
+    ) -> Box<dyn Element> {
+        let mut labels = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        labels.add_child(
+            ui_text::body(label.to_string(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        labels.add_child(
+            ui_text::body(description.to_string(), self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, labels.finish()).finish());
+        row.add_child(
+            Container::new(
+                ui_text::mono(
+                    bytes
+                        .map(format_cache_size)
+                        .unwrap_or_else(|| "统计中…".into()),
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            )
+            .with_horizontal_margin(10.0)
+            .finish(),
+        );
+        row.add_child(self.stateful_action_button(
+            if self.cache_busy {
+                "处理中…"
+            } else {
+                "清理"
+            },
+            SettingsAction::ClearCache(kind.to_string()),
+            self.cache_busy || bytes.unwrap_or(0) == 0,
+            false,
+        ));
+        Container::new(row.finish())
+            .with_uniform_padding(10.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .finish()
+    }
+
+    fn cache_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("CACHE · 本地缓存", self.font));
+        col.add_child(section_hint(
+            "只清理可从聊天文档或远端文件重新生成的数据，不会删除共享文件、聊天索引或集群配置。",
+            self.font,
+        ));
+        let chat_bytes = self.cache_status.as_ref().map(|status| status.chat_bytes);
+        let sync_bytes = self.cache_status.as_ref().map(|status| status.sync_bytes);
+        col.add_child(self.cache_row(
+            "聊天记录缓存",
+            "本地消息查询库与媒体派生文件",
+            chat_bytes,
+            "chat",
+        ));
+        col.add_child(
+            Container::new(self.cache_row(
+                "终端同步文件缓存",
+                "预览文件与工作区传输临时文件",
+                sync_bytes,
+                "sync",
+            ))
+            .with_margin_top(6.0)
+            .finish(),
+        );
+        let total = self
+            .cache_status
+            .as_ref()
+            .map(|status| status.chat_bytes.saturating_add(status.sync_bytes));
+        let mut actions = Flex::row();
+        actions.add_child(self.stateful_action_button(
+            if self.cache_busy {
+                "正在清理…"
+            } else {
+                "清理全部缓存"
+            },
+            SettingsAction::ClearCache("all".into()),
+            self.cache_busy || total.unwrap_or(0) == 0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(self.stateful_action_button(
+                "重新统计",
+                SettingsAction::RefreshCache,
+                self.cache_busy,
+                false,
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        if !self.cache_message.is_empty() {
+            col.add_child(status_line(
+                self.cache_message.clone(),
+                self.font,
+                self.cache_tone,
+            ));
+        }
+        self.flat_section(
+            ConstrainedBox::new(col.finish())
+                .with_max_width(720.0)
+                .finish(),
+        )
+    }
+
     fn archive_block(&self) -> Box<dyn Element> {
         let data_dir = self.core.data_dir();
         let snapshots = load_archived_snapshots(&data_dir);
@@ -789,38 +1117,35 @@ impl View for SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("设置", self.font));
         col.add_child(self.account_block());
-        col.add_child(self.relay_block());
         col.add_child(self.shared_path_block());
+        col.add_child(self.cluster_block());
+        col.add_child(self.relay_block());
+        col.add_child(self.cache_block());
         col.add_child(self.archive_block());
-        col.add_child(
-            Container::new(ChildView::new(&self.agent_providers).finish())
-                .with_padding_top(16.0)
-                .with_padding_bottom(16.0)
-                .finish(),
-        );
         col.add_child(
             ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
                 .with_color(theme::placeholder())
                 .finish(),
         );
 
-        let body = Container::new(
-            ConstrainedBox::new(col.finish())
-                .with_max_width(760.0)
+        let body = Container::new(col.finish())
+            .with_uniform_padding(20.0)
+            .finish();
+        tab_content_fill(
+            Container::new(
+                ClippedScrollable::vertical(
+                    self.scroll.clone(),
+                    body,
+                    ScrollbarWidth::Auto,
+                    Fill::None,
+                    Fill::None,
+                    Fill::None,
+                )
                 .finish(),
+            )
+            .with_background(theme::panel())
+            .finish(),
         )
-        .with_uniform_padding(20.0)
-        .with_background(theme::canvas())
-        .finish();
-        ClippedScrollable::vertical(
-            self.scroll.clone(),
-            body,
-            ScrollbarWidth::Auto,
-            Fill::None,
-            Fill::None,
-            Fill::None,
-        )
-        .finish()
     }
 }
 
@@ -832,6 +1157,18 @@ impl TypedActionView for SettingsView {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::RefreshRelay => self.refresh_relay(ctx),
+            SettingsAction::RefreshCache => self.refresh_cache(ctx),
+            SettingsAction::ToggleClusterSection => {
+                self.cluster_expanded = !self.cluster_expanded;
+                ctx.notify();
+            }
+            SettingsAction::OpenClusterManagement => {
+                ctx.emit(SettingsEvent::OpenClusterManagement);
+            }
+            SettingsAction::ToggleRelaySection => {
+                self.relay_expanded = !self.relay_expanded;
+                ctx.notify();
+            }
             SettingsAction::SelectRelay(mode) => {
                 if is_relay_mode(mode) && !self.relay_busy {
                     self.relay_mode = mode.clone();
@@ -1019,6 +1356,41 @@ impl TypedActionView for SettingsView {
             SettingsAction::DeleteArchivedSession(id) => {
                 ctx.emit(SettingsEvent::DeleteArchivedSession(id.clone()));
             }
+            SettingsAction::ClearCache(kind) => {
+                if self.cache_busy {
+                    return;
+                }
+                self.cache_busy = true;
+                self.cache_message = "正在安全清理缓存…".into();
+                self.cache_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                let kind = kind.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        clear_settings_cache(&state, ClearSettingsCacheParams { kind }).await
+                    },
+                    |view, output, ctx| {
+                        view.cache_busy = false;
+                        match output {
+                            Ok(result) => {
+                                view.cache_status = Some(result.status);
+                                view.cache_message = format!(
+                                    "缓存清理完成，已释放 {}。",
+                                    format_cache_size(result.removed_bytes)
+                                );
+                                view.cache_tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.cache_message = format!("缓存清理失败: {error}");
+                                view.cache_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
         }
     }
 }
@@ -1031,9 +1403,32 @@ fn is_relay_mode(mode: &str) -> bool {
     matches!(mode, "auto" | "domestic" | "overseas")
 }
 
+fn relay_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "domestic" => "国内 Relay",
+        "overseas" => "海外 Relay",
+        _ => "自动选择",
+    }
+}
+
+fn format_cache_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.1} GB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_relay_mode, storage_paths_differ};
+    use super::{format_cache_size, is_relay_mode, relay_mode_label, storage_paths_differ};
 
     #[test]
     fn storage_dirty_state_ignores_outer_whitespace_only() {
@@ -1047,5 +1442,14 @@ mod tests {
         assert!(is_relay_mode("domestic"));
         assert!(is_relay_mode("overseas"));
         assert!(!is_relay_mode("fastest"));
+    }
+
+    #[test]
+    fn setting_summaries_are_compact_and_stable() {
+        assert_eq!(relay_mode_label("auto"), "自动选择");
+        assert_eq!(relay_mode_label("domestic"), "国内 Relay");
+        assert_eq!(format_cache_size(0), "0 B");
+        assert_eq!(format_cache_size(1536), "1.5 KB");
+        assert_eq!(format_cache_size(2 * 1024 * 1024), "2.0 MB");
     }
 }
