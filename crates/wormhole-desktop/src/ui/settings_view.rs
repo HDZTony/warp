@@ -348,6 +348,25 @@ impl SettingsView {
             .finish()
     }
 
+    /// Inline action buttons (`.settings-auth-actions` / `.settings-action-row` in HTML).
+    fn inline_action_row(&self, buttons: Vec<Box<dyn Element>>) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min);
+        for (index, button) in buttons.into_iter().enumerate() {
+            if index > 0 {
+                row.add_child(
+                    Container::new(button)
+                        .with_margin_left(8.0)
+                        .finish(),
+                );
+            } else {
+                row.add_child(button);
+            }
+        }
+        row.finish()
+    }
+
     fn action_button(&self, label: &str, action: SettingsAction) -> Box<dyn Element> {
         self.stateful_action_button(label, action, false, false)
     }
@@ -673,7 +692,44 @@ impl SettingsView {
             .disabled(self.busy)
             .ime_preedit(!marked.is_empty())
             .finish();
-            col.add_child(field);
+            let mut path_row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max);
+            path_row.add_child(Expanded::new(1.0, field).finish());
+            path_row.add_child(
+                Container::new(self.stateful_action_button(
+                    "浏览…",
+                    SettingsAction::BrowseMigrate,
+                    self.busy,
+                    false,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            path_row.add_child(
+                Container::new(self.stateful_action_button(
+                    if self.busy { "保存中…" } else { "保存" },
+                    SettingsAction::SaveMigration,
+                    self.busy || !self.storage_dirty(),
+                    true,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            path_row.add_child(
+                Container::new(self.action_button("刷新", SettingsAction::Refresh))
+                    .with_margin_left(8.0)
+                    .finish(),
+            );
+            col.add_child(
+                ConstrainedBox::new(
+                    Container::new(path_row.finish())
+                        .with_vertical_margin(4.0)
+                        .finish(),
+                )
+                .with_max_width(SETTINGS_FORM_MAX_WIDTH)
+                .finish(),
+            );
             if info.physical_path != info.sync_entry_path {
                 col.add_child(
                     Container::new(self.path_row("物理存放", &info.physical_path))
@@ -699,36 +755,6 @@ impl SettingsView {
                     .finish(),
             );
         }
-
-        let mut actions = Flex::row();
-        actions.add_child(
-            Container::new(self.stateful_action_button(
-                "浏览…",
-                SettingsAction::BrowseMigrate,
-                self.busy,
-                false,
-            ))
-            .with_vertical_margin(8.0)
-            .finish(),
-        );
-        actions.add_child(
-            Container::new(self.stateful_action_button(
-                if self.busy { "保存中…" } else { "保存" },
-                SettingsAction::SaveMigration,
-                self.busy || !self.storage_dirty(),
-                true,
-            ))
-            .with_vertical_margin(8.0)
-            .with_margin_left(8.0)
-            .finish(),
-        );
-        actions.add_child(
-            Container::new(self.action_button("刷新", SettingsAction::Refresh))
-                .with_vertical_margin(8.0)
-                .with_margin_left(8.0)
-                .finish(),
-        );
-        col.add_child(actions.finish());
 
         if !self.status.is_empty() {
             col.add_child(status_line(
@@ -768,43 +794,41 @@ impl SettingsView {
                 self.auth_status_tone,
             ));
         }
+        let mut auth_actions = Vec::new();
         if self.auth_user_id.is_none() {
-            col.add_child(
-                Container::new(self.stateful_action_button(
-                    if self.auth_busy {
-                        "正在读取账号…"
-                    } else {
-                        "登录 Wormhole"
-                    },
-                    SettingsAction::Login,
-                    self.auth_busy,
-                    true,
-                ))
-                .with_vertical_margin(8.0)
-                .finish(),
-            );
+            auth_actions.push(self.stateful_action_button(
+                if self.auth_busy {
+                    "正在读取账号…"
+                } else {
+                    "登录 Wormhole"
+                },
+                SettingsAction::Login,
+                self.auth_busy,
+                true,
+            ));
         } else {
-            col.add_child(
-                Container::new(self.stateful_action_button(
-                    if self.auth_busy {
-                        "正在退出…"
-                    } else {
-                        "退出登录"
-                    },
-                    SettingsAction::Logout,
-                    self.auth_busy,
-                    false,
-                ))
-                .with_vertical_margin(8.0)
-                .finish(),
-            );
+            auth_actions.push(self.stateful_action_button(
+                if self.auth_busy {
+                    "正在退出…"
+                } else {
+                    "退出登录"
+                },
+                SettingsAction::Logout,
+                self.auth_busy,
+                false,
+            ));
         }
-        col.add_child(self.stateful_action_button(
+        auth_actions.push(self.stateful_action_button(
             "刷新账号状态",
             SettingsAction::RefreshAccount,
             self.auth_busy,
             false,
         ));
+        col.add_child(
+            Container::new(self.inline_action_row(auth_actions))
+                .with_vertical_margin(8.0)
+                .finish(),
+        );
         self.flat_section(col.finish())
     }
 
@@ -1416,6 +1440,7 @@ fn storage_paths_differ(current: &str, draft: &str) -> bool {
 }
 
 const SETTINGS_FOLD_TOGGLE_MAX_WIDTH: f32 = 420.0;
+const SETTINGS_FORM_MAX_WIDTH: f32 = 560.0;
 const SETTINGS_FOLD_CHEVRON_SIZE: f32 = 14.0;
 
 fn settings_fold_chevron_path(expanded: bool) -> &'static str {
