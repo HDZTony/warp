@@ -25,11 +25,13 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    add_storage_volume, create_cluster as create_cluster_command, create_cluster_invite,
-    create_share_entry, delete_cluster, delete_share_entry, join_cluster, leave_cluster,
-    list_share_directory, open_share_entry, remote_open_share_entry, remove_cluster_device,
-    remove_cluster_node, remove_storage_volume, rename_share_entry, switch_active_cluster,
-    sync_share_entry, AddStorageVolumeParams, ClusterNodeDto, ClusterStatusDto,
+    add_storage_volume, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
+    create_cluster as create_cluster_command, create_share_entry,
+    delete_cluster, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
+    open_share_entry, prepare_cluster_invite_for_copy, remote_open_share_entry,
+    remove_cluster_device, remove_cluster_node,
+    remove_storage_volume, rename_share_entry, switch_active_cluster, sync_share_entry,
+    AddStorageVolumeParams, CachedClusterInvite, ClusterNodeDto, ClusterStatusDto,
     CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
     LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
@@ -96,7 +98,7 @@ pub struct DevicesView {
     join_modal_open: bool,
     join_invite_draft: String,
     join_feedback: Option<(StatusTone, String)>,
-    local_invite: Option<String>,
+    cached_invite: Option<CachedClusterInvite>,
     invite_busy: bool,
     status_flash: Option<String>,
     cluster_picker_open: bool,
@@ -173,7 +175,7 @@ impl DevicesView {
             join_modal_open: false,
             join_invite_draft: String::new(),
             join_feedback: None,
-            local_invite: None,
+            cached_invite: None,
             invite_busy: false,
             status_flash: None,
             cluster_picker_open: false,
@@ -225,6 +227,7 @@ impl DevicesView {
     }
 
     fn apply_cluster_status(&mut self, status: ClusterStatusDto, ctx: &mut ViewContext<Self>) {
+        self.invalidate_invite_cache_for_status(&status);
         self.note_bootstrap_pending(&status);
         self.cluster_syncing = status.syncing;
         self.cluster = Some(status.clone());
@@ -239,6 +242,22 @@ impl DevicesView {
             self.schedule_stable_cluster_poll(ctx);
         } else {
             self.stable_cluster_poll_scheduled = false;
+        }
+    }
+
+    fn invalidate_invite_cache_for_status(&mut self, status: &ClusterStatusDto) {
+        let Some(cached) = self.cached_invite.clone() else {
+            return;
+        };
+        let (Some(active_id), Some(entry)) = (
+            Self::active_cluster_id(status),
+            Self::active_cluster_entry(status),
+        ) else {
+            self.cached_invite = None;
+            return;
+        };
+        if cached_cluster_invite_if_fresh(&cached, &active_id, entry.membership_epoch).is_none() {
+            self.cached_invite = None;
         }
     }
 
@@ -301,7 +320,7 @@ impl DevicesView {
                 status.role_stale = true;
             }
         }
-        self.local_invite = None;
+        self.cached_invite = None;
         self.apply_cluster_status(status, ctx);
     }
 
@@ -1788,7 +1807,7 @@ impl DevicesView {
     }
 
     fn apply_copy_invite_success(&mut self, invite: String, ctx: &mut ViewContext<Self>) {
-        self.local_invite = Some(invite);
+        self.cached_invite = cached_cluster_invite_from_json(&invite).ok();
         let name = self
             .cluster
             .as_ref()
@@ -1826,17 +1845,6 @@ impl DevicesView {
                 return;
             }
         }
-        if let Some(invite) = self.local_invite.clone() {
-            match write_clipboard_text(&invite) {
-                Ok(()) => self.apply_copy_invite_success(invite, ctx),
-                Err(e) => {
-                    self.status_flash = Some(format!("复制失败：{e}"));
-                    self.join_feedback = Some((StatusTone::Danger, e));
-                    ctx.notify();
-                }
-            }
-            return;
-        }
         self.copy_invite_ack = false;
         self.copy_invite_busy = true;
         self.status_flash = Some("正在生成邀请码…".into());
@@ -1844,17 +1852,19 @@ impl DevicesView {
 
         let core = self.core.clone();
         let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
+        let cached = self.cached_invite.clone();
         ctx.spawn(
             async move {
                 let cluster_id = cluster_id.ok_or_else(|| "尚未选择集群".to_string())?;
                 let state = core.runtime().state.clone();
-                create_cluster_invite(
+                prepare_cluster_invite_for_copy(
                     &state,
                     CreateClusterInviteParams {
                         cluster_id,
                         role: Some("member".to_string()),
                         ttl_secs: None,
                     },
+                    cached,
                 )
                 .await
             },
@@ -1870,6 +1880,7 @@ impl DevicesView {
                         }
                     },
                     Err(e) => {
+                        view.cached_invite = None;
                         view.status_flash = Some(format!("生成邀请码失败：{e}"));
                         view.join_feedback = Some((StatusTone::Danger, e));
                         ctx.notify();
@@ -1950,7 +1961,7 @@ impl DevicesView {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                         view.create_cluster_modal_open = false;
                         view.create_cluster_name_focused = false;
                         view.create_cluster_name_field.clear_marked();
@@ -2045,7 +2056,7 @@ impl DevicesView {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                     }
                     Err(e) => {
                         view.cluster_error = Some(e);
@@ -2078,7 +2089,7 @@ impl DevicesView {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                         view.status_flash = Some("已退出集群".into());
                     }
                     Err(e) => {
@@ -2173,7 +2184,7 @@ impl DevicesView {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                         view.status_flash = Some(format!("CLUSTER REMOVED · {removed_label}"));
                     }
                     Err(e) => {
@@ -2230,7 +2241,7 @@ impl DevicesView {
                     Ok(status) => {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                         view.status_flash = Some(if removing_server_member {
                             "已移除设备".into()
                         } else {
@@ -2283,7 +2294,7 @@ impl DevicesView {
                         view.join_modal_open = false;
                         view.join_invite_draft.clear();
                         view.join_feedback = None;
-                        view.local_invite = None;
+                        view.cached_invite = None;
                         view.status_flash = Some(match result.outcome {
                             JoinClusterOutcome::Joined => format!("已加入集群 · {cluster_label}"),
                             JoinClusterOutcome::AlreadyActive => "您已在该集群中".to_string(),
