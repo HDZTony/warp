@@ -279,6 +279,17 @@ impl AppShellView {
                 SettingsEvent::OpenLogin => {
                     view.open_login_modal(ctx);
                 }
+                SettingsEvent::OpenClusterManagement => {
+                    let warp_handle = view.warp.clone();
+                    ctx.update_view(&warp_handle, |warp, ctx| {
+                        warp.set_tab_visible(false, ctx);
+                    });
+                    view.tab = AppTab::Devices;
+                    view.tab_focus = AppTab::Devices;
+                    view.tab_bar_keyboard_focus = false;
+                    view.persist_last_tab();
+                    ctx.notify();
+                }
                 SettingsEvent::RestoreArchivedSession(id) => {
                     let warp_handle = view.warp.clone();
                     let session_id = id.clone();
