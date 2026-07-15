@@ -1,7 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
-    MainAxisSize, ParentElement, Radius,
+    Align, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
+    Hoverable, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -15,7 +17,21 @@ use crate::ui::theme;
 const MENU_WIDTH: f32 = 220.0;
 const FLYOUT_WIDTH: f32 = 200.0;
 
-pub fn header_menu_panel(font: FamilyId, mute_flyout_open: bool) -> Box<dyn Element> {
+pub fn header_button_colors(active: bool, hovered: bool) -> (ColorU, ColorU) {
+    if active {
+        (theme::accent_cool_bg(32), theme::accent_cool())
+    } else if hovered {
+        (theme::accent_bg_default(), theme::accent_cool())
+    } else {
+        (ColorU::transparent_black(), theme::muted())
+    }
+}
+
+pub fn header_menu_panel(
+    font: FamilyId,
+    mute_flyout_open: bool,
+    has_custom_wallpaper: bool,
+) -> Box<dyn Element> {
     let mut col = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -49,13 +65,22 @@ pub fn header_menu_panel(font: FamilyId, mute_flyout_open: bool) -> Box<dyn Elem
         false,
         false,
         |ctx, _, _| {
-            ctx.dispatch_typed_action(ChatHeaderAction::MenuToast(
-                "壁纸设置（演示）".into(),
-                StatusTone::Muted,
-            ));
+            ctx.dispatch_typed_action(ChatHeaderAction::SetWallpaper);
             DispatchEventResult::StopPropagation
         },
     ));
+    if has_custom_wallpaper {
+        col.add_child(popover_plain_item(
+            font,
+            "恢复默认壁纸",
+            false,
+            false,
+            |ctx, _, _| {
+                ctx.dispatch_typed_action(ChatHeaderAction::ClearWallpaper);
+                DispatchEventResult::StopPropagation
+            },
+        ));
+    }
     col.add_child(popover_plain_item(
         font,
         "禁用文件分享",
@@ -69,6 +94,7 @@ pub fn header_menu_panel(font: FamilyId, mute_flyout_open: bool) -> Box<dyn Elem
             DispatchEventResult::StopPropagation
         },
     ));
+    col.add_child(popover_menu_separator());
     col.add_child(popover_plain_item(
         font,
         "清空历史记录",
@@ -149,24 +175,46 @@ pub fn header_button(
     action: ChatHeaderAction,
     size: f32,
 ) -> Box<dyn Element> {
-    let bg = if active {
-        theme::accent_cool_bg(32)
-    } else {
-        ColorU::transparent_black()
-    };
-    let icon_color = if active { theme::accent_cool() } else { color };
-    EventHandler::new(
+    let mouse_state: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
+    let icon_path_static = icon_path;
+    let action_clone = action.clone();
+    let hoverable = Hoverable::new(mouse_state, move |state| {
+        let (bg, icon_color) = header_button_colors(active, state.is_hovered());
+        let resolved_icon = if active || state.is_hovered() {
+            icon_color
+        } else {
+            color
+        };
         Container::new(
-            warpui::elements::Align::new(crate::ui::icons::chat_header_icon(icon_path, icon_color))
-                .finish(),
+            Align::new(crate::ui::icons::chat_header_icon(
+                icon_path_static,
+                resolved_icon,
+            ))
+            .finish(),
         )
         .with_background(bg)
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(size / 2.0)))
-        .finish(),
-    )
-    .on_left_mouse_down(move |ctx, _, _| {
-        ctx.dispatch_typed_action(action.clone());
-        DispatchEventResult::StopPropagation
+        .finish()
     })
-    .finish()
+    .finish();
+
+    EventHandler::new(hoverable)
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action_clone.clone());
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_beats_hover_for_header_button_colors() {
+        let (bg, _) = header_button_colors(true, false);
+        assert_ne!(bg, ColorU::transparent_black());
+        let (bg_hover, _) = header_button_colors(true, true);
+        assert_eq!(bg, bg_hover);
+    }
 }

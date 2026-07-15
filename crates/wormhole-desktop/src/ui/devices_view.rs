@@ -15,28 +15,28 @@ use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
-    HUD_RADIUS, SECTION_PADDING,
+    HUD_RADIUS, SECTION_PADDING, StatusTone, section_hint, section_title, status_line,
+    tab_content_fill, truncate_middle,
 };
 use crate::ui::text_field_input::{
-    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
-    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    add_storage_volume, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
-    create_cluster as create_cluster_command, create_share_entry,
-    delete_cluster, delete_share_entry, join_cluster, leave_cluster, list_share_directory,
-    open_share_entry, prepare_cluster_invite_for_copy, remote_open_share_entry,
-    remove_cluster_device, remove_cluster_node,
-    remove_storage_volume, rename_share_entry, switch_active_cluster, sync_share_entry,
     AddStorageVolumeParams, CachedClusterInvite, ClusterNodeDto, ClusterStatusDto,
     CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
-    LeaveClusterParams, ListShareDirectoryParams, RemoveClusterDeviceParams,
-    RemoveClusterNodeParams, RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto,
-    SwitchActiveClusterParams, NODE_PRESENCE_HANDSHAKE_FAILED,
+    LeaveClusterParams, ListShareDirectoryParams, NODE_PRESENCE_HANDSHAKE_FAILED,
+    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
+    ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams, add_storage_volume_to_node,
+    cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
+    create_cluster as create_cluster_command, create_share_entry, delete_cluster,
+    delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
+    prepare_cluster_invite_for_copy, remote_open_share_entry, remove_cluster_device,
+    remove_cluster_node, remove_storage_volume_from_node, rename_share_entry,
+    switch_active_cluster, sync_share_entry,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
@@ -390,20 +390,24 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let _ = wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
-                    &state,
-                )
-                .await;
+                let gossip =
+                    wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
+                        &state,
+                    )
+                    .await;
                 let status = fetch_cluster_for_ui(&state).await;
                 let remarks = load_device_remarks(&state.data_dir)
                     .await
                     .unwrap_or_default();
-                (status, remarks)
+                (gossip, status, remarks)
             },
             move |view, output, ctx| {
                 view.cluster_refresh_busy = false;
-                let (status, remarks) = output;
+                let (gossip, status, remarks) = output;
                 view.device_remarks = remarks;
+                if let Err(err) = gossip {
+                    view.status_flash = Some(format!("REFRESH FAILED · {err}"));
+                }
                 match status {
                     Ok(status) => {
                         let node_count = status.nodes.len();
@@ -484,8 +488,17 @@ impl DevicesView {
                 fetch_cluster_for_ui(&state).await
             },
             |view, output, ctx| {
-                if let Ok(status) = output {
-                    view.apply_cluster_status(status, ctx);
+                match output {
+                    Ok(status) => {
+                        view.cluster_error = None;
+                        view.apply_cluster_status(status, ctx);
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e);
+                        if view.cluster_syncing {
+                            view.schedule_cluster_poll(ctx);
+                        }
+                    }
                 }
                 ctx.notify();
             },
@@ -511,6 +524,9 @@ impl DevicesView {
                     } else if status.syncing {
                         view.schedule_cluster_poll(ctx);
                     }
+                } else if let Err(e) = output {
+                    view.cluster_error = Some(e);
+                    view.schedule_bootstrap_poll(ctx);
                 }
                 ctx.notify();
             },
@@ -531,8 +547,17 @@ impl DevicesView {
             },
             |view, output, ctx| {
                 view.stable_cluster_poll_scheduled = false;
-                if let Ok(status) = output {
-                    view.apply_cluster_status(status, ctx);
+                match output {
+                    Ok(status) => {
+                        view.cluster_error = None;
+                        view.apply_cluster_status(status, ctx);
+                    }
+                    Err(e) => {
+                        view.cluster_error = Some(e);
+                        if view.cluster.as_ref().is_some_and(|cluster| cluster.configured) {
+                            view.schedule_stable_cluster_poll(ctx);
+                        }
+                    }
                 }
                 ctx.notify();
             },
@@ -672,6 +697,9 @@ impl DevicesView {
         self.share_history_forward.push(self.share_path.clone());
         self.share_path = prev;
         self.share_status = None;
+        self.share_new_menu_open = false;
+        self.share_context_entry = None;
+        self.share_context_pos = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
         ctx.notify();
@@ -684,6 +712,9 @@ impl DevicesView {
         self.share_history_back.push(self.share_path.clone());
         self.share_path = next;
         self.share_status = None;
+        self.share_new_menu_open = false;
+        self.share_context_entry = None;
+        self.share_context_pos = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
         ctx.notify();
@@ -695,8 +726,37 @@ impl DevicesView {
         })
     }
 
+    fn browsing_can_manage(&self) -> bool {
+        let Some(cluster) = self.cluster.as_ref() else {
+            return false;
+        };
+        let Some(node_id) = self.browsing_node_id.as_deref() else {
+            return false;
+        };
+        if node_id == cluster.local_node_id {
+            return true;
+        }
+        cluster.nodes.iter().any(|node| {
+            node.node_id == node_id
+                && share_node_can_manage(
+                    false,
+                    node.same_account,
+                    node.server_member_confirmed,
+                    node.revoked,
+                )
+        })
+    }
+
+    fn share_new_menu_mode(&self) -> ShareNewMenuMode {
+        share_new_menu_mode(self.browsing_can_manage(), self.share_path.is_empty())
+    }
+
+    fn can_show_share_new(&self) -> bool {
+        self.share_new_menu_mode() != ShareNewMenuMode::Hidden
+    }
+
     fn can_create_share_entry(&self) -> bool {
-        self.browsing_local() && !self.share_path.is_empty()
+        self.share_new_menu_mode() == ShareNewMenuMode::CreateEntries
     }
 
     fn close_share_new_menu(&mut self, ctx: &mut ViewContext<Self>) {
@@ -707,7 +767,7 @@ impl DevicesView {
     }
 
     fn toggle_share_new_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.can_create_share_entry() {
+        if !self.can_show_share_new() {
             return;
         }
         self.close_share_context_menu(ctx);
@@ -762,7 +822,7 @@ impl DevicesView {
     }
 
     fn open_share_rename_modal(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
-        if !self.browsing_local() {
+        if !self.browsing_can_manage() {
             return;
         }
         self.close_share_context_menu(ctx);
@@ -852,12 +912,17 @@ impl DevicesView {
     }
 
     fn open_share_add_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.browsing_local() {
+        if !self.browsing_can_manage() {
             return;
         }
+        self.close_share_new_menu(ctx);
         self.share_add_feedback = None;
-        if self.share_add_path.is_empty() {
+        if self.browsing_local() && self.share_add_path.is_empty() {
             self.share_add_path = default_share_browse_path();
+        } else if !self.browsing_local() {
+            self.share_add_path.clear();
+            self.share_add_feedback =
+                Some((StatusTone::Muted, "请输入目标终端上的文件夹路径".into()));
         }
         self.share_add_modal_open = true;
         ctx.notify();
@@ -870,6 +935,12 @@ impl DevicesView {
     }
 
     fn browse_share_add_path(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.browsing_local() {
+            self.share_add_feedback =
+                Some((StatusTone::Muted, "远端终端请手动输入其本机路径".into()));
+            ctx.notify();
+            return;
+        }
         ctx.spawn(
             async move {
                 #[cfg(windows)]
@@ -900,7 +971,7 @@ impl DevicesView {
     fn submit_share_add(&mut self, ctx: &mut ViewContext<Self>) {
         let path = self.share_add_path.trim().to_string();
         if path.is_empty() {
-            self.share_add_feedback = Some((StatusTone::Warn, "请选择本机路径".into()));
+            self.share_add_feedback = Some((StatusTone::Warn, "请输入目标终端路径".into()));
             ctx.notify();
             return;
         }
@@ -908,10 +979,13 @@ impl DevicesView {
         self.share_add_feedback = Some((StatusTone::Neutral, "正在添加共享文件夹…".into()));
         ctx.notify();
         let core = self.core.clone();
+        let Some(node_id) = self.browsing_node_id.clone() else {
+            return;
+        };
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                add_storage_volume(&state, AddStorageVolumeParams { path }).await
+                add_storage_volume_to_node(&state, &node_id, AddStorageVolumeParams { path }).await
             },
             |view, output, ctx| {
                 view.share_add_busy = false;
@@ -1041,7 +1115,7 @@ impl DevicesView {
         self.run_share_file_action(
             entry_name.clone(),
             "正在删除…",
-            if self.browsing_local() {
+            if self.browsing_can_manage() {
                 "已删除"
             } else {
                 "已删除本地副本"
@@ -3476,26 +3550,13 @@ impl DevicesView {
             )
             .finish(),
         );
-        if self.browsing_local() {
-            if self.can_create_share_entry() {
-                toolbar.add_child(
-                    Container::new(self.toolbar_button(
-                        "新建",
-                        DevicesAction::ToggleShareNewMenu,
-                        false,
-                        72.0,
-                        true,
-                    ))
-                    .with_horizontal_margin(8.0)
-                    .finish(),
-                );
-            }
+        if self.can_show_share_new() {
             toolbar.add_child(
                 Container::new(self.toolbar_button(
-                    "+ 共享文件夹",
-                    DevicesAction::OpenShareAddModal,
-                    true,
-                    128.0,
+                    "新建",
+                    DevicesAction::ToggleShareNewMenu,
+                    false,
+                    72.0,
                     true,
                 ))
                 .with_horizontal_margin(8.0)
@@ -3694,8 +3755,9 @@ impl DevicesView {
         };
         let entry = self.share_entries.iter().find(|entry| entry.name == name);
         let browsing_local = self.browsing_local();
+        let can_manage = self.browsing_can_manage();
         let has_local_replica = entry.map(|entry| entry.local).unwrap_or(false);
-        let can_unshare = browsing_local
+        let can_unshare = can_manage
             && entry
                 .map(|entry| entry.local && entry.volume_id.is_some())
                 .unwrap_or(false);
@@ -3704,8 +3766,8 @@ impl DevicesView {
             .unwrap_or(false);
         let needs_sync = !browsing_local && !is_folder && !has_local_replica;
         let can_remote = !browsing_local && !is_folder;
-        let can_rename = browsing_local;
-        let can_delete = if browsing_local {
+        let can_rename = can_manage;
+        let can_delete = if can_manage {
             true
         } else {
             !is_folder && has_local_replica
@@ -3888,7 +3950,7 @@ impl DevicesView {
         let Some(volume_id) = entry.and_then(|entry| entry.volume_id.clone()) else {
             return;
         };
-        if !self.browsing_local() {
+        if !self.browsing_can_manage() {
             return;
         }
         self.share_unshare_volume_id = Some(volume_id);
@@ -3912,13 +3974,16 @@ impl DevicesView {
             return;
         }
         let name = self.share_unshare_name.clone().unwrap_or_default();
+        let Some(node_id) = self.browsing_node_id.clone() else {
+            return;
+        };
         self.share_unshare_busy = true;
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                remove_storage_volume(&state, volume_id).await
+                remove_storage_volume_from_node(&state, &node_id, volume_id).await
             },
             move |view, output, ctx| {
                 view.share_unshare_busy = false;
@@ -4007,8 +4072,28 @@ impl DevicesView {
 
     fn share_new_menu(&self) -> Box<dyn Element> {
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        menu.add_child(self.share_new_menu_item("文件夹", true, DevicesAction::ShareCreateFolder));
-        menu.add_child(self.share_new_menu_item("txt 文件", false, DevicesAction::ShareCreateTxt));
+        match self.share_new_menu_mode() {
+            ShareNewMenuMode::AddSharedFolder => {
+                menu.add_child(self.share_new_menu_item(
+                    "共享文件夹",
+                    true,
+                    DevicesAction::OpenShareAddModal,
+                ));
+            }
+            ShareNewMenuMode::CreateEntries => {
+                menu.add_child(self.share_new_menu_item(
+                    "文件夹",
+                    true,
+                    DevicesAction::ShareCreateFolder,
+                ));
+                menu.add_child(self.share_new_menu_item(
+                    "txt 文件",
+                    false,
+                    DevicesAction::ShareCreateTxt,
+                ));
+            }
+            ShareNewMenuMode::Hidden => {}
+        }
         let panel = Container::new(
             ConstrainedBox::new(menu.finish())
                 .with_width(148.0)
@@ -4503,10 +4588,72 @@ impl TypedActionView for DevicesView {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShareNewMenuMode {
+    Hidden,
+    AddSharedFolder,
+    CreateEntries,
+}
+
+fn share_node_can_manage(
+    is_local: bool,
+    same_account: bool,
+    server_member_confirmed: bool,
+    revoked: bool,
+) -> bool {
+    is_local || (same_account && server_member_confirmed && !revoked)
+}
+
+fn share_new_menu_mode(can_manage: bool, share_path_empty: bool) -> ShareNewMenuMode {
+    if !can_manage {
+        ShareNewMenuMode::Hidden
+    } else if share_path_empty {
+        ShareNewMenuMode::AddSharedFolder
+    } else {
+        ShareNewMenuMode::CreateEntries
+    }
+}
+
 fn short_cluster_id(id: &str) -> String {
     if id.len() > 12 {
         id.chars().take(12).collect()
     } else {
         id.to_string()
+    }
+}
+
+#[cfg(test)]
+mod share_new_menu_tests {
+    use super::{ShareNewMenuMode, share_new_menu_mode, share_node_can_manage};
+
+    #[test]
+    fn different_account_remote_hides_new_menu() {
+        assert_eq!(share_new_menu_mode(false, true), ShareNewMenuMode::Hidden);
+        assert_eq!(share_new_menu_mode(false, false), ShareNewMenuMode::Hidden);
+    }
+
+    #[test]
+    fn local_and_confirmed_same_account_remote_can_manage() {
+        assert!(share_node_can_manage(true, false, false, false));
+        assert!(share_node_can_manage(false, true, true, false));
+        assert!(!share_node_can_manage(false, false, true, false));
+        assert!(!share_node_can_manage(false, true, false, false));
+        assert!(!share_node_can_manage(false, true, true, true));
+    }
+
+    #[test]
+    fn manageable_root_offers_add_shared_folder() {
+        assert_eq!(
+            share_new_menu_mode(true, true),
+            ShareNewMenuMode::AddSharedFolder
+        );
+    }
+
+    #[test]
+    fn manageable_folder_offers_create_entries() {
+        assert_eq!(
+            share_new_menu_mode(true, false),
+            ShareNewMenuMode::CreateEntries
+        );
     }
 }

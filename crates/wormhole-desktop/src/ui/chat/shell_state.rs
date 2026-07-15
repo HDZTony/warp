@@ -39,8 +39,15 @@ pub struct ChatShellState {
     pub message_tick: u64,
     /// Bumped when sidebar selection changes so header refreshes immediately.
     pub selection_tick: u64,
-    /// Bumped when chat UI prefs (mute/hide) change so sidebar rebuilds.
+    /// Bumped when chat UI prefs (mute/hide/wallpaper) change so sidebar/thread rebuild.
     pub prefs_tick: u64,
+    /// Bumped when per-conversation wallpaper changes.
+    pub wallpaper_tick: u64,
+    /// `idle` | `ringing` | `incoming` | `active`
+    pub voice_call_phase: String,
+    pub voice_call_active: bool,
+    /// Peer node opened in the live viewer for the active voice call.
+    pub voice_live_peer: Option<String>,
     pub pending_open: Option<PendingOpenChat>,
     /// Last failure from opening a placeholder conversation (shown under compose).
     pub open_error: Option<String>,
@@ -61,6 +68,10 @@ impl Default for ChatShellState {
             message_tick: 0,
             selection_tick: 0,
             prefs_tick: 0,
+            wallpaper_tick: 0,
+            voice_call_phase: "idle".into(),
+            voice_call_active: false,
+            voice_live_peer: None,
             pending_open: None,
             open_error: None,
             pending_outgoing: Vec::new(),
@@ -134,8 +145,18 @@ impl ChatShellState {
         self.selection_tick = self.selection_tick.saturating_add(1);
     }
 
+    pub fn bump_wallpaper_tick(&mut self) {
+        self.wallpaper_tick = self.wallpaper_tick.saturating_add(1);
+    }
+
     pub fn bump_prefs_tick(&mut self) {
         self.prefs_tick = self.prefs_tick.saturating_add(1);
+    }
+
+    pub fn set_voice_call_phase(&mut self, phase: impl Into<String>) {
+        let phase = phase.into();
+        self.voice_call_active = phase == "active";
+        self.voice_call_phase = phase;
     }
 
     pub fn set_pending_open(&mut self, title: String, os: String, online: bool) {

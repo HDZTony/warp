@@ -18,23 +18,23 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    chat_item_active_bg, chat_search_pill, chat_sidebar_search_bg, positioned_context_menu,
-    tg_avatar, StatusTone, HUD_RADIUS,
+    HUD_RADIUS, StatusTone, chat_item_active_bg, chat_search_pill, chat_sidebar_search_bg,
+    positioned_context_menu, tg_avatar,
 };
 use crate::ui::text_field_input::{
-    render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
-    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+    render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    chat_config, chat_list_conversations, chat_start_conversation, ChatConversationDto,
-    StartChatConversationParams,
+    ChatConversationDto, StartChatConversationParams, chat_config, chat_list_conversations,
+    chat_start_conversation,
 };
 use wormhole_desktop_core::chat_ui_prefs::{
-    load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
+    ChatUiPrefs, load_chat_ui_prefs, set_chat_hidden, set_chat_muted,
 };
-use wormhole_desktop_core::cluster_commands::{cluster_status_hud, ClusterStatusDto};
+use wormhole_desktop_core::cluster_commands::{ClusterStatusDto, cluster_status_hud};
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
 
 use std::collections::BTreeMap;
@@ -1358,6 +1358,7 @@ mod tests {
                 removable: false,
                 revoked: false,
                 server_member_confirmed: false,
+                same_account: false,
                 pending_handshake: false,
                 handshake_error: None,
             }],
@@ -1414,6 +1415,7 @@ mod tests {
                 removable: false,
                 revoked: false,
                 server_member_confirmed: false,
+                same_account: false,
                 pending_handshake: false,
                 handshake_error: None,
             }],
@@ -1494,6 +1496,7 @@ mod tests {
             removable: false,
             revoked: false,
             server_member_confirmed: false,
+            same_account: local,
             pending_handshake: false,
             handshake_error: None,
         }

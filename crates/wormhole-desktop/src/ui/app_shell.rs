@@ -217,6 +217,9 @@ impl AppShellView {
             ChatShellEvent::OpenRemoteDesktop { peer } => {
                 view.open_remote_desktop_for_peer(peer, ctx);
             }
+            ChatShellEvent::OpenLiveViewer { peer, title } => {
+                view.open_live_viewer_for_peer(peer, title.clone(), ctx);
+            }
         });
         ctx.subscribe_to_view(&devices, |view, _, event, ctx| match event {
             DevicesEvent::OpenChat { node_id } => {
@@ -723,6 +726,24 @@ impl AppShellView {
             tab,
             AppTab::Devices | AppTab::Chat | AppTab::Sync | AppTab::Display
         )
+    }
+
+    fn open_live_viewer_for_peer(&self, peer: &str, title: String, _ctx: &mut ViewContext<Self>) {
+        let peer = peer.trim();
+        if peer.is_empty() {
+            return;
+        }
+        let window_key = wormhole_native_ipc::live_viewer_window_key(peer);
+        if let Ok(mut guard) = self.coordinator.lock() {
+            guard.enqueue(UiCommand::OpenLiveViewer {
+                window_key,
+                title,
+                peer: peer.to_string(),
+                password: None,
+                totp_code: None,
+                fps: 30,
+            });
+        }
     }
 
     fn open_remote_desktop_for_peer(&self, peer: &str, _ctx: &mut ViewContext<Self>) {

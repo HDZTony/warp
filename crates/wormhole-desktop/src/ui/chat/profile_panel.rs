@@ -42,6 +42,7 @@ pub enum ChatProfileAction {
 pub enum ChatProfileEvent {
     BrowseNodeShares(String),
     OpenRemoteDesktop { peer: String },
+    StartVoiceCall,
 }
 
 pub struct ChatProfilePanelView {
@@ -579,12 +580,7 @@ impl TypedActionView for ChatProfilePanelView {
     fn handle_action(&mut self, action: &ChatProfileAction, ctx: &mut ViewContext<Self>) {
         match action {
             ChatProfileAction::Call => {
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast(
-                        "语音通话（演示）",
-                        crate::ui::panel_primitives::StatusTone::Muted,
-                    );
-                }
+                ctx.emit(ChatProfileEvent::StartVoiceCall);
                 ctx.notify();
             }
             ChatProfileAction::RemoteDesktop => {

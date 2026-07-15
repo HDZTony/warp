@@ -50,7 +50,7 @@ wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", featu
   "opus-audio",
   "clipboard-sync",
 ] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 arboard = "3"
 chrono = { workspace = true, features = ["clock"] }
 resvg.workspace = true

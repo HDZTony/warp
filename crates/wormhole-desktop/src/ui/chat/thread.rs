@@ -15,9 +15,15 @@ use crate::ui::chat::layout::{
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
-use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
+use crate::ui::chat::image_asset::{
+    chat_wallpaper_asset_id, insert_wallpaper_asset, load_wallpaper_bytes_from_path,
+};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
+use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
+use wormhole_desktop_core::chat_rtc_call::video_signal_display_text;
+use wormhole_desktop_core::chat_ui_prefs::load_chat_ui_prefs;
+use wormhole_desktop_core::chat_wallpaper_storage::wallpaper_abs_path;
 use wormhole_desktop_core::chat_commands::{
     chat_config, chat_list_messages, ChatAttachmentDto, ChatMessageDto, ListChatMessagesParams,
 };
@@ -51,6 +57,9 @@ pub struct ChatThreadView {
     fetch_error: Option<String>,
     scroll: ClippedScrollStateHandle,
     thread_content_width: f32,
+    wallpaper_asset_id: Option<String>,
+    wallpaper_loaded: bool,
+    last_wallpaper_tick: u64,
 }
 
 fn messages_snapshot_equal(a: &[ChatMessageDto], b: &[ChatMessageDto]) -> bool {
@@ -167,6 +176,9 @@ impl ChatThreadView {
             fetch_error: None,
             scroll: ClippedScrollStateHandle::new(),
             thread_content_width: 0.0,
+            wallpaper_asset_id: None,
+            wallpaper_loaded: false,
+            last_wallpaper_tick: 0,
         };
         view.start_poll(ctx);
         view
@@ -186,11 +198,18 @@ impl ChatThreadView {
 
     fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let current = self.selection.lock().ok().and_then(|g| g.clone());
-        let (message_tick, selection_tick) = self
+        let (message_tick, selection_tick, wallpaper_tick) = self
             .shell_state
             .lock()
-            .map(|state| (state.message_tick, state.selection_tick))
-            .unwrap_or((0, 0));
+            .map(|state| (state.message_tick, state.selection_tick, state.wallpaper_tick))
+            .unwrap_or((0, 0, 0));
+        let wallpaper_changed = wallpaper_tick != self.last_wallpaper_tick;
+        if wallpaper_changed {
+            self.last_wallpaper_tick = wallpaper_tick;
+            if let Some(conv_id) = current.as_ref() {
+                self.refresh_wallpaper(conv_id, ctx);
+            }
+        }
         let query = self.search_query();
         let search_changed = query != self.last_search_query;
         let selection_changed = current != self.loaded_for;
@@ -234,9 +253,12 @@ impl ChatThreadView {
                     self.rebuild_bubbles(ctx);
                 }
                 self.update_hint_bubble(ctx);
+                self.refresh_wallpaper(conv_id, ctx);
             } else {
                 self.messages.clear();
                 self.bubbles.clear();
+                self.wallpaper_asset_id = None;
+                self.wallpaper_loaded = false;
                 self.loading_conv = None;
                 self.loading_older_conv = None;
                 self.update_hint_bubble(ctx);
@@ -566,6 +588,48 @@ impl ChatThreadView {
         );
     }
 
+    fn refresh_wallpaper(&mut self, conv_id: &str, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        let conv_id = conv_id.to_string();
+        ctx.spawn(
+            async move {
+                let data_dir = core.data_dir();
+                let prefs = load_chat_ui_prefs(&data_dir).await.unwrap_or_default();
+                let rel = prefs.wallpaper_path(&conv_id).map(str::to_string);
+                Ok::<_, String>((conv_id, rel, data_dir))
+            },
+            |view, output, ctx| {
+                let Ok((conv_id, rel, data_dir)) = output else {
+                    return;
+                };
+                if view.loaded_for.as_deref() != Some(conv_id.as_str()) {
+                    return;
+                }
+                let Some(rel) = rel else {
+                    view.wallpaper_asset_id = None;
+                    view.wallpaper_loaded = false;
+                    ctx.notify();
+                    return;
+                };
+                let asset_id = chat_wallpaper_asset_id(&conv_id);
+                view.wallpaper_asset_id = Some(asset_id);
+                let abs = wallpaper_abs_path(&data_dir, &rel);
+                match load_wallpaper_bytes_from_path(&abs).and_then(|bytes| {
+                    insert_wallpaper_asset(ctx, &conv_id, bytes).map(|_| ())
+                }) {
+                    Ok(()) => {
+                        view.wallpaper_loaded = true;
+                        ctx.notify();
+                    }
+                    Err(_) => {
+                        view.wallpaper_loaded = false;
+                        ctx.notify();
+                    }
+                }
+            },
+        );
+    }
+
     fn search_query(&self) -> String {
         self.shell_state
             .lock()
@@ -601,7 +665,7 @@ impl ChatThreadView {
             let outgoing = outgoing_flags[index];
             let grouped = message_is_grouped(prev_outgoing, outgoing);
             prev_outgoing = Some(outgoing);
-            let body = msg.body.clone();
+            let body = video_signal_display_text(&msg.body);
             let attachments = msg.attachments.clone();
             let timestamp = format_message_time_pub(msg.sent_at);
             let read = outgoing
@@ -717,7 +781,12 @@ impl View for ChatThreadView {
             body.add_child(status_line(error.clone(), self.font, StatusTone::Danger));
         }
 
-        ChatThreadBackdrop::new(body.finish())
+        let finished = body.finish();
+        if let Some(asset_id) = self.wallpaper_asset_id.as_ref() {
+            ChatThreadBackdrop::with_wallpaper(finished, asset_id.clone(), self.wallpaper_loaded)
+        } else {
+            ChatThreadBackdrop::new(finished)
+        }
     }
 }
 

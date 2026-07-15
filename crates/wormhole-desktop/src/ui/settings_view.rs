@@ -4,10 +4,11 @@ use warpui::elements::{
     ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::core_handle::CoreHandle;
+use crate::ui::icons;
 use crate::ui::panel_primitives::{
     section_hint, section_title, status_line, tab_content_fill, StatusTone,
 };
@@ -50,6 +51,7 @@ pub enum SettingsAction {
     ToggleClusterSection,
     OpenClusterManagement,
     ToggleRelaySection,
+    ToggleCacheSection,
     ToggleArchiveSection,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
@@ -86,6 +88,7 @@ pub struct SettingsView {
     relay_message: String,
     relay_tone: StatusTone,
     relay_busy: bool,
+    cache_expanded: bool,
     cache_status: Option<SettingsCacheStatusDto>,
     cache_message: String,
     cache_tone: StatusTone,
@@ -133,6 +136,7 @@ impl SettingsView {
             relay_message: String::new(),
             relay_tone: StatusTone::Placeholder,
             relay_busy: false,
+            cache_expanded: false,
             cache_status: None,
             cache_message: String::new(),
             cache_tone: StatusTone::Placeholder,
@@ -427,6 +431,21 @@ impl SettingsView {
         .finish()
     }
 
+    fn fold_summary_badge(&self, summary: &str) -> Box<dyn Element> {
+        Container::new(
+            ui_text::mono(summary.to_string(), self.font)
+                .with_color(theme::accent_cool())
+                .finish(),
+        )
+        .with_padding_left(8.0)
+        .with_padding_right(8.0)
+        .with_padding_top(2.0)
+        .with_padding_bottom(2.0)
+        .with_background(theme::accent_cool_bg(36))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+        .finish()
+    }
+
     fn collapsible_row(
         &self,
         label: &str,
@@ -434,31 +453,35 @@ impl SettingsView {
         expanded: bool,
         action: SettingsAction,
     ) -> Box<dyn Element> {
+        let chevron_path = settings_fold_chevron_path(expanded);
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(icons::icon(
+            chevron_path,
+            SETTINGS_FOLD_CHEVRON_SIZE,
+            theme::muted(),
+        ));
         row.add_child(
-            Expanded::new(
-                1.0,
-                ui_text::body(
-                    format!("{} {label}", if expanded { "▼" } else { "▶" }),
-                    self.font,
-                )
-                .with_color(theme::text())
-                .finish(),
+            Container::new(
+                ui_text::body(label.to_string(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
             )
+            .with_margin_left(8.0)
             .finish(),
         );
-        row.add_child(
-            ui_text::body(summary.to_string(), self.font)
-                .with_color(theme::muted())
-                .finish(),
-        );
+        row.add_child(Expanded::new(1.0, Flex::row().finish()).finish());
+        row.add_child(self.fold_summary_badge(summary));
         let row = EventHandler::new(
             Container::new(row.finish())
-                .with_uniform_padding(10.0)
+                .with_padding_left(12.0)
+                .with_padding_right(12.0)
+                .with_padding_top(9.0)
+                .with_padding_bottom(9.0)
+                .with_background(theme::bg())
                 .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                 .finish(),
         )
         .on_left_mouse_down(move |ctx, _, _| {
@@ -466,7 +489,9 @@ impl SettingsView {
             DispatchEventResult::StopPropagation
         })
         .finish();
-        ConstrainedBox::new(row).with_max_width(420.0).finish()
+        ConstrainedBox::new(row)
+            .with_max_width(SETTINGS_FOLD_TOGGLE_MAX_WIDTH)
+            .finish()
     }
 
     fn relay_details(&self) -> Box<dyn Element> {
@@ -893,80 +918,92 @@ impl SettingsView {
     }
 
     fn cache_block(&self) -> Box<dyn Element> {
+        let summary = cache_summary_label(self.cache_status.as_ref());
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("CACHE · 本地缓存", self.font));
-        col.add_child(section_hint(
-            "只清理可从聊天文档或远端文件重新生成的数据，不会删除共享文件、聊天索引或集群配置。",
-            self.font,
+        col.add_child(self.collapsible_row(
+            "缓存详情",
+            &summary,
+            self.cache_expanded,
+            SettingsAction::ToggleCacheSection,
         ));
-        let chat_bytes = self.cache_status.as_ref().map(|status| status.chat_bytes);
-        let sync_bytes = self.cache_status.as_ref().map(|status| status.sync_bytes);
-        col.add_child(self.cache_row(
-            "聊天记录缓存",
-            "本地消息查询库与媒体派生文件",
-            chat_bytes,
-            "chat",
-        ));
-        col.add_child(
-            Container::new(self.cache_row(
-                "终端同步文件缓存",
-                "预览文件与工作区传输临时文件",
-                sync_bytes,
-                "sync",
-            ))
-            .with_margin_top(6.0)
-            .finish(),
-        );
-        let total = self
-            .cache_status
-            .as_ref()
-            .map(|status| status.chat_bytes.saturating_add(status.sync_bytes));
-        let mut actions = Flex::row();
-        actions.add_child(self.stateful_action_button(
-            if self.cache_busy {
-                "正在清理…"
-            } else {
-                "清理全部缓存"
-            },
-            SettingsAction::ClearCache("all".into()),
-            self.cache_busy || total.unwrap_or(0) == 0,
-            true,
-        ));
-        actions.add_child(
-            Container::new(self.stateful_action_button(
-                "重新统计",
-                SettingsAction::RefreshCache,
-                self.cache_busy,
-                false,
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
-        col.add_child(
-            Container::new(actions.finish())
+        if self.cache_expanded {
+            let chat_bytes = self.cache_status.as_ref().map(|status| status.chat_bytes);
+            let sync_bytes = self.cache_status.as_ref().map(|status| status.sync_bytes);
+            let total = cache_total_bytes(self.cache_status.as_ref());
+            let mut details =
+                Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            details.add_child(section_hint(
+                "只清理可从聊天文档或远端文件重新生成的数据，不会删除共享文件、聊天索引或集群配置。",
+                self.font,
+            ));
+            details.add_child(self.cache_row(
+                "聊天记录缓存",
+                "本地消息查询库与媒体派生文件",
+                chat_bytes,
+                "chat",
+            ));
+            details.add_child(
+                Container::new(self.cache_row(
+                    "终端同步文件缓存",
+                    "预览文件与工作区传输临时文件",
+                    sync_bytes,
+                    "sync",
+                ))
+                .with_margin_top(6.0)
+                .finish(),
+            );
+            let mut actions = Flex::row();
+            actions.add_child(self.stateful_action_button(
+                if self.cache_busy {
+                    "正在清理…"
+                } else {
+                    "清理全部缓存"
+                },
+                SettingsAction::ClearCache("all".into()),
+                self.cache_busy || total.unwrap_or(0) == 0,
+                true,
+            ));
+            actions.add_child(
+                Container::new(self.stateful_action_button(
+                    "重新统计",
+                    SettingsAction::RefreshCache,
+                    self.cache_busy,
+                    false,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            details.add_child(
+                Container::new(actions.finish())
+                    .with_margin_top(8.0)
+                    .finish(),
+            );
+            if !self.cache_message.is_empty() {
+                details.add_child(status_line(
+                    self.cache_message.clone(),
+                    self.font,
+                    self.cache_tone,
+                ));
+            }
+            col.add_child(
+                Container::new(
+                    ConstrainedBox::new(details.finish())
+                        .with_max_width(720.0)
+                        .finish(),
+                )
                 .with_margin_top(8.0)
                 .finish(),
-        );
-        if !self.cache_message.is_empty() {
-            col.add_child(status_line(
-                self.cache_message.clone(),
-                self.font,
-                self.cache_tone,
-            ));
+            );
         }
-        self.flat_section(
-            ConstrainedBox::new(col.finish())
-                .with_max_width(720.0)
-                .finish(),
-        )
+        self.flat_section(col.finish())
     }
 
     fn archive_block(&self) -> Box<dyn Element> {
         let data_dir = self.core.data_dir();
         let snapshots = load_archived_snapshots(&data_dir);
         let count = snapshots.len();
-        let expanded = self.archive_expanded;
-        let chevron = if expanded { "▼" } else { "▶" };
+        let count_label = count.to_string();
 
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("ARCHIVE · 历史对话归档", self.font));
@@ -974,43 +1011,14 @@ impl SettingsView {
             "从智能体归档的对话会显示在这里，可恢复至项目或独立对话，或永久删除。",
             self.font,
         ));
+        col.add_child(self.collapsible_row(
+            "已归档会话",
+            &count_label,
+            self.archive_expanded,
+            SettingsAction::ToggleArchiveSection,
+        ));
 
-        let toggle_label = format!("{chevron} 已归档会话");
-        let toggle_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(
-                ui_text::body(toggle_label, self.font)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_child(
-                Container::new(
-                    ui_text::mono(count.to_string(), self.font)
-                        .with_color(theme::muted())
-                        .finish(),
-                )
-                .with_uniform_padding(4.0)
-                .with_background(theme::accent_cool_bg(24))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
-                .with_horizontal_margin(8.0)
-                .finish(),
-            );
-        let toggle = EventHandler::new(
-            Container::new(toggle_row.finish())
-                .with_uniform_padding(10.0)
-                .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
-                .finish(),
-        )
-        .on_left_mouse_down(|ctx, _, _| {
-            ctx.dispatch_typed_action(SettingsAction::ToggleArchiveSection);
-            DispatchEventResult::StopPropagation
-        })
-        .finish();
-        col.add_child(toggle);
-
-        if expanded {
+        if self.archive_expanded {
             let mut list_col =
                 Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             if snapshots.is_empty() {
@@ -1026,12 +1034,16 @@ impl SettingsView {
                 }
             }
             col.add_child(
-                Container::new(list_col.finish())
-                    .with_margin_top(4.0)
-                    .with_uniform_padding(4.0)
-                    .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
-                    .finish(),
+                ConstrainedBox::new(
+                    Container::new(list_col.finish())
+                        .with_margin_top(4.0)
+                        .with_uniform_padding(4.0)
+                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                        .finish(),
+                )
+                .with_max_width(520.0)
+                .finish(),
             );
         }
 
@@ -1167,6 +1179,10 @@ impl TypedActionView for SettingsView {
             }
             SettingsAction::ToggleRelaySection => {
                 self.relay_expanded = !self.relay_expanded;
+                ctx.notify();
+            }
+            SettingsAction::ToggleCacheSection => {
+                self.cache_expanded = !self.cache_expanded;
                 ctx.notify();
             }
             SettingsAction::SelectRelay(mode) => {
@@ -1399,6 +1415,27 @@ fn storage_paths_differ(current: &str, draft: &str) -> bool {
     current.trim() != draft.trim()
 }
 
+const SETTINGS_FOLD_TOGGLE_MAX_WIDTH: f32 = 420.0;
+const SETTINGS_FOLD_CHEVRON_SIZE: f32 = 14.0;
+
+fn settings_fold_chevron_path(expanded: bool) -> &'static str {
+    if expanded {
+        "agent-chevron-down.svg"
+    } else {
+        "agent-chevron.svg"
+    }
+}
+
+fn cache_total_bytes(status: Option<&SettingsCacheStatusDto>) -> Option<u64> {
+    status.map(|entry| entry.chat_bytes.saturating_add(entry.sync_bytes))
+}
+
+fn cache_summary_label(status: Option<&SettingsCacheStatusDto>) -> String {
+    cache_total_bytes(status)
+        .map(format_cache_size)
+        .unwrap_or_else(|| "统计中…".into())
+}
+
 fn is_relay_mode(mode: &str) -> bool {
     matches!(mode, "auto" | "domestic" | "overseas")
 }
@@ -1428,7 +1465,11 @@ fn format_cache_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_cache_size, is_relay_mode, relay_mode_label, storage_paths_differ};
+    use super::{
+        cache_summary_label, format_cache_size, is_relay_mode, relay_mode_label,
+        settings_fold_chevron_path, storage_paths_differ,
+    };
+    use wormhole_desktop_core::settings_cache_commands::SettingsCacheStatusDto;
 
     #[test]
     fn storage_dirty_state_ignores_outer_whitespace_only() {
@@ -1451,5 +1492,21 @@ mod tests {
         assert_eq!(format_cache_size(0), "0 B");
         assert_eq!(format_cache_size(1536), "1.5 KB");
         assert_eq!(format_cache_size(2 * 1024 * 1024), "2.0 MB");
+    }
+
+    #[test]
+    fn settings_fold_chevron_paths_match_expanded_state() {
+        assert_eq!(settings_fold_chevron_path(false), "agent-chevron.svg");
+        assert_eq!(settings_fold_chevron_path(true), "agent-chevron-down.svg");
+    }
+
+    #[test]
+    fn cache_summary_reports_total_or_pending() {
+        assert_eq!(cache_summary_label(None), "统计中…");
+        let status = SettingsCacheStatusDto {
+            chat_bytes: 1024,
+            sync_bytes: 2048,
+        };
+        assert_eq!(cache_summary_label(Some(&status)), "3.0 KB");
     }
 }

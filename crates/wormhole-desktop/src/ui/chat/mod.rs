@@ -4,6 +4,8 @@ pub mod bubble;
 pub mod compose;
 pub mod header;
 pub mod header_menu;
+pub mod image_asset;
+pub mod voice_call_ui;
 pub mod labels;
 pub mod layout;
 pub mod profile_panel;

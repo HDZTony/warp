@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+use pathfinder_color::ColorU;
 use tokio::sync::broadcast::error::RecvError;
 use warpui::elements::{
-    Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
+    Align, Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
     EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
 };
 use warpui::fonts::FamilyId;
@@ -19,10 +20,12 @@ use crate::ui::chat::shell_state::{
 use crate::ui::chat::sidebar::ChatSidebarView;
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
+use crate::ui::chat::voice_call_ui::{accept, apply_voice_status, decline, voice_error_toast};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
 use crate::ui::panel_primitives::{status_line, tab_content_fill, StatusTone};
 use crate::ui::theme;
+use crate::ui_text;
 use wormhole_desktop_core::chat_commands::ChatEventDto;
 
 pub const SIDEBAR_WIDTH: f32 = 300.0;
@@ -33,12 +36,15 @@ pub type ConversationSelection = Arc<Mutex<Option<String>>>;
 #[derive(Debug, Clone)]
 pub enum ChatShellAction {
     DismissOverlays,
+    VoiceCallAccept,
+    VoiceCallDecline,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChatShellEvent {
     BrowseNodeShares(String),
     OpenRemoteDesktop { peer: String },
+    OpenLiveViewer { peer: String, title: String },
 }
 
 pub struct ChatShellView {
@@ -79,17 +85,28 @@ impl ChatShellView {
         let profile = ctx.add_typed_action_view(|ctx| {
             ChatProfilePanelView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
-        ctx.subscribe_to_view(&profile, |_, _, event, ctx| match event {
+        ctx.subscribe_to_view(&profile, |view, _, event, ctx| match event {
             ChatProfileEvent::BrowseNodeShares(node_id) => {
                 ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
             }
             ChatProfileEvent::OpenRemoteDesktop { peer } => {
                 ctx.emit(ChatShellEvent::OpenRemoteDesktop { peer: peer.clone() });
             }
+            ChatProfileEvent::StartVoiceCall => {
+                let header = view.header.clone();
+                ctx.update_view(&header, |header, ctx| header.trigger_voice_call(ctx));
+                ctx.notify();
+            }
         });
-        ctx.subscribe_to_view(&header, |_, _, event, ctx| {
-            if let ChatHeaderEvent::OpenRemoteDesktop { peer } = event {
+        ctx.subscribe_to_view(&header, |_, _, event, ctx| match event {
+            ChatHeaderEvent::OpenRemoteDesktop { peer } => {
                 ctx.emit(ChatShellEvent::OpenRemoteDesktop { peer: peer.clone() });
+            }
+            ChatHeaderEvent::OpenLiveViewer { peer, title } => {
+                ctx.emit(ChatShellEvent::OpenLiveViewer {
+                    peer: peer.clone(),
+                    title: title.clone(),
+                });
             }
         });
         let font = crate::ui::fonts::load_ui_font(ctx);
@@ -265,6 +282,12 @@ impl TypedActionView for ChatShellView {
                 }
                 ctx.notify();
             }
+            ChatShellAction::VoiceCallAccept => {
+                self.spawn_voice_accept(ctx);
+            }
+            ChatShellAction::VoiceCallDecline => {
+                self.spawn_voice_decline(ctx);
+            }
         }
     }
 }
@@ -285,6 +308,7 @@ impl ChatShellView {
                     .with_height(TG_HEADER_HEIGHT)
                     .finish(),
             )
+            .with_child(self.incoming_call_banner())
             .with_child(ChildView::new(&self.thread_search).finish())
             .with_child(Expanded::new(1.0, ChildView::new(&self.thread).finish()).finish())
             .with_child(ChildView::new(&self.compose).finish());
@@ -333,4 +357,160 @@ impl ChatShellView {
             })
             .finish()
     }
+
+    fn incoming_call_banner(&self) -> Box<dyn Element> {
+        let incoming = self
+            .shell_state
+            .lock()
+            .map(|state| state.voice_call_phase == "incoming")
+            .unwrap_or(false);
+        if !incoming {
+            return Container::new(Flex::row().finish()).finish();
+        }
+        let font = self.font;
+        Container::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(
+                    Expanded::new(
+                        1.0,
+                        ui_text::body("语音来电".to_string(), font)
+                            .with_color(theme::text())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_child(incoming_call_button(
+                    font,
+                    "接听",
+                    false,
+                    ChatShellAction::VoiceCallAccept,
+                ))
+                .with_child(
+                    Container::new(incoming_call_button(
+                        font,
+                        "拒绝",
+                        true,
+                        ChatShellAction::VoiceCallDecline,
+                    ))
+                    .with_margin_left(8.0)
+                    .finish(),
+                )
+                .finish(),
+        )
+        .with_uniform_padding(10.0)
+        .with_background(theme::accent_cool_bg(24))
+        .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+        .finish()
+    }
+
+    fn spawn_voice_accept(&mut self, ctx: &mut ViewContext<Self>) {
+        let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
+        let Some(conv_id) = conv_id else {
+            return;
+        };
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        let header = self.header.clone();
+        let request_conv_id = conv_id.clone();
+        ctx.spawn(
+            async move { accept(&core, &request_conv_id).await },
+            move |_view, output, ctx| match output {
+                Ok(status) => {
+                    apply_voice_status(&shell_state, &status);
+                    if let Ok(mut state) = shell_state.lock() {
+                        if status.phase == "active" {
+                            state.show_toast("语音通话已连接", StatusTone::Success);
+                        }
+                    }
+                    let header = header.clone();
+                    let conv = conv_id.clone();
+                    ctx.update_view(&header, |header, ctx| {
+                        header.poll_voice_status(&conv, ctx);
+                    });
+                    ctx.notify();
+                }
+                Err(err) => {
+                    let (text, tone) = voice_error_toast(&err);
+                    if let Ok(mut state) = shell_state.lock() {
+                        state.show_toast(text, tone);
+                    }
+                    ctx.notify();
+                }
+            },
+        );
+    }
+
+    fn spawn_voice_decline(&mut self, ctx: &mut ViewContext<Self>) {
+        let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
+        let Some(conv_id) = conv_id else {
+            return;
+        };
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        let header = self.header.clone();
+        let request_conv_id = conv_id.clone();
+        ctx.spawn(
+            async move { decline(&core, &request_conv_id).await },
+            move |_view, output, ctx| {
+                match output {
+                    Ok(status) => {
+                        apply_voice_status(&shell_state, &status);
+                        if let Ok(mut state) = shell_state.lock() {
+                            state.show_toast("已拒绝来电", StatusTone::Muted);
+                        }
+                        let header = header.clone();
+                        let conv = conv_id.clone();
+                        ctx.update_view(&header, |header, ctx| {
+                            header.poll_voice_status(&conv, ctx);
+                        });
+                    }
+                    Err(err) => {
+                        let (text, tone) = voice_error_toast(&err);
+                        if let Ok(mut state) = shell_state.lock() {
+                            state.show_toast(text, tone);
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+}
+
+fn incoming_call_button(
+    font: FamilyId,
+    label: &str,
+    danger: bool,
+    action: ChatShellAction,
+) -> Box<dyn Element> {
+    let label = label.to_string();
+    let action = action.clone();
+    EventHandler::new(
+        Container::new(
+            Align::new(
+                ui_text::body(label, font)
+                    .with_color(if danger {
+                        theme::danger()
+                    } else {
+                        theme::accent_cool()
+                    })
+                    .finish(),
+            )
+            .finish(),
+        )
+        .with_uniform_padding(8.0)
+        .with_background(if danger {
+            ColorU::new(232, 93, 76, 32)
+        } else {
+            theme::accent_bg_default()
+        })
+        .finish(),
+    )
+    .on_left_mouse_down(move |ctx, _, _| {
+        ctx.dispatch_typed_action(action.clone());
+        DispatchEventResult::StopPropagation
+    })
+    .finish()
 }

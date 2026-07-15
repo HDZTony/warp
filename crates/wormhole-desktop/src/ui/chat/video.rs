@@ -8,7 +8,7 @@ use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::chat_video_call::{chat_video_call_status, ChatVideoCallConvParams};
+use wormhole_desktop_core::chat_rtc_call::{chat_video_call_status, ChatVideoCallConvParams};
 
 pub struct ChatVideoView {
     core: CoreHandle,

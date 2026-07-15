@@ -178,6 +178,7 @@ mod tests {
                 removable: false,
                 revoked: false,
                 server_member_confirmed: false,
+                same_account: false,
                 pending_handshake: false,
                 handshake_error: None,
             }],

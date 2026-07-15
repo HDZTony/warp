@@ -97,6 +97,11 @@ fn main() -> Result<()> {
         #[cfg(unix)]
         let _headless_rdp_lock =
             acquire_headless_instance_or_exit(DesktopInstanceKind::HeadlessRdp);
+        #[cfg(windows)]
+        if !wormhole_desktop_platform_windows::register_headless_rdp_single_instance() {
+            tracing::info!("headless RDP companion already running; exiting duplicate instance");
+            return Ok(());
+        }
         wormhole_desktop_core::rdp_headless::run();
         return Ok(());
     }
@@ -111,6 +116,31 @@ fn main() -> Result<()> {
 
     wormhole_desktop_core::rdp_headless::bootstrap_dev_env();
     std::fs::create_dir_all(&data_dir)?;
+
+    #[cfg(windows)]
+    let windows_deep_link = wormhole_desktop_platform_windows::DeepLinkState::default();
+    #[cfg(windows)]
+    {
+        use wormhole_desktop_platform_windows::{
+            desktop_process_entry, handle_startup_args, DesktopProcessRole,
+        };
+        let argv: Vec<String> = std::env::args().collect();
+        if let Some(from_arg) = handle_startup_args(&argv, &windows_deep_link) {
+            data_dir = from_arg;
+        }
+        match desktop_process_entry(&argv, &windows_deep_link, &data_dir) {
+            DesktopProcessRole::SecondaryForwardedDeeplink
+            | DesktopProcessRole::SecondaryDuplicate => return Ok(()),
+            DesktopProcessRole::Primary => {}
+        }
+        let _ = windows_deep_link.take_pending_url();
+        if let Err(err) =
+            wormhole_desktop_core::deeplink_commands::sync_wormhole_protocol_registration(&data_dir)
+        {
+            tracing::warn!("无法同步 wormhole 协议注册: {err}");
+        }
+    }
+
     if wormhole_desktop_core::rdp_headless::spawn_headless_companion_requested() {
         match wormhole_desktop_core::rdp_headless::spawn_headless_companion(&data_dir) {
             Ok(()) => unsafe {
@@ -141,27 +171,7 @@ fn main() -> Result<()> {
 
     #[cfg(windows)]
     let tray = {
-        use wormhole_desktop_platform_windows::{
-            desktop_process_entry, handle_startup_args, DeepLinkState, DesktopProcessRole,
-            TrayController,
-        };
-        let deep_link = DeepLinkState::default();
-        let argv: Vec<String> = std::env::args().collect();
-        if let Some(from_arg) = handle_startup_args(&argv, &deep_link) {
-            data_dir = from_arg;
-        }
-        match desktop_process_entry(&argv, &deep_link, &data_dir) {
-            DesktopProcessRole::SecondaryForwardedDeeplink
-            | DesktopProcessRole::SecondaryDuplicate => return Ok(()),
-            DesktopProcessRole::Primary => {}
-        }
-        // Consume any pending wormhole:// URL so it does not linger; provider import is removed.
-        let _ = deep_link.take_pending_url();
-        if let Err(err) =
-            wormhole_desktop_core::deeplink_commands::sync_wormhole_protocol_registration(&data_dir)
-        {
-            tracing::warn!("无法同步 wormhole 协议注册: {err}");
-        }
+        use wormhole_desktop_platform_windows::TrayController;
         Arc::new(TrayController::spawn("Wormhole")?)
     };
     std::fs::create_dir_all(&data_dir)?;
