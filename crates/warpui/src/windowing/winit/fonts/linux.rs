@@ -22,6 +22,9 @@ use super::font_handle::{Error as FontDataError, FontHandle};
 use super::{FontFamily, ValidateFontSupportsEn};
 use crate::fonts::{FontInfo, Properties, Style, Weight};
 
+/// Color emoji fonts often omit Latin/'en' coverage; skip that check for these families.
+const EMOJI_FONTS: &[&str] = &["Noto Color Emoji", "Noto Emoji"];
+
 /// Manages font detection and handle generation.
 ///
 /// Contains our font loading object, wrapping around fontconfig::FontConfig
@@ -49,12 +52,11 @@ impl FontconfigLoader {
     /// Gets a handle for a single font family.
     ///
     /// Looks up all fonts in the font family specified by `family_name`.
-    /// Returns a FamilyHandle for those fonts
+    /// Returns a FamilyHandle for those fonts.
+    /// Color emoji fonts (e.g. Noto Color Emoji) skip the Latin/'en' coverage check.
     ///
     /// # Errors
-    /// Color emoji fonts often omit Latin/'en' coverage; skip that check for these families.
-    const EMOJI_FONTS: &[&str] = &["Noto Color Emoji", "Noto Emoji"];
-
+    ///
     /// If there are zero valid fonts within the family, this will error with
     /// Error::FamilyHasNoFonts
     ///
