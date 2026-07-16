@@ -1294,15 +1294,23 @@ impl TypedActionView for SettingsView {
                 ctx.notify();
                 ctx.spawn(
                     async move {
-                        #[cfg(windows)]
                         let picked = tokio::task::spawn_blocking(|| {
-                            wormhole_desktop_platform_windows::pick_folder("选择共享文件存放位置")
+                            #[cfg(windows)]
+                            {
+                                wormhole_desktop_platform_windows::pick_folder(
+                                    "选择共享文件存放位置",
+                                )
+                            }
+                            #[cfg(not(windows))]
+                            {
+                                rfd::FileDialog::new()
+                                    .set_title("选择共享文件存放位置")
+                                    .pick_folder()
+                            }
                         })
                         .await
                         .ok()
                         .flatten();
-                        #[cfg(not(windows))]
-                        let picked: Option<std::path::PathBuf> = None;
 
                         let Some(path) = picked else {
                             return None;

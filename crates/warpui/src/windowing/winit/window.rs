@@ -736,6 +736,8 @@ impl Window {
         window_target: &ActiveEventLoop,
         window_options: WindowOptions,
         window_class: &Option<String>,
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        window_icon: &Option<winit::window::Icon>,
         tiling_window_manager: bool,
         downrank_non_nvidia_vulkan_adapters: bool,
     ) -> Result<winit::window::WindowId> {
@@ -743,6 +745,8 @@ impl Window {
             window_target,
             &window_options,
             window_class,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            window_icon,
             tiling_window_manager,
         )?;
 
@@ -1275,6 +1279,8 @@ fn create_window(
     window_target: &ActiveEventLoop,
     window_options: &WindowOptions,
     _window_class: &Option<String>,
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    window_icon: &Option<winit::window::Icon>,
     tiling_window_manager: bool,
 ) -> Result<winit::window::Window> {
     let decorations = !window_options.hide_title_bar;
@@ -1287,6 +1293,11 @@ fn create_window(
 
     if let Some(title) = &window_options.title {
         window_attributes.title = title.to_owned();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        window_attributes.window_icon = window_icon.clone();
     }
 
     #[cfg_attr(

@@ -29,9 +29,9 @@ use wormhole_desktop_core::cluster_commands::{
     CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
     DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
     LeaveClusterParams, ListShareDirectoryParams, NODE_PRESENCE_HANDSHAKE_FAILED,
-    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
-    ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams, add_storage_volume_to_node,
-    cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
+    NODE_PRESENCE_SIGNED_IN, RemoveClusterDeviceParams, RemoveClusterNodeParams,
+    RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
+    add_storage_volume_to_node, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
     create_cluster as create_cluster_command, create_share_entry, delete_cluster,
     delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
     prepare_cluster_invite_for_copy, remote_open_share_entry, remove_cluster_device,
@@ -115,6 +115,8 @@ pub struct DevicesView {
     last_file_click: Option<(String, std::time::Instant)>,
     bootstrap_busy: bool,
     bootstrap_pending_since: Option<Instant>,
+    /// First time we observed remote `signed_in` without Online (for relay tip).
+    signed_in_peers_since: Option<Instant>,
     caret_blink: CaretBlink,
     selected_node_id: Option<String>,
     hovered_node_id: Option<String>,
@@ -133,6 +135,7 @@ const TOOLBAR_BTN_PAD_X: f32 = 18.0;
 const CLUSTER_SELECT_MIN_WIDTH: f32 = 240.0;
 const GRID_SECTION_TITLE_HEIGHT: f32 = 28.0;
 const BOOTSTRAP_PENDING_HINT_AFTER: Duration = Duration::from_secs(35);
+const SIGNED_IN_RELAY_HINT_AFTER: Duration = Duration::from_secs(30);
 const STABLE_CLUSTER_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 impl DevicesView {
@@ -192,6 +195,7 @@ impl DevicesView {
             last_file_click: None,
             bootstrap_busy: false,
             bootstrap_pending_since: None,
+            signed_in_peers_since: None,
             caret_blink: CaretBlink::new(),
             selected_node_id: None,
             hovered_node_id: None,
@@ -226,9 +230,37 @@ impl DevicesView {
                 .is_some_and(|started| started.elapsed() >= BOOTSTRAP_PENDING_HINT_AFTER)
     }
 
+    fn note_signed_in_peers(&mut self, status: &ClusterStatusDto) {
+        let has_signed_in = status.nodes.iter().any(|node| {
+            node.node_id != status.local_node_id
+                && !node.online
+                && node.presence_status == NODE_PRESENCE_SIGNED_IN
+        });
+        if has_signed_in {
+            if self.signed_in_peers_since.is_none() {
+                self.signed_in_peers_since = Some(Instant::now());
+            }
+        } else {
+            self.signed_in_peers_since = None;
+        }
+    }
+
+    fn signed_in_peers_slow(&self) -> bool {
+        self.signed_in_peers_since
+            .is_some_and(|started| started.elapsed() >= SIGNED_IN_RELAY_HINT_AFTER)
+    }
+
     fn apply_cluster_status(&mut self, status: ClusterStatusDto, ctx: &mut ViewContext<Self>) {
+        let should_reload_share_root = should_reload_share_root_on_cluster_update(
+            self.cluster.as_ref(),
+            &status,
+            self.browsing_node_id.as_deref(),
+            self.mode == ViewMode::Files && self.share_path.is_empty(),
+            self.share_entries.is_empty(),
+        );
         self.invalidate_invite_cache_for_status(&status);
         self.note_bootstrap_pending(&status);
+        self.note_signed_in_peers(&status);
         self.cluster_syncing = status.syncing;
         self.cluster = Some(status.clone());
         self.cluster_error = None;
@@ -242,6 +274,9 @@ impl DevicesView {
             self.schedule_stable_cluster_poll(ctx);
         } else {
             self.stable_cluster_poll_scheduled = false;
+        }
+        if should_reload_share_root {
+            self.load_share_directory(ctx);
         }
     }
 
@@ -943,20 +978,21 @@ impl DevicesView {
         }
         ctx.spawn(
             async move {
-                #[cfg(windows)]
-                {
-                    tokio::task::spawn_blocking(|| {
+                tokio::task::spawn_blocking(|| {
+                    #[cfg(windows)]
+                    {
                         wormhole_desktop_platform_windows::pick_folder("选择共享文件夹")
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = ();
-                    None::<std::path::PathBuf>
-                }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        rfd::FileDialog::new()
+                            .set_title("选择共享文件夹")
+                            .pick_folder()
+                    }
+                })
+                .await
+                .ok()
+                .flatten()
             },
             |view, picked, ctx| {
                 if let Some(path) = picked {
@@ -975,13 +1011,17 @@ impl DevicesView {
             ctx.notify();
             return;
         }
+        let Some(node_id) = self.browsing_node_id.clone() else {
+            self.share_add_busy = false;
+            self.share_add_feedback =
+                Some((StatusTone::Warn, "无法确定目标终端，请重新进入共享浏览".into()));
+            ctx.notify();
+            return;
+        };
         self.share_add_busy = true;
         self.share_add_feedback = Some((StatusTone::Neutral, "正在添加共享文件夹…".into()));
         ctx.notify();
         let core = self.core.clone();
-        let Some(node_id) = self.browsing_node_id.clone() else {
-            return;
-        };
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
@@ -1328,6 +1368,13 @@ impl DevicesView {
         }
         let n = cluster.nodes.len();
         let online = cluster.nodes.iter().filter(|node| node.online).count();
+        let signed_in = cluster
+            .nodes
+            .iter()
+            .filter(|node| {
+                !node.online && node.presence_status == NODE_PRESENCE_SIGNED_IN
+            })
+            .count();
         let pending = cluster
             .nodes
             .iter()
@@ -1338,17 +1385,30 @@ impl DevicesView {
             .iter()
             .filter(|node| node.presence_status == NODE_PRESENCE_HANDSHAKE_FAILED)
             .count();
-        if pending > 0 {
-            if failed > 0 {
-                return format!(
-                    "CLUSTER · {n} NODE{} · {online} ONLINE · {pending} 握手中 · {failed} 连接失败 · 请确认对端在线且 relay 一致",
-                    if n == 1 { "" } else { "S" }
-                );
+        if pending > 0 || signed_in > 0 || failed > 0 {
+            let mut parts = vec![
+                format!("CLUSTER · {n} NODE{}", if n == 1 { "" } else { "S" }),
+                format!("{online} ONLINE"),
+            ];
+            if signed_in > 0 {
+                parts.push(format!("{signed_in} 已登录"));
             }
-            return format!(
-                "CLUSTER · {n} NODE{} · {online} ONLINE · {pending} 握手中 · 后台重试连接中",
-                if n == 1 { "" } else { "S" }
-            );
+            if pending > 0 {
+                parts.push(format!("{pending} 握手中"));
+            }
+            if failed > 0 {
+                parts.push(format!("{failed} 连接失败"));
+            }
+            if pending > 0 {
+                parts.push("后台重试连接中".into());
+            } else if signed_in > 0 {
+                if self.signed_in_peers_slow() {
+                    parts.push("检查设置→P2P Relay=国内".into());
+                } else {
+                    parts.push("P2P 经 relay 拨号中".into());
+                }
+            }
+            return parts.join(" · ");
         }
         format!(
             "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 双击终端浏览共享文件夹",
@@ -3629,7 +3689,7 @@ impl DevicesView {
 
     fn share_add_modal(&self) -> Box<dyn Element> {
         let path_preview = if self.share_add_path.is_empty() {
-            "例如：D:\\Projects\\Share".to_string()
+            format!("例如：{}", default_share_browse_path())
         } else {
             self.share_add_path.clone()
         };
@@ -4358,9 +4418,19 @@ fn default_share_browse_path() -> String {
     {
         "D:\\Projects\\Share".to_string()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         "/Users/Shared/Wormhole".to_string()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("HOME")
+            .map(|home| format!("{home}/Wormhole"))
+            .unwrap_or_else(|_| "/home".to_string())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        "/Wormhole".to_string()
     }
 }
 
@@ -4619,6 +4689,177 @@ fn short_cluster_id(id: &str) -> String {
         id.chars().take(12).collect()
     } else {
         id.to_string()
+    }
+}
+
+/// Whether Files share-root listing should reload after a cluster status update.
+fn should_reload_share_root_on_cluster_update(
+    previous: Option<&ClusterStatusDto>,
+    next: &ClusterStatusDto,
+    browsing_node_id: Option<&str>,
+    at_share_root: bool,
+    share_entries_empty: bool,
+) -> bool {
+    if !at_share_root {
+        return false;
+    }
+    let Some(node_id) = browsing_node_id else {
+        return false;
+    };
+    if next.local_node_id == node_id {
+        return false;
+    }
+    let next_fp = share_root_fingerprint(next, node_id);
+    let prev_fp = previous.map(|status| share_root_fingerprint(status, node_id));
+    if prev_fp.as_ref() != Some(&next_fp) {
+        return true;
+    }
+    share_entries_empty && !next_fp.is_empty()
+}
+
+fn share_root_fingerprint(status: &ClusterStatusDto, node_id: &str) -> String {
+    let Some(node) = status.nodes.iter().find(|node| node.node_id == node_id) else {
+        return String::new();
+    };
+    let mut ids: Vec<&str> = node
+        .share_volumes
+        .iter()
+        .map(|volume| volume.volume_id.as_str())
+        .collect();
+    ids.sort_unstable();
+    format!("{}|{}|{}", node.online, node.presence_status, ids.join(","))
+}
+
+#[cfg(test)]
+mod share_root_reload_tests {
+    use super::{
+        share_root_fingerprint, should_reload_share_root_on_cluster_update,
+    };
+    use wormhole_desktop_core::cluster_commands::{
+        ClusterNodeDto, ClusterStatusDto, NODE_PRESENCE_SIGNED_IN, ShareVolumeRosterDto,
+    };
+
+    fn sample_status(node_id: &str, online: bool, volumes: &[(&str, &str)]) -> ClusterStatusDto {
+        ClusterStatusDto {
+            configured: true,
+            cluster_id: Some("c1".into()),
+            clusters: Vec::new(),
+            joined_at: None,
+            device_id: None,
+            local_node_id: "local".into(),
+            transport: "iroh".into(),
+            nodes: vec![ClusterNodeDto {
+                node_id: node_id.into(),
+                device_id: None,
+                chat_endpoint_id: None,
+                chat_bootstrap_addrs: Vec::new(),
+                hostname: "remote".into(),
+                os: "linux".into(),
+                roles: Vec::new(),
+                online,
+                presence_status: if online {
+                    "online".into()
+                } else {
+                    NODE_PRESENCE_SIGNED_IN.into()
+                },
+                cpu_cores: 1,
+                memory_total: 1,
+                storage_total: 0,
+                storage_free: 0,
+                billing_node_score: None,
+                billing_expired: false,
+                role: "member".into(),
+                removable: false,
+                revoked: false,
+                server_member_confirmed: true,
+                same_account: true,
+                pending_handshake: false,
+                handshake_error: None,
+                share_volumes: volumes
+                    .iter()
+                    .map(|(id, name)| ShareVolumeRosterDto {
+                        volume_id: (*id).into(),
+                        name: (*name).into(),
+                    })
+                    .collect(),
+            }],
+            storage_volumes: Vec::new(),
+            normal_replica_target: 0,
+            photo_video_replica_target: 0,
+            build_cache_replica_target: 0,
+            normal_replica_degraded: false,
+            photo_video_replica_degraded: false,
+            syncing: false,
+            auth_required: false,
+            device_bootstrap_required: false,
+            device_bootstrap_error: None,
+            role_stale: false,
+        }
+    }
+
+    #[test]
+    fn reloads_when_remote_share_roster_changes() {
+        let prev = sample_status("remote", false, &[]);
+        let next = sample_status("remote", false, &[("v1", "图片")]);
+        assert!(should_reload_share_root_on_cluster_update(
+            Some(&prev),
+            &next,
+            Some("remote"),
+            true,
+            true,
+        ));
+        assert_ne!(
+            share_root_fingerprint(&prev, "remote"),
+            share_root_fingerprint(&next, "remote")
+        );
+    }
+
+    #[test]
+    fn skips_reload_for_local_or_nested_path() {
+        let status = sample_status("remote", true, &[("v1", "图片")]);
+        assert!(!should_reload_share_root_on_cluster_update(
+            None,
+            &status,
+            Some("local"),
+            true,
+            true,
+        ));
+        assert!(!should_reload_share_root_on_cluster_update(
+            None,
+            &status,
+            Some("remote"),
+            false,
+            true,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod share_browse_path_tests {
+    use super::default_share_browse_path;
+
+    #[test]
+    fn default_share_browse_path_matches_platform() {
+        let path = default_share_browse_path();
+        #[cfg(windows)]
+        {
+            assert_eq!(path, "D:\\Projects\\Share");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(path, "/Users/Shared/Wormhole");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                path.ends_with("/Wormhole") || path == "/home",
+                "unexpected Linux default share path: {path}"
+            );
+            assert!(
+                !path.starts_with("/Users/Shared"),
+                "Linux must not use macOS Shared path: {path}"
+            );
+        }
     }
 }
 

@@ -181,6 +181,7 @@ mod tests {
                 same_account: false,
                 pending_handshake: false,
                 handshake_error: None,
+                share_volumes: Vec::new(),
             }],
             storage_volumes: Vec::new(),
             normal_replica_target: 0,

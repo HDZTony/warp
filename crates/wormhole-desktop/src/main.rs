@@ -82,6 +82,29 @@ fn bundled_resource_dir() -> Option<PathBuf> {
     Some(contents_dir.join("Resources"))
 }
 
+/// XDG desktop / Wayland `app_id` / X11 `WM_CLASS` — must match
+/// `apps/desktop/linux/com.dongzhou.wormhole.desktop` and hicolor icon name.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+const LINUX_APP_ID: &str = "com.dongzhou.wormhole";
+
+/// Bundled Wormhole brand mark for Linux window / taskbar icon (128×128 RGBA PNG).
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+const LINUX_APP_ICON_PNG: &[u8] =
+    include_bytes!("../../../../../apps/desktop/bundle/icons/128x128.png");
+
+/// Decode [`LINUX_APP_ICON_PNG`] to RGBA bytes for `winit::window::Icon::from_rgba`.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn decode_bundled_linux_app_icon() -> Result<(Vec<u8>, u32, u32)> {
+    decode_png_rgba(LINUX_APP_ICON_PNG)
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+fn decode_png_rgba(png: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(png)?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Ok((img.into_raw(), width, height))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut data_dir = args.data_dir.clone().unwrap_or_else(default_data_dir);
@@ -220,7 +243,20 @@ fn main() -> Result<()> {
         callbacks
     };
 
-    let app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
+    let mut app_builder = AppBuilder::new(callbacks, Box::new(assets::WormholeAssets), None);
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        use warpui::platform::linux::AppBuilderExt;
+        app_builder.set_window_class(LINUX_APP_ID.into());
+        match decode_bundled_linux_app_icon() {
+            Ok((rgba, width, height)) => {
+                if let Err(err) = app_builder.set_window_icon(rgba, width, height) {
+                    tracing::warn!("linux window icon: {err}");
+                }
+            }
+            Err(err) => tracing::warn!("linux window icon decode failed: {err:#}"),
+        }
+    }
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
     #[cfg(windows)]
@@ -293,6 +329,43 @@ fn main() -> Result<()> {
         tracing::warn!("desktop shutdown: {err:#}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod app_icon_tests {
+    use super::decode_png_rgba;
+
+    #[test]
+    fn bundled_128_png_decodes_to_rgba() {
+        let png = include_bytes!("../../../../../apps/desktop/bundle/icons/128x128.png");
+        let (rgba, width, height) =
+            decode_png_rgba(png).expect("128x128.png should decode");
+        assert_eq!((width, height), (128, 128));
+        assert_eq!(rgba.len(), 128 * 128 * 4);
+    }
+
+    #[test]
+    fn application_desktop_file_has_wormhole_icon_and_wmclass() {
+        let desktop =
+            include_str!("../../../../../apps/desktop/linux/com.dongzhou.wormhole.desktop");
+        assert!(
+            desktop.contains("Icon=com.dongzhou.wormhole"),
+            "desktop Icon= must be com.dongzhou.wormhole"
+        );
+        assert!(
+            desktop.contains("StartupWMClass=com.dongzhou.wormhole"),
+            "desktop StartupWMClass must match set_window_class"
+        );
+    }
+
+    #[test]
+    fn autostart_desktop_file_has_wormhole_icon_and_wmclass() {
+        let desktop = include_str!(
+            "../../../../../apps/desktop/linux/autostart/com.dongzhou.wormhole.desktop"
+        );
+        assert!(desktop.contains("Icon=com.dongzhou.wormhole"));
+        assert!(desktop.contains("StartupWMClass=com.dongzhou.wormhole"));
+    }
 }
 
 #[cfg(all(test, windows))]
