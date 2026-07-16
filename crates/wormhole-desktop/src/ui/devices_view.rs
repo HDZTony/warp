@@ -663,7 +663,8 @@ impl DevicesView {
         self.join_feedback = None;
         self.cluster_picker_open = false;
         self.device_context_menu = None;
-        self.browsing_node_id = Some(node_id);
+        let is_remote = node_id != local_id;
+        self.browsing_node_id = Some(node_id.clone());
         self.browsing_label = label;
         self.share_entries.clear();
         self.share_error = None;
@@ -675,6 +676,40 @@ impl DevicesView {
         self.device_context_menu = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
+        if is_remote {
+            let core = self.core.clone();
+            let opened_node = node_id.clone();
+            ctx.spawn(
+                async move {
+                    let state = core.runtime().state.clone();
+                    let gossip =
+                        wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
+                            &state,
+                        )
+                        .await;
+                    let status = fetch_cluster_for_ui(&state).await;
+                    (gossip, status, opened_node)
+                },
+                move |view, output, ctx| {
+                    let (gossip, status, opened_node) = output;
+                    if let Err(err) = gossip {
+                        tracing::debug!("open_node gossip refresh: {err}");
+                    }
+                    if let Ok(status) = status {
+                        let still_browsing = view.browsing_node_id.as_deref()
+                            == Some(opened_node.as_str());
+                        view.apply_cluster_status(status, ctx);
+                        if still_browsing
+                            && view.mode == ViewMode::Files
+                            && view.share_path.is_empty()
+                        {
+                            view.load_share_directory(ctx);
+                        }
+                    }
+                    ctx.notify();
+                },
+            );
+        }
         ctx.notify();
     }
 
