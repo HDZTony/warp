@@ -663,7 +663,8 @@ impl DevicesView {
         self.join_feedback = None;
         self.cluster_picker_open = false;
         self.device_context_menu = None;
-        self.browsing_node_id = Some(node_id);
+        let is_remote = node_id != local_id;
+        self.browsing_node_id = Some(node_id.clone());
         self.browsing_label = label;
         self.share_entries.clear();
         self.share_error = None;
@@ -675,6 +676,40 @@ impl DevicesView {
         self.device_context_menu = None;
         self.reset_share_scroll();
         self.load_share_directory(ctx);
+        if is_remote {
+            let core = self.core.clone();
+            let opened_node = node_id.clone();
+            ctx.spawn(
+                async move {
+                    let state = core.runtime().state.clone();
+                    let gossip =
+                        wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
+                            &state,
+                        )
+                        .await;
+                    let status = fetch_cluster_for_ui(&state).await;
+                    (gossip, status, opened_node)
+                },
+                move |view, output, ctx| {
+                    let (gossip, status, opened_node) = output;
+                    if let Err(err) = gossip {
+                        tracing::debug!("open_node gossip refresh: {err}");
+                    }
+                    if let Ok(status) = status {
+                        let still_browsing = view.browsing_node_id.as_deref()
+                            == Some(opened_node.as_str());
+                        view.apply_cluster_status(status, ctx);
+                        if still_browsing
+                            && view.mode == ViewMode::Files
+                            && view.share_path.is_empty()
+                        {
+                            view.load_share_directory(ctx);
+                        }
+                    }
+                    ctx.notify();
+                },
+            );
+        }
         ctx.notify();
     }
 
@@ -3552,6 +3587,16 @@ impl DevicesView {
         row.finish()
     }
 
+    fn share_empty_hint(&self) -> &'static str {
+        if self.browsing_local() && self.share_path.is_empty() {
+            "本机尚未添加共享文件夹。点击「增加共享文件夹」添加，或返回打开其它终端卡片浏览远端共享。"
+        } else if !self.browsing_local() && self.share_path.is_empty() {
+            "此终端尚未发布共享文件夹，或名单未同步。请在对端添加共享后刷新。"
+        } else {
+            "此文件夹为空"
+        }
+    }
+
     fn files_view(&self) -> Box<dyn Element> {
         let mut col = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -3648,7 +3693,7 @@ impl DevicesView {
         if self.share_entries.is_empty() && self.share_error.is_none() {
             list.add_child(
                 Container::new(
-                    ui_text::body("此文件夹为空", self.font)
+                    ui_text::body(self.share_empty_hint(), self.font)
                         .with_color(theme::muted())
                         .finish(),
                 )
