@@ -183,8 +183,8 @@ pub struct AppShellView {
     desktop_event_rx: Arc<
         tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>,
     >,
-    #[cfg(windows)]
-    tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
+    #[cfg(any(windows, target_os = "linux"))]
+    tray: std::sync::Arc<wormhole_desktop_tray::TrayController>,
 }
 
 impl AppShellView {
@@ -192,13 +192,14 @@ impl AppShellView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
-        #[cfg(windows)] tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
+        #[cfg(any(windows, target_os = "linux"))]
+        tray: std::sync::Arc<wormhole_desktop_tray::TrayController>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let coordinator_view =
             ctx.add_typed_action_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         crate::ui::windows_shell::register_main_shell_window(ctx.window_id(), &coordinator);
         let w_drive = ctx.add_view(|ctx| SharedVaultView::new(ctx, core.clone()));
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
@@ -385,14 +386,14 @@ impl AppShellView {
             window_id,
             traffic_light_mouse_states: TrafficLightMouseStates::default(),
             desktop_event_rx,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             tray,
         };
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.refresh_auth_status(ctx);
         view.start_event_listener(ctx);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
         window_chrome::sync_window_button_visibility(ctx);
@@ -595,7 +596,7 @@ impl AppShellView {
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn start_tray_poll(&self, ctx: &mut ViewContext<Self>) {
         let tray = self.tray.clone();
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
@@ -608,13 +609,13 @@ impl AppShellView {
         Self::poll_tray_once(ctx, tick_rx, tray);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn poll_tray_once(
         ctx: &mut ViewContext<Self>,
         tick_rx: async_channel::Receiver<()>,
-        tray: std::sync::Arc<wormhole_desktop_platform_windows::TrayController>,
+        tray: std::sync::Arc<wormhole_desktop_tray::TrayController>,
     ) {
-        use wormhole_desktop_platform_windows::TrayAction;
+        use wormhole_desktop_tray::TrayAction;
 
         let waiter = tick_rx.clone();
         ctx.spawn(
@@ -1677,9 +1678,9 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::CloseWindow => {
                 self.persist_last_tab();
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 crate::ui::windows_shell::hide_main_window_from_view(ctx);
-                #[cfg(not(windows))]
+                #[cfg(not(any(windows, target_os = "linux")))]
                 ctx.close_window();
             }
             AppShellAction::OpenLogin => {

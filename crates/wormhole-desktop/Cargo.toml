@@ -65,6 +65,9 @@ computer-use = { path = "../../../../crates/computer-use" }
 [target.'cfg(not(windows))'.dependencies]
 rfd = "0.15"
 
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+wormhole-desktop-tray = { path = "../../../../crates/wormhole-desktop-tray" }
+
 [target.'cfg(windows)'.dependencies]
 rfd = "0.15"
 wormhole-desktop-platform-windows = { path = "../../../../crates/wormhole-desktop-platform-windows" }

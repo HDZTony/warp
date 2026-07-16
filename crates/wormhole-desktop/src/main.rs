@@ -180,9 +180,9 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     let _gui_instance_lock = acquire_gui_instance_or_exit();
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     let tray = {
-        use wormhole_desktop_platform_windows::TrayController;
+        use wormhole_desktop_tray::TrayController;
         Arc::new(TrayController::spawn("Wormhole")?)
     };
     std::fs::create_dir_all(&data_dir)?;
@@ -213,7 +213,7 @@ fn main() -> Result<()> {
 
     let callbacks = {
         let mut callbacks = AppCallbacks::default();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             let coordinator_for_close = coordinator.clone();
             callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
@@ -261,7 +261,7 @@ fn main() -> Result<()> {
     }
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     let tray_for_shell = tray.clone();
 
     #[cfg(unix)]
@@ -320,7 +320,7 @@ fn main() -> Result<()> {
                     view_ctx,
                     core_for_shell,
                     coordinator_for_shell,
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "linux"))]
                     tray_for_shell,
                 )
             },
