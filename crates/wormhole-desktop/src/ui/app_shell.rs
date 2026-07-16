@@ -1336,7 +1336,19 @@ impl AppShellView {
         ));
 
         if let Some(data) = traffic_light_data.as_ref() {
-            if let Some(spacer) = window_chrome::traffic_light_spacer(data, zoom_factor) {
+            if window_chrome::traffic_lights_inline_in_tab_bar() {
+                tab_row.add_child(window_chrome::render_traffic_lights(
+                    self.window_id,
+                    app,
+                    &self.traffic_light_mouse_states,
+                    TrafficLightActions {
+                        minimize: AppShellAction::MinimizeWindow,
+                        toggle_maximize: AppShellAction::ToggleMaximizeWindow,
+                        close: AppShellAction::CloseWindow,
+                    },
+                    self.font,
+                ));
+            } else if let Some(spacer) = window_chrome::traffic_light_spacer(data, zoom_factor) {
                 tab_row.add_child(spacer);
             }
         }
@@ -1582,6 +1594,7 @@ impl View for AppShellView {
         if traffic_light_data
             .as_ref()
             .is_some_and(|data| data.side == window_chrome::TrafficLightSide::Right)
+            && !window_chrome::traffic_lights_inline_in_tab_bar()
         {
             stack.add_positioned_child(
                 window_chrome::render_traffic_lights(

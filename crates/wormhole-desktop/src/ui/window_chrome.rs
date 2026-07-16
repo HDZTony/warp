@@ -3,21 +3,29 @@ use std::sync::Arc;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{
-    Align, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty,
-    Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
-    ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Rect, Stack, Text,
+    Align, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, Empty, EventHandler, Flex, Hoverable, MainAxisAlignment, MainAxisSize,
+    MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
+    Rect, Stack, Text,
 };
 use warpui::fonts::FamilyId;
 use warpui::platform::FullscreenState;
 use warpui::{Action, AppContext, Element, Entity, ModelContext, SingletonEntity, WindowId};
 
 use crate::ui::theme;
-use crate::ui_text;
 
 /// Height of the integrated title row (tabs + caption). Must match [`super::app_shell`] layout.
 pub const CHROME_ROW_HEIGHT: f32 = 54.0;
 
 const WINDOWS_TRAFFIC_LIGHT_WIDTH: f32 = 190.0;
+/// Three inline caption buttons (`desktop-current.html` `.caption-btn` 46px each).
+const LINUX_TRAFFIC_LIGHT_WIDTH: f32 = 138.0;
+const LINUX_CAPTION_BUTTON_WIDTH: f32 = 46.0;
+const LINUX_CAPTION_BUTTON_HEIGHT: f32 = 38.0;
+/// Matches `.caption-btn` font-size in `desktop-current.html`.
+const LINUX_CAPTION_MINIMIZE_FONT_SIZE: f32 = 28.0;
+const LINUX_CAPTION_MAXIMIZE_FONT_SIZE: f32 = 24.0;
+const LINUX_CAPTION_CLOSE_FONT_SIZE: f32 = 28.0;
 
 const TAB_BAR_PADDING_LEFT: f32 = 16.0;
 const BUTTON_ICON_SIZE: f32 = 22.0;
@@ -82,7 +90,7 @@ pub fn traffic_light_data(ctx: &AppContext, window_id: WindowId) -> Option<Traff
         && !ctx.windows().is_tiling_window_manager()
     {
         Some(TrafficLightData {
-            width: 116.0,
+            width: LINUX_TRAFFIC_LIGHT_WIDTH,
             side: TrafficLightSide::Right,
             scales_with_zoom: true,
         })
@@ -99,6 +107,11 @@ pub fn traffic_light_data(ctx: &AppContext, window_id: WindowId) -> Option<Traff
 
 pub fn should_reserve_traffic_light_space_in_tab_bar(side: TrafficLightSide) -> bool {
     side == TrafficLightSide::Right
+}
+
+/// Linux caption buttons live in the tab bar row (not a window-corner overlay).
+pub fn traffic_lights_inline_in_tab_bar() -> bool {
+    cfg!(any(target_os = "linux", target_os = "freebsd"))
 }
 
 pub fn tab_bar_left_padding(
@@ -124,6 +137,9 @@ pub fn left_padding_spacer(width: f32) -> Box<dyn Element> {
 }
 
 pub fn traffic_light_spacer(data: &TrafficLightData, zoom_factor: f32) -> Option<Box<dyn Element>> {
+    if traffic_lights_inline_in_tab_bar() {
+        return None;
+    }
     if should_reserve_traffic_light_space_in_tab_bar(data.side) {
         Some(left_padding_spacer(data.width(zoom_factor)))
     } else {
@@ -166,8 +182,7 @@ pub fn render_traffic_lights<A: Action + Clone + 'static>(
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
-        let _ = ui_font;
-        return data.render_linux(fullscreen_state, mouse_states, actions);
+        return data.render_linux(fullscreen_state, mouse_states, actions, ui_font);
     }
 
     #[cfg(not(any(windows, target_os = "linux", target_os = "freebsd")))]
@@ -551,148 +566,96 @@ impl TrafficLightData {
         fullscreen_state: FullscreenState,
         mouse_states: &TrafficLightMouseStates,
         actions: TrafficLightActions<A>,
+        ui_font: FamilyId,
     ) -> Box<dyn Element> {
-        let fg_color = theme::text();
-        let maximize_button_icon = Self::linux_maximize_icon(fg_color, fullscreen_state);
-
-        ConstrainedBox::new(
-            Align::new(
-                Flex::row()
-                    .with_children([
-                        Container::new(
-                            Self::linux_circle_button(
-                                Arc::clone(&mouse_states.minimize_window_button),
-                                ConstrainedBox::new(
-                                    Rect::new().with_background_color(fg_color).finish(),
-                                )
-                                .with_height(2.0)
-                                .with_width(8.0)
-                                .finish(),
-                                actions.minimize,
-                            )
-                            .finish(),
-                        )
-                        .with_margin_right(16.0)
-                        .finish(),
-                        Self::linux_circle_button(
-                            Arc::clone(&mouse_states.maximize_window_button),
-                            maximize_button_icon,
-                            actions.toggle_maximize,
-                        )
-                        .finish(),
-                        Container::new(
-                            Self::linux_circle_button(
-                                Arc::clone(&mouse_states.close_window_button),
-                                Self::linux_close_icon(fg_color),
-                                actions.close,
-                            )
-                            .finish(),
-                        )
-                        .with_margin_left(16.0)
-                        .with_margin_right(12.0)
-                        .finish(),
-                    ])
-                    .finish(),
-            )
-            .finish(),
-        )
-        .with_max_height(CHROME_ROW_HEIGHT)
-        .with_width(self.width)
-        .finish()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn linux_close_icon(fg_color: ColorU) -> Box<dyn Element> {
-        ConstrainedBox::new(
-            Rect::new()
-                .with_border(Border::all(1.5).with_border_color(fg_color))
-                .finish(),
-        )
-        .with_height(8.0)
-        .with_width(8.0)
-        .finish()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn linux_maximize_icon(
-        fg_color: ColorU,
-        fullscreen_state: FullscreenState,
-    ) -> Box<dyn Element> {
-        let mut maximize_button_icon = ConstrainedBox::new(
-            Rect::new()
-                .with_border(Border::all(2.0).with_border_color(fg_color))
-                .finish(),
-        )
-        .with_width(6.0)
-        .with_height(6.0)
-        .finish();
-
-        if fullscreen_state != FullscreenState::Normal {
-            let mut stack = Stack::new();
-            stack.add_positioned_child(
-                maximize_button_icon,
-                OffsetPositioning::offset_from_parent(
-                    vec2f(0.0, 0.0),
-                    ParentOffsetBounds::Unbounded,
-                    ParentAnchor::BottomLeft,
-                    ChildAnchor::BottomLeft,
+        let maximize_glyph = if fullscreen_state == FullscreenState::Normal {
+            "□"
+        } else {
+            "❐"
+        };
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_children([
+                Self::linux_caption_button(
+                    Arc::clone(&mouse_states.minimize_window_button),
+                    "−",
+                    ui_font,
+                    LINUX_CAPTION_MINIMIZE_FONT_SIZE,
+                    false,
+                    actions.minimize,
                 ),
-            );
-            stack.add_positioned_child(
-                ConstrainedBox::new(
-                    Rect::new()
-                        .with_border(
-                            Border::new(1.0)
-                                .with_sides(true, false, false, true)
-                                .with_border_color(fg_color),
-                        )
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(1.0)))
-                        .finish(),
-                )
-                .with_width(6.0)
-                .with_height(6.0)
-                .finish(),
-                OffsetPositioning::offset_from_parent(
-                    vec2f(0.0, 0.0),
-                    ParentOffsetBounds::Unbounded,
-                    ParentAnchor::TopRight,
-                    ChildAnchor::TopRight,
+                Self::linux_caption_button(
+                    Arc::clone(&mouse_states.maximize_window_button),
+                    maximize_glyph,
+                    ui_font,
+                    LINUX_CAPTION_MAXIMIZE_FONT_SIZE,
+                    false,
+                    actions.toggle_maximize,
                 ),
-            );
-            maximize_button_icon = ConstrainedBox::new(stack.finish())
-                .with_width(8.0)
-                .with_height(8.0)
-                .finish();
-        }
+                Self::linux_caption_button(
+                    Arc::clone(&mouse_states.close_window_button),
+                    "×",
+                    ui_font,
+                    LINUX_CAPTION_CLOSE_FONT_SIZE,
+                    true,
+                    actions.close,
+                ),
+            ])
+            .finish();
 
-        maximize_button_icon
+        ConstrainedBox::new(row)
+            .with_height(CHROME_ROW_HEIGHT)
+            .with_width(self.width)
+            .finish()
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn linux_circle_button<A: Action + Clone + 'static>(
+    fn linux_caption_button<A: Action + Clone + 'static>(
         mouse_state: MouseStateHandle,
-        child: Box<dyn Element>,
+        label: &'static str,
+        font: FamilyId,
+        font_size: f32,
+        is_close: bool,
         action: A,
-    ) -> Hoverable {
-        Hoverable::new(mouse_state, |state| {
-            let background_color = if state.is_hovered() {
-                theme::panel_elevated()
+    ) -> Box<dyn Element> {
+        let hoverable = Hoverable::new(mouse_state, move |state| {
+            let hovered = state.is_hovered();
+            let (background, icon_color) = if hovered {
+                if is_close {
+                    (WINDOWS_BRIGHT_RED, ColorU::white())
+                } else {
+                    (theme::accent_bg_default(), theme::accent_cool())
+                }
             } else {
-                theme::panel()
+                (ColorU::transparent_black(), theme::muted())
             };
+
             Container::new(
-                ConstrainedBox::new(Align::new(child).finish())
-                    .with_width(BUTTON_ICON_SIZE)
-                    .with_height(BUTTON_ICON_SIZE)
+                ConstrainedBox::new(
+                    Align::new(
+                        Text::new(label, font, font_size)
+                            .with_color(icon_color)
+                            .finish(),
+                    )
                     .finish(),
+                )
+                .with_width(LINUX_CAPTION_BUTTON_WIDTH)
+                .with_height(LINUX_CAPTION_BUTTON_HEIGHT)
+                .finish(),
             )
-            .with_background(background_color)
-            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.0)))
+            .with_background(background)
             .finish()
         })
-        .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(action.clone());
-        })
+        .finish();
+
+        EventHandler::new(hoverable)
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
     }
 }
 
@@ -749,5 +712,29 @@ mod tests {
             scales_with_zoom: false,
         };
         assert_eq!(mac_data.width(2.0), 32.0);
+    }
+
+    #[test]
+    fn linux_inline_caption_buttons_use_three_by_forty_six_width() {
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            assert!(traffic_lights_inline_in_tab_bar());
+            assert_eq!(LINUX_TRAFFIC_LIGHT_WIDTH, 138.0);
+        } else {
+            assert!(!traffic_lights_inline_in_tab_bar());
+        }
+    }
+
+    #[test]
+    fn traffic_light_spacer_skipped_when_inline_in_tab_bar() {
+        let data = TrafficLightData {
+            width: LINUX_TRAFFIC_LIGHT_WIDTH,
+            side: TrafficLightSide::Right,
+            scales_with_zoom: true,
+        };
+        if traffic_lights_inline_in_tab_bar() {
+            assert!(traffic_light_spacer(&data, 1.0).is_none());
+        } else {
+            assert!(traffic_light_spacer(&data, 1.0).is_some());
+        }
     }
 }
