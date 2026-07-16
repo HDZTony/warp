@@ -54,19 +54,7 @@ struct Args {
 }
 
 fn default_data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("WORMHOLE_DATA_DIR") {
-        let path = PathBuf::from(dir.trim());
-        if !path.as_os_str().is_empty() {
-            return path;
-        }
-    }
-    if let Ok(dir) = std::env::var("LOCALAPPDATA") {
-        PathBuf::from(dir).join("Wormhole")
-    } else if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        PathBuf::from(home).join(".wormhole")
-    } else {
-        PathBuf::from("./wormhole-data")
-    }
+    wormhole_desktop_core::state::default_data_dir()
 }
 
 fn bundled_resource_dir() -> Option<PathBuf> {

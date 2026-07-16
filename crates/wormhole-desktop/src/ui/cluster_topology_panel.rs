@@ -280,13 +280,46 @@ fn device_delete_button(node_id: String, mono: FamilyId) -> Box<dyn Element> {
         .finish()
 }
 
+/// Whether the terminal card「共享文件」button should accept clicks.
+///
+/// P2P share browse needs a chat endpoint (`signed_in` from control-plane is enough);
+/// gossip `online` is not required. Remote desktop still requires `online`.
+pub(crate) fn node_share_browsable(node: &ClusterNodeDto, is_local: bool) -> bool {
+    if is_local || node.online {
+        return true;
+    }
+    let has_endpoint = node
+        .chat_endpoint_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    node.presence_status == NODE_PRESENCE_SIGNED_IN && has_endpoint
+}
+
+fn share_volume_count_hint(count: usize, mono: FamilyId) -> Box<dyn Element> {
+    let label = if count == 0 {
+        "尚未发布共享".to_string()
+    } else {
+        format!("{count} 个共享")
+    };
+    let tone = if count == 0 {
+        theme::placeholder()
+    } else {
+        theme::muted()
+    };
+    Container::new(
+        ui_text::cluster_ctrl(label, mono)
+            .with_color(tone)
+            .finish(),
+    )
+    .with_vertical_margin(2.0)
+    .finish()
+}
+
 fn share_files_button(
     node_id: String,
-    online: bool,
-    is_local: bool,
+    clickable: bool,
     mono: FamilyId,
 ) -> Box<dyn Element> {
-    let clickable = online || is_local;
     let (border, color, bg) = if clickable {
         (theme::border_bright(), theme::text(), theme::panel())
     } else {
@@ -445,12 +478,12 @@ fn node_card(
         .finish(),
     );
     body.add_child(status_line(status_text, mono, status_tone));
+    body.add_child(share_volume_count_hint(node.share_volumes.len(), mono));
     body.add_child(
         Align::new(
             Container::new(share_files_button(
                 node_id.clone(),
-                node.online,
-                is_local,
+                node_share_browsable(node, is_local),
                 mono,
             ))
             .with_vertical_margin(8.0)
@@ -649,4 +682,87 @@ fn selected_corner_brackets() -> Box<dyn Element> {
         .finish(),
     );
     overlay.finish()
+}
+
+#[cfg(test)]
+mod node_share_browsable_tests {
+    use super::node_share_browsable;
+    use wormhole_desktop_core::cluster_commands::{
+        ClusterNodeDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
+        ShareVolumeRosterDto,
+    };
+
+    fn sample_node(
+        online: bool,
+        presence: &str,
+        endpoint: Option<&str>,
+        share_count: usize,
+    ) -> ClusterNodeDto {
+        ClusterNodeDto {
+            node_id: "remote".into(),
+            device_id: None,
+            chat_endpoint_id: endpoint.map(str::to_string),
+            chat_bootstrap_addrs: Vec::new(),
+            hostname: "host".into(),
+            os: "windows".into(),
+            roles: Vec::new(),
+            online,
+            presence_status: presence.into(),
+            cpu_cores: 1,
+            memory_total: 1,
+            storage_total: 0,
+            storage_free: 0,
+            billing_node_score: None,
+            billing_expired: false,
+            role: "member".into(),
+            removable: false,
+            revoked: false,
+            server_member_confirmed: true,
+            same_account: true,
+            pending_handshake: false,
+            handshake_error: None,
+            share_volumes: (0..share_count)
+                .map(|i| ShareVolumeRosterDto {
+                    volume_id: format!("v{i}"),
+                    name: format!("share-{i}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn local_always_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_OFFLINE, None, 0);
+        assert!(node_share_browsable(&node, true));
+    }
+
+    #[test]
+    fn online_remote_browsable() {
+        let node = sample_node(true, NODE_PRESENCE_ONLINE, Some("abc"), 1);
+        assert!(node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn signed_in_with_endpoint_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, Some("endpoint-hex"), 2);
+        assert!(node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn signed_in_without_endpoint_not_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, None, 1);
+        assert!(!node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn signed_in_blank_endpoint_not_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, Some("  "), 1);
+        assert!(!node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn offline_without_signed_in_not_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_OFFLINE, Some("endpoint-hex"), 1);
+        assert!(!node_share_browsable(&node, false));
+    }
 }
