@@ -20172,6 +20172,7 @@ dependencies = [
  "wormhole-desktop-core",
  "wormhole-desktop-platform-windows",
  "wormhole-desktop-rdp",
+ "wormhole-desktop-tray",
  "wormhole-native-ipc",
 ]
 
@@ -20239,10 +20240,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "tray-icon",
  "url",
  "windows 0.58.0",
  "windows-sys 0.61.2",
+ "wormhole-desktop-tray",
 ]
 
 [[package]]
@@ -20263,6 +20264,15 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wormhole-desktop-tray"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "image",
+ "tray-icon",
 ]
 
 [[package]]
