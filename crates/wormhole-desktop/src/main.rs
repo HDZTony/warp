@@ -240,6 +240,20 @@ fn main() -> Result<()> {
                 }
             }));
         }
+        // WarpUI only tears down the winit window (and exits the event loop) when this
+        // callback is registered. Wormhole does not use undo-close, but the hook is required.
+        callbacks.on_window_will_close = Some(Box::new(|_closed_window, _ctx| {}));
+
+        let core_for_terminate = core.clone();
+        callbacks.on_will_terminate = Some(Box::new(move |_ctx| {
+            let runtime = core_for_terminate.runtime();
+            if let Err(err) =
+                core_for_terminate.block_on(shutdown_desktop(&runtime.state, &runtime.ctx))
+            {
+                tracing::warn!("desktop shutdown on terminate: {err:#}");
+            }
+        }));
+
         callbacks
     };
 
