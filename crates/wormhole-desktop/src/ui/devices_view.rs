@@ -15,28 +15,28 @@ use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    HUD_RADIUS, SECTION_PADDING, StatusTone, section_hint, section_title, status_line,
-    tab_content_fill, truncate_middle,
+    section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
+    HUD_RADIUS, SECTION_PADDING,
 };
 use crate::ui::text_field_input::{
-    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
-    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::{
-    AddStorageVolumeParams, CachedClusterInvite, ClusterNodeDto, ClusterStatusDto,
-    CreateClusterInviteParams, CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams,
-    DeleteClusterParams, JoinClusterOutcome, JoinClusterParams, JoinedClusterDto,
-    LeaveClusterParams, ListShareDirectoryParams, NODE_PRESENCE_HANDSHAKE_FAILED,
-    NODE_PRESENCE_SIGNED_IN, RemoveClusterDeviceParams, RemoveClusterNodeParams,
-    RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
     add_storage_volume_to_node, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
     create_cluster as create_cluster_command, create_share_entry, delete_cluster,
     delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
     prepare_cluster_invite_for_copy, remote_open_share_entry, remove_cluster_device,
     remove_cluster_node, remove_storage_volume_from_node, rename_share_entry,
-    switch_active_cluster, sync_share_entry,
+    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, CachedClusterInvite,
+    ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
+    CreateShareEntryKind, CreateShareEntryParams, DeleteClusterParams, JoinClusterOutcome,
+    JoinClusterParams, JoinedClusterDto, LeaveClusterParams, ListShareDirectoryParams,
+    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
+    ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
+    NODE_PRESENCE_HANDSHAKE_FAILED, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
@@ -74,6 +74,8 @@ pub struct DevicesView {
     browsing_label: String,
     share_entries: Vec<ShareEntryDto>,
     share_error: Option<String>,
+    share_loading: bool,
+    share_load_seq: u64,
     share_path: Vec<String>,
     share_history_back: Vec<Vec<String>>,
     share_history_forward: Vec<Vec<String>>,
@@ -154,6 +156,8 @@ impl DevicesView {
             browsing_label: String::new(),
             share_entries: Vec::new(),
             share_error: None,
+            share_loading: false,
+            share_load_seq: 0,
             share_path: Vec::new(),
             share_history_back: Vec::new(),
             share_history_forward: Vec::new(),
@@ -256,7 +260,7 @@ impl DevicesView {
             &status,
             self.browsing_node_id.as_deref(),
             self.mode == ViewMode::Files && self.share_path.is_empty(),
-            self.share_entries.is_empty(),
+            self.share_entries.is_empty() && !self.share_loading,
         );
         self.invalidate_invite_cache_for_status(&status);
         self.note_bootstrap_pending(&status);
@@ -316,6 +320,7 @@ impl DevicesView {
                 self.browsing_label.clear();
                 self.share_entries.clear();
                 self.share_error = None;
+                self.cancel_share_directory_load();
                 self.share_path.clear();
                 self.share_history_back.clear();
                 self.share_history_forward.clear();
@@ -374,6 +379,7 @@ impl DevicesView {
             self.browsing_label.clear();
             self.share_entries.clear();
             self.share_error = None;
+            self.cancel_share_directory_load();
             self.share_path.clear();
             self.share_history_back.clear();
             self.share_history_forward.clear();
@@ -589,7 +595,11 @@ impl DevicesView {
                     }
                     Err(e) => {
                         view.cluster_error = Some(e);
-                        if view.cluster.as_ref().is_some_and(|cluster| cluster.configured) {
+                        if view
+                            .cluster
+                            .as_ref()
+                            .is_some_and(|cluster| cluster.configured)
+                        {
                             view.schedule_stable_cluster_poll(ctx);
                         }
                     }
@@ -607,19 +617,45 @@ impl DevicesView {
         }
     }
 
-    fn load_share_directory(&self, ctx: &mut ViewContext<Self>) {
+    fn cancel_share_directory_load(&mut self) {
+        self.share_load_seq = self.share_load_seq.wrapping_add(1);
+        self.share_loading = false;
+    }
+
+    fn load_share_directory(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(node_id) = self.browsing_node_id.clone() else {
             return;
         };
         let path = self.share_path_string();
+        self.share_load_seq = self.share_load_seq.wrapping_add(1);
+        let load_seq = self.share_load_seq;
+        self.share_loading = true;
+        self.share_entries.clear();
+        self.share_error = None;
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                list_share_directory(&state, ListShareDirectoryParams { node_id, path }).await
+                let result = list_share_directory(
+                    &state,
+                    ListShareDirectoryParams {
+                        node_id: node_id.clone(),
+                        path: path.clone(),
+                    },
+                )
+                .await;
+                (load_seq, node_id, path, result)
             },
             |view, output, ctx| {
-                match output {
+                let (load_seq, node_id, path, result) = output;
+                let still_current = view.share_load_seq == load_seq
+                    && view.browsing_node_id.as_deref() == Some(node_id.as_str())
+                    && view.share_path_string() == path;
+                if !still_current {
+                    return;
+                }
+                view.share_loading = false;
+                match result {
                     Ok(entries) => {
                         view.share_entries = entries;
                         view.share_error = None;
@@ -632,6 +668,7 @@ impl DevicesView {
                 ctx.notify();
             },
         );
+        ctx.notify();
     }
 
     pub fn open_node_from_chat(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
@@ -696,8 +733,8 @@ impl DevicesView {
                         tracing::debug!("open_node gossip refresh: {err}");
                     }
                     if let Ok(status) = status {
-                        let still_browsing = view.browsing_node_id.as_deref()
-                            == Some(opened_node.as_str());
+                        let still_browsing =
+                            view.browsing_node_id.as_deref() == Some(opened_node.as_str());
                         view.apply_cluster_status(status, ctx);
                         if still_browsing
                             && view.mode == ViewMode::Files
@@ -719,6 +756,7 @@ impl DevicesView {
         self.browsing_label.clear();
         self.share_entries.clear();
         self.share_error = None;
+        self.cancel_share_directory_load();
         self.share_path.clear();
         self.share_history_back.clear();
         self.share_history_forward.clear();
@@ -1048,8 +1086,10 @@ impl DevicesView {
         }
         let Some(node_id) = self.browsing_node_id.clone() else {
             self.share_add_busy = false;
-            self.share_add_feedback =
-                Some((StatusTone::Warn, "无法确定目标终端，请重新进入共享浏览".into()));
+            self.share_add_feedback = Some((
+                StatusTone::Warn,
+                "无法确定目标终端，请重新进入共享浏览".into(),
+            ));
             ctx.notify();
             return;
         };
@@ -1406,9 +1446,7 @@ impl DevicesView {
         let signed_in = cluster
             .nodes
             .iter()
-            .filter(|node| {
-                !node.online && node.presence_status == NODE_PRESENCE_SIGNED_IN
-            })
+            .filter(|node| !node.online && node.presence_status == NODE_PRESENCE_SIGNED_IN)
             .count();
         let pending = cluster
             .nodes
@@ -3382,6 +3420,9 @@ impl DevicesView {
         if let Some(msg) = &self.share_status {
             return msg.clone();
         }
+        if self.share_loading {
+            return "VAULT · 正在读取…".to_string();
+        }
         let count = self.share_entries.len();
         if let Some(err) = &self.share_error {
             return format!("VAULT · {err}");
@@ -3588,7 +3629,9 @@ impl DevicesView {
     }
 
     fn share_empty_hint(&self) -> &'static str {
-        if self.browsing_local() && self.share_path.is_empty() {
+        if self.share_loading {
+            "正在读取共享文件夹…"
+        } else if self.browsing_local() && self.share_path.is_empty() {
             "本机尚未添加共享文件夹。点击「增加共享文件夹」添加，或返回打开其它终端卡片浏览远端共享。"
         } else if !self.browsing_local() && self.share_path.is_empty() {
             "此终端尚未发布共享文件夹，或名单未同步。请在对端添加共享后刷新。"
@@ -4777,11 +4820,9 @@ fn share_root_fingerprint(status: &ClusterStatusDto, node_id: &str) -> String {
 
 #[cfg(test)]
 mod share_root_reload_tests {
-    use super::{
-        share_root_fingerprint, should_reload_share_root_on_cluster_update,
-    };
+    use super::{share_root_fingerprint, should_reload_share_root_on_cluster_update};
     use wormhole_desktop_core::cluster_commands::{
-        ClusterNodeDto, ClusterStatusDto, NODE_PRESENCE_SIGNED_IN, ShareVolumeRosterDto,
+        ClusterNodeDto, ClusterStatusDto, ShareVolumeRosterDto, NODE_PRESENCE_SIGNED_IN,
     };
 
     fn sample_status(node_id: &str, online: bool, volumes: &[(&str, &str)]) -> ClusterStatusDto {
@@ -4910,7 +4951,7 @@ mod share_browse_path_tests {
 
 #[cfg(test)]
 mod share_new_menu_tests {
-    use super::{ShareNewMenuMode, share_new_menu_mode, share_node_can_manage};
+    use super::{share_new_menu_mode, share_node_can_manage, ShareNewMenuMode};
 
     #[test]
     fn different_account_remote_hides_new_menu() {
