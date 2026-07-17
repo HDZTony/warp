@@ -11,10 +11,9 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    active_cluster_gossip_is_ready, cluster_status, cluster_status_fast, cluster_status_hud,
+    cluster_status, cluster_status_fast, cluster_status_hud,
     schedule_active_cluster_member_update_if_ready, ClusterStatusDto,
 };
-use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
 use wormhole_desktop_core::state::AppState;
 
@@ -72,17 +71,8 @@ pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, 
     if !is_device_ready(state).await {
         return cluster_status(state).await;
     }
-    let coordinator = ClusterGossipCoordinator::global();
     schedule_active_cluster_member_update_if_ready(state.clone());
-    let mut status = cluster_status_fast(state).await?;
-    if !status.configured {
-        return Ok(status);
-    }
-    coordinator.ensure_background(state.clone());
-    if !active_cluster_gossip_is_ready(state).await {
-        status.syncing = true;
-    }
-    Ok(status)
+    cluster_status_fast(state).await
 }
 
 pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {

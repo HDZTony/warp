@@ -355,11 +355,7 @@ impl SettingsView {
             .with_main_axis_size(MainAxisSize::Min);
         for (index, button) in buttons.into_iter().enumerate() {
             if index > 0 {
-                row.add_child(
-                    Container::new(button)
-                        .with_margin_left(8.0)
-                        .finish(),
-                );
+                row.add_child(Container::new(button).with_margin_left(8.0).finish());
             } else {
                 row.add_child(button);
             }
@@ -955,8 +951,7 @@ impl SettingsView {
             let chat_bytes = self.cache_status.as_ref().map(|status| status.chat_bytes);
             let sync_bytes = self.cache_status.as_ref().map(|status| status.sync_bytes);
             let total = cache_total_bytes(self.cache_status.as_ref());
-            let mut details =
-                Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            let mut details = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             details.add_child(section_hint(
                 "只清理可从聊天文档或远端文件重新生成的数据，不会删除共享文件、聊天索引或集群配置。",
                 self.font,

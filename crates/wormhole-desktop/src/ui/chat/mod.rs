@@ -5,7 +5,6 @@ pub mod compose;
 pub mod header;
 pub mod header_menu;
 pub mod image_asset;
-pub mod voice_call_ui;
 pub mod labels;
 pub mod layout;
 pub mod profile_panel;
@@ -17,5 +16,6 @@ pub mod thread;
 pub mod thread_backdrop;
 pub mod thread_search;
 pub mod video;
+pub mod voice_call_ui;
 
 pub use shell::{ChatShellEvent, ChatShellView};

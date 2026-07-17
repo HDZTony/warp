@@ -44,6 +44,18 @@ pub const TG_SIDEBAR_AVATAR: f32 = 46.0;
 const CHAT_ITEM_INNER_WIDTH: f32 = 276.0;
 const CTX_MENU_WIDTH: f32 = 160.0;
 
+fn presence_state(online: bool, raw: &str) -> String {
+    if online || raw == "online" {
+        "online".into()
+    } else {
+        match raw {
+            "signed_in" | "recently_seen" => "recently_online".into(),
+            "offline" => "offline".into(),
+            _ => "unknown".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum ContextItemStyle {
     Normal,
@@ -75,6 +87,7 @@ struct SidebarRow {
     preview: String,
     time: String,
     online: bool,
+    presence: String,
     unread: u32,
     /// OS label for avatar initials (`PC` / `iOS` / …).
     os: String,
@@ -218,6 +231,7 @@ impl ChatSidebarView {
                 view.remarks = remarks;
                 view.ui_prefs = ui_prefs;
                 view.rows = view.build_rows(conversations, view.cluster.as_ref());
+                view.refresh_selected_summary();
                 ctx.notify();
                 if view.refresh_pending {
                     view.refresh_pending = false;
@@ -232,14 +246,47 @@ impl ChatSidebarView {
             *guard = Some(conv_id.clone());
         }
         self.selecting = None;
+        let summary = self.rows.iter().find(|row| {
+            row.id == conv_id
+                || self.conversations.iter().any(|conv| {
+                    conv.id == conv_id && (conv.peer_endpoint == row.id || conv.id == row.id)
+                })
+        });
         if let Ok(mut state) = self.shell_state.lock() {
             state.clear_pending_open();
             state.clear_open_error();
             state.clear_toast();
+            if let Some(row) = summary {
+                state.set_selected_summary(row.title.clone(), row.os.clone(), row.presence.clone());
+            } else {
+                state.clear_selected_summary();
+            }
             state.bump_selection_tick();
         }
         ctx.emit(ChatSidebarEvent::Selected(conv_id));
         ctx.notify();
+    }
+
+    fn refresh_selected_summary(&self) {
+        let selected = self.selection.lock().ok().and_then(|guard| guard.clone());
+        let Some(selected) = selected else {
+            return;
+        };
+        let row = self
+            .rows
+            .iter()
+            .find(|row| self.row_is_active(row, Some(&selected)));
+        if let (Some(row), Ok(mut state)) = (row, self.shell_state.lock()) {
+            let changed = state.selected_summary.as_ref().is_none_or(|current| {
+                current.title != row.title
+                    || current.os != row.os
+                    || current.presence != row.presence
+            });
+            if changed {
+                state.set_selected_summary(row.title.clone(), row.os.clone(), row.presence.clone());
+                state.bump_selection_tick();
+            }
+        }
     }
 
     fn start_conversation_for_peer(
@@ -254,7 +301,7 @@ impl ChatSidebarView {
             .clone()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| "打开会话…".into());
-        let (os, online) = self
+        let (os, presence) = self
             .cluster
             .as_ref()
             .and_then(|cluster| {
@@ -264,15 +311,18 @@ impl ChatSidebarView {
                         .as_deref()
                         .unwrap_or(node.node_id.as_str());
                     if endpoint == peer.as_str() || node.node_id == peer {
-                        Some((node.os.clone(), node.online))
+                        Some((
+                            node.os.clone(),
+                            presence_state(node.online, &node.presence_status),
+                        ))
                     } else {
                         None
                     }
                 })
             })
-            .unwrap_or_else(|| (String::new(), false));
+            .unwrap_or_else(|| (String::new(), "unknown".into()));
         if let Ok(mut state) = self.shell_state.lock() {
-            state.set_pending_open(title, os, online);
+            state.set_pending_open(title, os, presence);
         }
         let core = self.core.clone();
         ctx.spawn(
@@ -355,13 +405,17 @@ impl ChatSidebarView {
                 .unwrap_or_default();
             let online = find_cluster_node(conv, cluster)
                 .map(|node| node.online)
-                .unwrap_or(true);
+                .unwrap_or(false);
+            let presence = find_cluster_node(conv, cluster)
+                .map(|node| presence_state(node.online, &node.presence_status))
+                .unwrap_or_else(|| "unknown".into());
             rows.push(SidebarRow {
                 id: conv.id.clone(),
                 title,
                 preview,
                 time,
                 online,
+                presence,
                 unread: 0,
                 os: conversation_os_label(conv, cluster),
                 muted: self.ui_prefs.is_muted(&conv.id),
@@ -399,6 +453,7 @@ impl ChatSidebarView {
                     },
                     time: String::new(),
                     online: node.online,
+                    presence: presence_state(node.online, &node.presence_status),
                     unread: 0,
                     os: node.os.clone(),
                     muted: self.ui_prefs.is_muted(&id),
@@ -844,6 +899,7 @@ impl ChatSidebarView {
             }
             if let Ok(mut state) = self.shell_state.lock() {
                 state.clear_pending_open();
+                state.clear_selected_summary();
                 state.bump_selection_tick();
             }
         }
@@ -1291,6 +1347,14 @@ impl CaretBlinkHost for ChatSidebarView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_mapping_does_not_treat_unknown_as_offline() {
+        assert_eq!(presence_state(true, ""), "online");
+        assert_eq!(presence_state(false, "signed_in"), "recently_online");
+        assert_eq!(presence_state(false, "offline"), "offline");
+        assert_eq!(presence_state(false, "handshake_failed"), "unknown");
+    }
 
     use wormhole_desktop_core::cluster_commands::{ClusterNodeDto, ClusterStatusDto};
 

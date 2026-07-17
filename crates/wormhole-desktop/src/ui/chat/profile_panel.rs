@@ -7,7 +7,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
-use crate::ui::chat::labels::chat_avatar_for_os;
+use crate::ui::chat::labels::{chat_avatar_for_os, remote_desktop_peer_identity};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
@@ -52,6 +52,7 @@ pub struct ChatProfilePanelView {
     font: FamilyId,
     title: String,
     node_id: String,
+    peer_endpoint: String,
     conv_id: Option<String>,
     status: String,
     online: bool,
@@ -81,6 +82,7 @@ impl ChatProfilePanelView {
             font,
             title: String::new(),
             node_id: String::new(),
+            peer_endpoint: String::new(),
             conv_id: None,
             status: String::new(),
             online: false,
@@ -115,6 +117,7 @@ impl ChatProfilePanelView {
         let Some(selected) = selected else {
             self.title.clear();
             self.node_id.clear();
+            self.peer_endpoint.clear();
             self.conv_id = None;
             self.remark.clear();
             ctx.notify();
@@ -153,15 +156,14 @@ impl ChatProfilePanelView {
                 let Some(selected) = selected else {
                     return;
                 };
-                let remote_active = view
-                    .shell_state
-                    .lock()
-                    .map(|state| state.remote_desktop_active)
-                    .unwrap_or(false);
                 let (conversations, cluster, remarks) = output;
                 let conv = conversations
                     .ok()
                     .and_then(|list| list.into_iter().find(|conv| conv.id == selected));
+                view.peer_endpoint =
+                    remote_desktop_peer_identity(conv.as_ref(), None).unwrap_or_default();
+                view.node_id.clear();
+                view.online = false;
                 if let Some(ref conv) = conv {
                     view.conv_id = Some(conv.id.clone());
                 } else {
@@ -186,15 +188,17 @@ impl ChatProfilePanelView {
                     }) {
                         view.default_title = format!("{} · {}", node.os, node.hostname);
                         view.node_id = node.node_id.clone();
+                        if view.peer_endpoint.is_empty() {
+                            view.peer_endpoint =
+                                remote_desktop_peer_identity(None, Some(node)).unwrap_or_default();
+                        }
                         view.os_label = node.os.clone();
                         view.online = node.online;
                         view.remark = remarks.get(&node.node_id).cloned().unwrap_or_default();
                         view.title = display_name_with_remark(Some(view.remark.as_str()), || {
                             view.default_title.clone()
                         });
-                        view.status = if remote_active {
-                            "远程桌面 · 已连接".into()
-                        } else if node.online {
+                        view.status = if node.online {
                             "在线".into()
                         } else {
                             "离线".into()
@@ -584,7 +588,7 @@ impl TypedActionView for ChatProfilePanelView {
                 ctx.notify();
             }
             ChatProfileAction::RemoteDesktop => {
-                let peer = self.node_id.trim().to_string();
+                let peer = self.peer_endpoint.trim().to_string();
                 if peer.is_empty() {
                     if let Ok(mut state) = self.shell_state.lock() {
                         state.show_toast(
@@ -606,7 +610,6 @@ impl TypedActionView for ChatProfilePanelView {
                     return;
                 }
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.remote_desktop_active = true;
                     state.show_toast(
                         "正在打开远程桌面…",
                         crate::ui::panel_primitives::StatusTone::Neutral,

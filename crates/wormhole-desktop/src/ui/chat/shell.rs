@@ -15,15 +15,15 @@ use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
-    chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
+    SharedChatShellState, chat_event_triggers_refresh, new_shared_shell_state,
 };
-use crate::ui::chat::sidebar::ChatSidebarView;
+use crate::ui::chat::sidebar::{ChatSidebarEvent, ChatSidebarView};
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::chat::voice_call_ui::{accept, apply_voice_status, decline, voice_error_toast};
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
-use crate::ui::panel_primitives::{status_line, tab_content_fill, StatusTone};
+use crate::ui::device_gate_view::{DeviceGateStatus, load_device_gate, wrap_with_device_gate};
+use crate::ui::panel_primitives::{StatusTone, status_line, tab_content_fill};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::ChatEventDto;
@@ -76,7 +76,7 @@ impl ChatShellView {
         });
         let thread_search =
             ctx.add_typed_action_view(|ctx| ChatThreadSearchView::new(ctx, shell_state.clone()));
-        let thread = ctx.add_view(|ctx| {
+        let thread = ctx.add_typed_action_view(|ctx| {
             ChatThreadView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
         let compose = ctx.add_typed_action_view(|ctx| {
@@ -107,6 +107,19 @@ impl ChatShellView {
                     peer: peer.clone(),
                     title: title.clone(),
                 });
+            }
+        });
+        let selected_header = header.clone();
+        let selected_thread = thread.clone();
+        ctx.subscribe_to_view(&sidebar, move |_, _, event, ctx| match event {
+            ChatSidebarEvent::Selected(_) => {
+                ctx.update_view(&selected_header, |header, ctx| {
+                    header.selection_changed(ctx);
+                });
+                ctx.update_view(&selected_thread, |thread, ctx| {
+                    thread.selection_changed(ctx);
+                });
+                ctx.notify();
             }
         });
         let font = crate::ui::fonts::load_ui_font(ctx);
@@ -219,6 +232,23 @@ impl ChatShellView {
         });
         self.poll_gate(ctx);
     }
+
+    pub fn set_remote_desktop_result(
+        &mut self,
+        result: Result<(), String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Ok(mut state) = self.shell_state.lock() {
+            match result {
+                Ok(()) => state.show_toast("已打开远程桌面窗口", StatusTone::Success),
+                Err(err) => {
+                    state.show_toast(format!("无法打开远程桌面：{err}"), StatusTone::Danger)
+                }
+            }
+        }
+        ctx.notify();
+    }
+
     pub fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         let apply: Arc<dyn Fn(&mut Self, DeviceGateStatus) + Send + Sync> =

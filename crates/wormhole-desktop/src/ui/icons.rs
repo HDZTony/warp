@@ -14,6 +14,7 @@ use crate::ui::spinning_icon;
 use crate::ui::theme;
 
 pub const TAB_ICON_SIZE: f32 = 18.0;
+pub const DEVICE_ACTION_ICON_SIZE: f32 = 16.0;
 pub const SHARE_ICON_SIZE: f32 = 18.0;
 pub const SHARE_NAV_BTN_SIZE: f32 = 28.0;
 pub const SHARE_NAV_ICON_SIZE: f32 = 14.0;
@@ -74,6 +75,27 @@ pub fn tab_button_content(
         );
     }
     row.finish()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceActionIconKind {
+    ShareFiles,
+    RemoteDesktop,
+    RemoveDevice,
+}
+
+impl DeviceActionIconKind {
+    pub fn asset_path(self) -> &'static str {
+        match self {
+            Self::ShareFiles => "share-folder.svg",
+            Self::RemoteDesktop => "chat-header-rdp.svg",
+            Self::RemoveDevice => "device-remove.svg",
+        }
+    }
+}
+
+pub fn device_action_icon(kind: DeviceActionIconKind, color: ColorU) -> Box<dyn Element> {
+    icon(kind.asset_path(), DEVICE_ACTION_ICON_SIZE, color)
 }
 
 pub fn agent_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
@@ -321,5 +343,21 @@ mod tests {
         assert_eq!(ShareIconKind::Pdf.color(), theme::accent());
         assert_eq!(ShareIconKind::Json.color(), theme::accent_cool());
         assert_eq!(ShareIconKind::File.color(), theme::muted());
+    }
+
+    #[test]
+    fn device_action_icons_use_expected_assets() {
+        assert_eq!(
+            DeviceActionIconKind::ShareFiles.asset_path(),
+            "share-folder.svg"
+        );
+        assert_eq!(
+            DeviceActionIconKind::RemoteDesktop.asset_path(),
+            "chat-header-rdp.svg"
+        );
+        assert_eq!(
+            DeviceActionIconKind::RemoveDevice.asset_path(),
+            "device-remove.svg"
+        );
     }
 }
