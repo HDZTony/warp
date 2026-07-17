@@ -7,9 +7,10 @@ use crate::coordinator::CoordinatorState;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn prefer_minimize_over_hide() -> bool {
-    use warpui::windowing::winit::app::{WindowingSystem, WINDOWING_SYSTEM};
+    use warpui::platform::linux::user_windowing_system;
+    use warpui::windowing::WindowingSystem;
 
-    matches!(WINDOWING_SYSTEM.get(), Some(WindowingSystem::Wayland))
+    user_windowing_system() == WindowingSystem::Wayland
 }
 
 pub fn hide_main_window(window_id: WindowId, ctx: &mut AppContext) {
@@ -66,7 +67,7 @@ pub fn quit_desktop<V: View>(ctx: &mut ViewContext<V>) {
 #[cfg(test)]
 mod tests {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    use warpui::windowing::winit::app::WindowingSystem;
+    use warpui::windowing::WindowingSystem;
 
     #[test]
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
