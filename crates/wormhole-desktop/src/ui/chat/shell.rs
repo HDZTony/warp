@@ -219,6 +219,23 @@ impl ChatShellView {
         });
         self.poll_gate(ctx);
     }
+
+    pub fn set_remote_desktop_result(
+        &mut self,
+        result: Result<(), String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Ok(mut state) = self.shell_state.lock() {
+            match result {
+                Ok(()) => state.show_toast("已打开远程桌面窗口", StatusTone::Success),
+                Err(err) => {
+                    state.show_toast(format!("无法打开远程桌面：{err}"), StatusTone::Danger)
+                }
+            }
+        }
+        ctx.notify();
+    }
+
     pub fn poll_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let core = self.core.clone();
         let apply: Arc<dyn Fn(&mut Self, DeviceGateStatus) + Send + Sync> =

@@ -26,6 +26,22 @@ pub fn find_cluster_node<'a>(
     })
 }
 
+/// Return only an iroh endpoint identity suitable for RDP resolution, never a cluster UUID.
+pub fn remote_desktop_peer_identity(
+    conv: Option<&ChatConversationDto>,
+    node: Option<&ClusterNodeDto>,
+) -> Option<String> {
+    conv.map(|conv| conv.peer_endpoint.trim())
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            node.and_then(|node| node.chat_endpoint_id.as_deref())
+                .map(str::trim)
+                .filter(|endpoint| !endpoint.is_empty())
+                .map(str::to_string)
+        })
+}
+
 /// Fixed device label for sidebar title and chat header (`OS · hostname` when in cluster).
 pub fn conversation_device_title(
     conv: &ChatConversationDto,
@@ -195,6 +211,30 @@ mod tests {
             device_bootstrap_error: None,
             role_stale: false,
         }
+    }
+
+    #[test]
+    fn remote_desktop_identity_prefers_conversation_endpoint_and_never_node_id() {
+        let conv = sample_conv("direct", "conversation-endpoint", None, None, None);
+        let cluster = cluster_with_node("node-uuid", "windows", "office-pc");
+        let node = &cluster.nodes[0];
+        assert_eq!(
+            remote_desktop_peer_identity(Some(&conv), Some(node)).as_deref(),
+            Some("conversation-endpoint")
+        );
+
+        let mut endpoint_node = node.clone();
+        endpoint_node.chat_endpoint_id = Some("cluster-endpoint".into());
+        assert_eq!(
+            remote_desktop_peer_identity(None, Some(&endpoint_node)).as_deref(),
+            Some("cluster-endpoint")
+        );
+
+        endpoint_node.chat_endpoint_id = None;
+        assert_eq!(
+            remote_desktop_peer_identity(None, Some(&endpoint_node)),
+            None
+        );
     }
 
     #[test]

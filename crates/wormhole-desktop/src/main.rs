@@ -152,15 +152,6 @@ fn main() -> Result<()> {
         }
     }
 
-    if wormhole_desktop_core::rdp_headless::spawn_headless_companion_requested() {
-        match wormhole_desktop_core::rdp_headless::spawn_headless_companion(&data_dir) {
-            Ok(()) => unsafe {
-                std::env::set_var("WORMHOLE_SKIP_UNATTENDED_RDP", "1");
-            },
-            Err(err) => tracing::warn!("failed to spawn headless RDP companion: {err}"),
-        }
-    }
-
     if args.bridge_only {
         std::fs::create_dir_all(&data_dir)?;
         let tokio = tokio::runtime::Runtime::new()?;
@@ -340,8 +331,7 @@ mod app_icon_tests {
     #[test]
     fn bundled_128_png_decodes_to_rgba() {
         let png = include_bytes!("../../../../../apps/desktop/bundle/icons/128x128.png");
-        let (rgba, width, height) =
-            decode_png_rgba(png).expect("128x128.png should decode");
+        let (rgba, width, height) = decode_png_rgba(png).expect("128x128.png should decode");
         assert_eq!((width, height), (128, 128));
         assert_eq!(rgba.len(), 128 * 128 * 4);
     }

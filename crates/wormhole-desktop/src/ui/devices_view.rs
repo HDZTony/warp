@@ -9,7 +9,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::clipboard::{read_clipboard_text, write_clipboard_text};
-use crate::ui::cluster_topology_panel::ClusterTopologyPanel;
+use crate::ui::cluster_topology_panel::{node_remote_desktop_available, ClusterTopologyPanel};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
@@ -214,6 +214,18 @@ impl DevicesView {
         };
         view.refresh_cluster(ctx);
         view
+    }
+
+    pub fn set_remote_desktop_result(
+        &mut self,
+        result: Result<(), String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.status_flash = Some(match result {
+            Ok(()) => "已打开远程桌面窗口".into(),
+            Err(err) => format!("无法打开远程桌面：{err}"),
+        });
+        ctx.notify();
     }
 
     fn note_bootstrap_pending(&mut self, status: &ClusterStatusDto) {
@@ -1371,6 +1383,10 @@ impl DevicesView {
             && Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role == "owner")
     }
 
+    fn active_cluster_is_default(cluster: &ClusterStatusDto) -> bool {
+        Self::active_cluster_entry(cluster).is_some_and(|entry| entry.is_default)
+    }
+
     fn active_cluster_can_leave(cluster: &ClusterStatusDto) -> bool {
         Self::active_cluster_membership_fresh(cluster)
             && Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role != "owner")
@@ -1484,7 +1500,7 @@ impl DevicesView {
             return parts.join(" · ");
         }
         format!(
-            "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 双击终端浏览共享文件夹",
+            "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 单击共享文件浏览",
             if n == 1 { "" } else { "S" }
         )
     }
@@ -1828,7 +1844,7 @@ impl DevicesView {
             true,
             false,
         ));
-        if Self::active_cluster_is_owner(cluster) {
+        if Self::active_cluster_is_owner(cluster) && !Self::active_cluster_is_default(cluster) {
             menu.add_child(Self::cluster_menu_divider());
             menu.add_child(self.cluster_menu_action(
                 "删除集群",
@@ -1837,7 +1853,9 @@ impl DevicesView {
                 true,
                 true,
             ));
-        } else if Self::active_cluster_can_leave(cluster) {
+        } else if Self::active_cluster_can_leave(cluster)
+            && !Self::active_cluster_is_default(cluster)
+        {
             menu.add_child(Self::cluster_menu_divider());
             menu.add_child(self.cluster_menu_action(
                 "退出集群",
@@ -2314,6 +2332,12 @@ impl DevicesView {
         let Some(cluster) = self.cluster.as_ref() else {
             return;
         };
+        if Self::active_cluster_is_default(cluster) {
+            self.status_flash = Some("账号默认集群不可删除".into());
+            self.cluster_picker_open = false;
+            ctx.notify();
+            return;
+        }
         if !Self::active_cluster_is_owner(cluster) {
             self.status_flash = Some("只有集群创建者可以删除集群；成员请使用退出集群".into());
             self.cluster_picker_open = false;
@@ -2658,7 +2682,7 @@ impl DevicesView {
 
     fn join_modal(&self) -> Box<dyn Element> {
         let join_preview = if self.join_invite_draft.is_empty() {
-            "粘贴完整 JSON 邀请，或 wormhole://join?cluster=…&token=…".to_string()
+            "粘贴 https://w.hdz73.com/j/... 邀请链接".to_string()
         } else {
             truncate_middle(&self.join_invite_draft, 240)
         };
@@ -3329,19 +3353,19 @@ impl DevicesView {
             ContextItemStyle::Normal,
             true,
         ));
-        let remote_online = self.cluster.as_ref().is_some_and(|cluster| {
+        let remote_available = self.cluster.as_ref().is_some_and(|cluster| {
             cluster
                 .nodes
                 .iter()
                 .find(|node| node.node_id == node_id)
-                .is_some_and(|node| node.online)
+                .is_some_and(|node| node_remote_desktop_available(node, is_local))
         });
         if !is_local {
             menu.add_child(self.device_context_item(
                 "远程桌面",
                 DevicesAction::OpenRemoteDesktop(node_id.clone()),
                 ContextItemStyle::Normal,
-                remote_online,
+                remote_available,
             ));
         }
         menu.add_child(self.device_context_item(
@@ -4663,6 +4687,12 @@ impl TypedActionView for DevicesView {
                     ctx.notify();
                 }
             }
+            DevicesAction::ClearNodeHoverIf(node_id) => {
+                if self.hovered_node_id.as_ref() == Some(node_id) {
+                    self.hovered_node_id = None;
+                    ctx.notify();
+                }
+            }
             DevicesAction::OpenDeleteNodeModal(node_id) => {
                 self.open_delete_node_modal(node_id.clone(), ctx);
             }
@@ -4713,31 +4743,20 @@ impl TypedActionView for DevicesView {
                     ctx.notify();
                     return;
                 }
-                let online = self.cluster.as_ref().is_some_and(|cluster| {
+                let available = self.cluster.as_ref().is_some_and(|cluster| {
                     cluster
                         .nodes
                         .iter()
                         .find(|node| node.node_id == *node_id)
-                        .is_some_and(|node| node.online)
+                        .is_some_and(|node| node_remote_desktop_available(node, false))
                 });
-                if !online {
-                    self.status_flash = Some("终端离线，无法打开远程桌面".into());
+                if !available {
+                    self.status_flash = Some("终端离线或缺少远程桌面地址".into());
                     ctx.notify();
                     return;
                 }
                 self.status_flash = Some("正在打开远程桌面…".into());
                 ctx.notify();
-                ctx.spawn(
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(2600)).await;
-                    },
-                    |view, _, ctx| {
-                        if view.status_flash.as_deref() == Some("正在打开远程桌面…") {
-                            view.status_flash = None;
-                            ctx.notify();
-                        }
-                    },
-                );
                 ctx.emit(DevicesEvent::OpenRemoteDesktop {
                     node_id: node_id.clone(),
                 });
@@ -4802,7 +4821,8 @@ fn should_reload_share_root_on_cluster_update(
     if prev_fp.as_ref() != Some(&next_fp) {
         return true;
     }
-    share_entries_empty && !next_fp.is_empty()
+    let _ = share_entries_empty;
+    false
 }
 
 fn share_root_fingerprint(status: &ClusterStatusDto, node_id: &str) -> String {
@@ -4898,6 +4918,18 @@ mod share_root_reload_tests {
             share_root_fingerprint(&prev, "remote"),
             share_root_fingerprint(&next, "remote")
         );
+    }
+
+    #[test]
+    fn does_not_loop_reload_unchanged_empty_remote_root() {
+        let status = sample_status("remote", false, &[("v1", "图片")]);
+        assert!(!should_reload_share_root_on_cluster_update(
+            Some(&status),
+            &status,
+            Some("remote"),
+            true,
+            true,
+        ));
     }
 
     #[test]

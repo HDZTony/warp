@@ -52,6 +52,7 @@ pub enum LoginModalEvent {
     AuthChanged {
         authenticated: bool,
         device_id: Option<String>,
+        email: Option<String>,
     },
     OpenChanged {
         open: bool,
@@ -628,6 +629,7 @@ impl LoginModalView {
         ctx.emit(LoginModalEvent::AuthChanged {
             authenticated: status.authenticated,
             device_id: status.device_id,
+            email: status.email,
         });
     }
 

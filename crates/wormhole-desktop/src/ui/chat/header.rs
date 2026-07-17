@@ -9,6 +9,7 @@ use crate::ui::chat::header_menu::{header_button, header_button_colors, header_m
 use crate::ui::chat::image_asset::{insert_wallpaper_asset, load_wallpaper_bytes_from_path};
 use crate::ui::chat::labels::{
     chat_avatar_for_os, conversation_device_title, conversation_os_label, find_cluster_node,
+    remote_desktop_peer_identity,
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
@@ -17,7 +18,7 @@ use crate::ui::chat::voice_call_ui::{
     voice_status_to_header_line,
 };
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_SM_SIZE};
+use crate::ui::panel_primitives::{StatusTone, TG_AVATAR_SM_SIZE, online_dot, tg_avatar};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;
@@ -26,6 +27,35 @@ use wormhole_desktop_core::chat_ui_prefs::{
 };
 use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
+
+fn normalized_presence(online: bool, raw: &str) -> &'static str {
+    if online || raw == "online" {
+        "online"
+    } else {
+        match raw {
+            "signed_in" | "recently_seen" => "recently_online",
+            "offline" => "offline",
+            _ => "unknown",
+        }
+    }
+}
+
+fn presence_label(presence: &str) -> &'static str {
+    match presence {
+        "online" => "在线",
+        "recently_online" => "最近在线",
+        "offline" => "离线",
+        _ => "状态未知",
+    }
+}
+
+fn header_status(voice_phase: &str, presence: &str) -> String {
+    if voice_phase == "idle" {
+        presence_label(presence).into()
+    } else {
+        voice_status_to_header_line(voice_phase, presence == "online")
+    }
+}
 
 pub const TG_HEADER_HEIGHT: f32 = 56.0;
 const TG_HEADER_BTN: f32 = 36.0;
@@ -68,7 +98,8 @@ pub struct ChatHeaderView {
     title: String,
     status: String,
     online: bool,
-    node_id: String,
+    presence: String,
+    peer_endpoint: String,
     os: String,
     last_selection: Option<String>,
     last_selection_tick: u64,
@@ -94,7 +125,8 @@ impl ChatHeaderView {
             title: "选择左侧终端".into(),
             status: "从列表中选择会话".into(),
             online: false,
-            node_id: String::new(),
+            presence: "unknown".into(),
+            peer_endpoint: String::new(),
             os: String::new(),
             last_selection: None,
             last_selection_tick: 0,
@@ -121,18 +153,19 @@ impl ChatHeaderView {
 
     fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let selected = self.selection.lock().ok().and_then(|g| g.clone());
-        let (selection_tick, pending, wallpaper_tick, message_tick) = self
+        let (selection_tick, pending, selected_summary, wallpaper_tick, message_tick) = self
             .shell_state
             .lock()
             .map(|state| {
                 (
                     state.selection_tick,
                     state.pending_open.clone(),
+                    state.selected_summary.clone(),
                     state.wallpaper_tick,
                     state.message_tick,
                 )
             })
-            .unwrap_or((0, None, 0, 0));
+            .unwrap_or((0, None, None, 0, 0));
         let selection_changed = selected != self.last_selection;
         let tick_changed = selection_tick != self.last_selection_tick;
         let wallpaper_changed = wallpaper_tick != self.last_wallpaper_tick;
@@ -164,9 +197,10 @@ impl ChatHeaderView {
         if let Some(pending) = pending {
             self.title = pending.title;
             self.status = "正在打开会话…".into();
-            self.online = pending.online;
+            self.presence = pending.presence;
+            self.online = self.presence == "online";
             self.os = pending.os;
-            self.node_id.clear();
+            self.peer_endpoint.clear();
             ctx.notify();
             if selected.is_some() {
                 // Still resolve once conv_id lands.
@@ -179,10 +213,19 @@ impl ChatHeaderView {
             self.title = "选择左侧终端".into();
             self.status = "从列表中选择会话".into();
             self.online = false;
-            self.node_id.clear();
+            self.presence = "unknown".into();
+            self.peer_endpoint.clear();
             self.os.clear();
             ctx.notify();
             return;
+        }
+        if let Some(summary) = selected_summary {
+            self.title = summary.title;
+            self.os = summary.os;
+            self.presence = summary.presence;
+            self.online = self.presence == "online";
+            self.status = presence_label(&self.presence).into();
+            ctx.notify();
         }
         self.refresh_from_selection(ctx);
     }
@@ -216,23 +259,12 @@ impl ChatHeaderView {
         ctx.spawn(
             async move { fetch_status(&core, &conv_id).await },
             move |view, output, ctx| {
-                let remote_active = view
-                    .shell_state
-                    .lock()
-                    .map(|state| state.remote_desktop_active)
-                    .unwrap_or(false);
-                let voice_phase = view
-                    .shell_state
-                    .lock()
-                    .map(|state| state.voice_call_phase.clone())
-                    .unwrap_or_else(|_| "idle".into());
                 match output {
                     Ok(status) => {
                         apply_voice_status(&shell_state, &status);
-                        view.status =
-                            voice_status_to_header_line(&status.phase, remote_active, view.online);
+                        view.status = voice_status_to_header_line(&status.phase, view.online);
                         if status.phase == "active" && status.peer_live {
-                            let peer = view.node_id.trim().to_string();
+                            let peer = view.peer_endpoint.trim().to_string();
                             let should_open = view
                                 .shell_state
                                 .lock()
@@ -300,19 +332,13 @@ impl ChatHeaderView {
         ctx.spawn(future, move |view, output, ctx| match output {
             Ok(status) => {
                 apply_voice_status(&shell_state, &status);
-                let remote_active = view
-                    .shell_state
-                    .lock()
-                    .map(|state| state.remote_desktop_active)
-                    .unwrap_or(false);
-                view.status =
-                    voice_status_to_header_line(&status.phase, remote_active, view.online);
+                view.status = voice_status_to_header_line(&status.phase, view.online);
                 if status.phase == "ringing" {
                     if let Ok(mut state) = view.shell_state.lock() {
                         state.show_toast("正在呼叫…", StatusTone::Neutral);
                     }
                 } else if status.phase == "active" && status.peer_live {
-                    let peer = view.node_id.trim().to_string();
+                    let peer = view.peer_endpoint.trim().to_string();
                     if !peer.is_empty() {
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.voice_live_peer = Some(peer.clone());
@@ -351,15 +377,9 @@ impl ChatHeaderView {
             move |view, output, ctx| match output {
                 Ok(status) => {
                     apply_voice_status(&shell_state, &status);
-                    let remote_active = view
-                        .shell_state
-                        .lock()
-                        .map(|state| state.remote_desktop_active)
-                        .unwrap_or(false);
-                    view.status =
-                        voice_status_to_header_line(&status.phase, remote_active, view.online);
+                    view.status = voice_status_to_header_line(&status.phase, view.online);
                     if status.phase == "active" && status.peer_live {
-                        let peer = view.node_id.trim().to_string();
+                        let peer = view.peer_endpoint.trim().to_string();
                         if !peer.is_empty() {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.voice_live_peer = Some(peer.clone());
@@ -394,13 +414,7 @@ impl ChatHeaderView {
             move |view, output, ctx| match output {
                 Ok(status) => {
                     apply_voice_status(&shell_state, &status);
-                    let remote_active = view
-                        .shell_state
-                        .lock()
-                        .map(|state| state.remote_desktop_active)
-                        .unwrap_or(false);
-                    view.status =
-                        voice_status_to_header_line(&status.phase, remote_active, view.online);
+                    view.status = voice_status_to_header_line(&status.phase, view.online);
                     if let Ok(mut state) = view.shell_state.lock() {
                         state.show_toast("已拒绝来电", StatusTone::Muted);
                     }
@@ -555,11 +569,6 @@ impl ChatHeaderView {
                 {
                     return;
                 }
-                let remote_active = view
-                    .shell_state
-                    .lock()
-                    .map(|state| state.remote_desktop_active)
-                    .unwrap_or(false);
                 let voice_phase = view
                     .shell_state
                     .lock()
@@ -576,13 +585,19 @@ impl ChatHeaderView {
                         conversation_device_title(&conv, cluster_ref)
                     });
                     view.os = conversation_os_label(&conv, cluster_ref);
-                    view.node_id = conv.peer_endpoint.clone();
-                    let peer_online = find_cluster_node(&conv, cluster_ref)
-                        .map(|node| node.online)
-                        .unwrap_or(false);
+                    view.peer_endpoint = remote_desktop_peer_identity(
+                        Some(&conv),
+                        find_cluster_node(&conv, cluster_ref),
+                    )
+                    .unwrap_or_default();
+                    let peer_node = find_cluster_node(&conv, cluster_ref);
+                    let peer_online = peer_node.map(|node| node.online).unwrap_or(false);
+                    view.presence = peer_node
+                        .map(|node| normalized_presence(node.online, &node.presence_status))
+                        .unwrap_or("unknown")
+                        .into();
                     view.online = peer_online;
-                    view.status =
-                        voice_status_to_header_line(&voice_phase, remote_active, peer_online);
+                    view.status = header_status(&voice_phase, &view.presence);
                 } else if let Ok(cluster) = cluster {
                     if let Some(node) = cluster.nodes.iter().find(|n| {
                         n.chat_endpoint_id.as_deref() == Some(selected.as_str())
@@ -593,24 +608,27 @@ impl ChatHeaderView {
                             || format!("{} · {}", node.os, node.hostname),
                         );
                         view.online = node.online;
-                        view.node_id = node.node_id.clone();
+                        view.presence =
+                            normalized_presence(node.online, &node.presence_status).into();
+                        view.peer_endpoint =
+                            remote_desktop_peer_identity(None, Some(node)).unwrap_or_default();
                         view.os = node.os.clone();
-                        view.status =
-                            voice_status_to_header_line(&voice_phase, remote_active, node.online);
+                        view.status = header_status(&voice_phase, &view.presence);
                     } else {
                         view.title = selected.clone();
-                        view.node_id = selected.clone();
+                        view.peer_endpoint.clear();
                         view.os.clear();
-                        view.status =
-                            voice_status_to_header_line(&voice_phase, remote_active, false);
                         view.online = false;
+                        view.presence = "unknown".into();
+                        view.status = header_status(&voice_phase, &view.presence);
                     }
                 } else {
                     view.title = selected.clone();
-                    view.node_id = selected.clone();
+                    view.peer_endpoint.clear();
                     view.os.clear();
-                    view.status = voice_status_to_header_line(&voice_phase, remote_active, false);
                     view.online = false;
+                    view.presence = "unknown".into();
+                    view.status = header_status(&voice_phase, &view.presence);
                 }
                 ctx.notify();
             },
@@ -628,25 +646,24 @@ impl ChatHeaderView {
     }
 
     pub fn live_peer_node_id(&self) -> String {
-        self.node_id.trim().to_string()
+        self.peer_endpoint.trim().to_string()
     }
 
     pub fn live_viewer_title(&self) -> String {
         format!("语音 · {}", self.title)
     }
 
-    fn shell_flags(&self) -> (bool, bool, bool, bool) {
+    fn shell_flags(&self) -> (bool, bool, bool) {
         self.shell_state
             .lock()
             .map(|state| {
                 (
                     state.thread_search_open,
                     state.profile_open,
-                    state.remote_desktop_active,
                     state.header_menu_open,
                 )
             })
-            .unwrap_or((false, false, false, false))
+            .unwrap_or((false, false, false))
     }
 }
 
@@ -660,7 +677,7 @@ impl View for ChatHeaderView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let (search_open, profile_open, rdp_active, menu_open) = self.shell_flags();
+        let (search_open, profile_open, menu_open) = self.shell_flags();
         let (voice_phase, voice_active) = self
             .shell_state
             .lock()
@@ -687,7 +704,7 @@ impl View for ChatHeaderView {
                             .with_color(theme::text())
                             .finish(),
                     );
-                    let status_color = if self.online && !rdp_active {
+                    let status_color = if self.online {
                         theme::success()
                     } else {
                         theme::muted()
@@ -696,7 +713,7 @@ impl View for ChatHeaderView {
                         Container::new(
                             Flex::row()
                                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                .with_child(if self.online && !rdp_active {
+                                .with_child(if self.online {
                                     Container::new(online_dot())
                                         .with_horizontal_margin(4.0)
                                         .finish()
@@ -745,7 +762,7 @@ impl View for ChatHeaderView {
             ),
             (
                 "chat-header-rdp.svg",
-                rdp_active,
+                false,
                 ChatHeaderAction::OpenRemoteDesktop,
             ),
             (
@@ -853,7 +870,7 @@ impl TypedActionView for ChatHeaderView {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.close_overlays();
                 }
-                let peer = self.node_id.trim().to_string();
+                let peer = self.peer_endpoint.trim().to_string();
                 if peer.is_empty() {
                     if let Ok(mut state) = self.shell_state.lock() {
                         state.show_toast("当前会话没有可连接的终端", StatusTone::Muted);
@@ -869,7 +886,6 @@ impl TypedActionView for ChatHeaderView {
                     return;
                 }
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.remote_desktop_active = true;
                     state.show_toast("正在打开远程桌面…", StatusTone::Neutral);
                 }
                 ctx.emit(ChatHeaderEvent::OpenRemoteDesktop { peer });
@@ -1007,7 +1023,7 @@ impl TypedActionView for ChatHeaderView {
                             view.title = "选择左侧终端".into();
                             view.status = "从列表中选择会话".into();
                             view.online = false;
-                            view.node_id.clear();
+                            view.peer_endpoint.clear();
                             view.os.clear();
                             ctx.notify();
                         }

@@ -72,8 +72,12 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn wayland_uses_minimize_hide_strategy() {
-        assert!(hide_uses_minimize_for_windowing_system(Some(WindowingSystem::Wayland)));
-        assert!(!hide_uses_minimize_for_windowing_system(Some(WindowingSystem::X11)));
+        assert!(hide_uses_minimize_for_windowing_system(Some(
+            WindowingSystem::Wayland
+        )));
+        assert!(!hide_uses_minimize_for_windowing_system(Some(
+            WindowingSystem::X11
+        )));
         assert!(!hide_uses_minimize_for_windowing_system(None));
     }
 

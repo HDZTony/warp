@@ -3,7 +3,10 @@ pub enum DevicesAction {
     Refresh,
     RetryDeviceBootstrap,
     NodeCardClick(String),
+    /// Pointer entered a node card (or re-entered after leaving another).
     SetNodeHover(Option<String>),
+    /// Clear hover only if it still matches this node (safe when crossing cards).
+    ClearNodeHoverIf(String),
     OpenNode(String),
     BackToGrid,
     OpenJoinModal,

@@ -15,8 +15,7 @@ use warpui::elements::{
 use warpui::ClipBounds;
 
 use crate::ui::cluster_layout::{
-    card_height, cards_row_card_width, edge_points, node_anchors, CARD_GAP, CARD_MIN_WIDTH,
-    TOPO_PAD,
+    card_height, edge_points, grid_card_width, node_anchors, CARD_GAP, CARD_MIN_WIDTH, TOPO_PAD,
 };
 use crate::ui::theme;
 
@@ -327,7 +326,7 @@ impl Element for ClusterTopology {
         self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
         let size = self.size.unwrap_or_else(|| vec2f(1.0, 1.0));
         let anchors = node_anchors(self.node_count, size);
-        let card_w = cards_row_card_width(size.x(), self.node_count);
+        let card_w = grid_card_width(size.x());
         let card_h = card_height(card_w);
         let elapsed = self.started.elapsed().as_secs_f32();
 

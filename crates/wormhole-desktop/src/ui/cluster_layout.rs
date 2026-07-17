@@ -44,18 +44,21 @@ pub fn card_height(card_width: f32) -> f32 {
     thumb_height(card_width) + BODY_MIN_HEIGHT + BODY_VERTICAL_PADDING + CARD_BORDER * 2.0
 }
 
-pub fn cards_row_card_width(container_width: f32, node_count: usize) -> f32 {
-    let cols = grid_column_count(container_width).max(node_count.max(1)) as f32;
-    let inner = grid_inner_width(container_width);
-    (inner - CARD_GAP * (cols - 1.0).max(0.0)) / cols
+/// Row/column for a node in an auto-fill grid.
+pub fn grid_cell(index: usize, columns: usize) -> (usize, usize) {
+    let columns = columns.max(1);
+    (index / columns, index % columns)
 }
 
-/// Link anchor: horizontal card center + vertical thumb center.
+/// Link anchor: card center (multi-row auto-fill) + vertical thumb center.
 pub fn node_anchor(count: usize, index: usize, container: Vector2F) -> Vector2F {
     let index = index.min(count.saturating_sub(1));
-    let card_w = cards_row_card_width(container.x(), count.max(1));
-    let x = TOPO_PAD + index as f32 * (card_w + CARD_GAP) + card_w * 0.5;
-    let y = TOPO_PAD + thumb_height(card_w) * 0.5;
+    let columns = grid_column_count(container.x()).max(1);
+    let card_w = grid_card_width(container.x());
+    let card_h = card_height(card_w);
+    let (row, col) = grid_cell(index, columns);
+    let x = TOPO_PAD + col as f32 * (card_w + CARD_GAP) + card_w * 0.5;
+    let y = TOPO_PAD + row as f32 * (card_h + CARD_GAP) + thumb_height(card_w) * 0.5;
     vec2f(x, y)
 }
 
@@ -84,12 +87,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anchors_share_y_for_two_nodes() {
+    fn anchors_share_y_for_two_nodes_on_same_row() {
         let size = vec2f(640.0, 280.0);
         let a = node_anchor(2, 0, size);
         let b = node_anchor(2, 1, size);
         assert!((a.y() - b.y()).abs() < f32::EPSILON);
         assert!(a.x() < b.x());
+    }
+
+    #[test]
+    fn narrow_container_wraps_five_nodes_to_multiple_rows() {
+        // One column: 200 + 2*14 pad = 228; force ~1–2 columns with 5 nodes.
+        let width = 430.0; // inner ≈ 402 → floor((402+12)/(200+12)) = 1
+        let columns = grid_column_count(width);
+        assert!(columns < 5, "expected wrap, got {columns} columns");
+        let size = vec2f(width, 800.0);
+        let first = node_anchor(5, 0, size);
+        let wrapped = node_anchor(5, columns, size);
+        assert!(
+            wrapped.y() > first.y() + 1.0,
+            "second-row anchor should be below first row: {} vs {}",
+            wrapped.y(),
+            first.y()
+        );
     }
 
     #[test]

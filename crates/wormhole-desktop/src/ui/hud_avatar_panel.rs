@@ -31,6 +31,34 @@ const REDEEM_HISTORY_MAX_HEIGHT: f32 = 280.0;
 const PURCHASE_MODAL_WIDTH: f32 = 560.0;
 const QR_SIZE: f32 = 128.0;
 
+/// First two letters of the email local-part (before `@`), uppercased.
+///
+/// Empty / missing email falls back to `"WH"`. A single-character local-part is
+/// padded by repeating that character.
+pub fn email_initials(email: Option<&str>) -> String {
+    let local = email
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.split('@').next().unwrap_or(value).trim())
+        .filter(|value| !value.is_empty());
+    let Some(local) = local else {
+        return "WH".to_string();
+    };
+    let mut chars = local.chars().flat_map(|ch| ch.to_uppercase());
+    match (chars.next(), chars.next()) {
+        (Some(a), Some(b)) => format!("{a}{b}"),
+        (Some(a), None) => format!("{a}{a}"),
+        (None, _) => "WH".to_string(),
+    }
+}
+
+pub fn avatar_initials(authenticated: bool, email: Option<&str>) -> String {
+    if !authenticated {
+        return "?".to_string();
+    }
+    email_initials(email)
+}
+
 #[derive(Clone, Debug)]
 pub struct PurchaseProductUi {
     pub product_id: String,
@@ -40,23 +68,13 @@ pub struct PurchaseProductUi {
     pub qr_loaded: bool,
 }
 
-pub fn avatar_letter(authenticated: bool, device_id: Option<&str>) -> char {
-    if !authenticated {
-        return 'W';
-    }
-    device_id
-        .and_then(|id| id.chars().next())
-        .map(|ch| ch.to_uppercase().next().unwrap_or('W'))
-        .unwrap_or('W')
-}
-
 pub fn build_avatar_slot(
     authenticated: bool,
-    device_id: Option<&str>,
+    email: Option<&str>,
     panel_open: bool,
     font: FamilyId,
 ) -> Box<dyn Element> {
-    let letter = avatar_letter(authenticated, device_id);
+    let initials = avatar_initials(authenticated, email);
 
     let circle = Container::new(
         ConstrainedBox::new(
@@ -65,7 +83,7 @@ pub fn build_avatar_slot(
                 .with_main_axis_alignment(MainAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_child(
-                    ui_text::body(letter.to_string(), font)
+                    ui_text::body(initials, font)
                         .with_color(theme::accent())
                         .finish(),
                 )
@@ -73,6 +91,10 @@ pub fn build_avatar_slot(
         )
         .with_width(AVATAR_SIZE)
         .with_height(AVATAR_SIZE)
+        .with_min_width(AVATAR_SIZE)
+        .with_min_height(AVATAR_SIZE)
+        .with_max_width(AVATAR_SIZE)
+        .with_max_height(AVATAR_SIZE)
         .finish(),
     )
     .with_background(theme::panel_elevated())
@@ -95,13 +117,16 @@ pub fn build_avatar_slot(
         })
         .finish();
 
+    // Match HTML `.hud-avatar-slot`: padding only, no left divider line.
     Container::new(
         ConstrainedBox::new(btn)
+            .with_width(AVATAR_SIZE)
+            .with_height(AVATAR_SIZE)
             .with_min_width(AVATAR_SIZE)
+            .with_min_height(AVATAR_SIZE)
             .finish(),
     )
     .with_horizontal_padding(8.0)
-    .with_border(Border::left(1.0).with_border_fill(theme::border()))
     .finish()
 }
 
@@ -1141,4 +1166,33 @@ fn redeem_button(
         DispatchEventResult::StopPropagation
     })
     .finish()
+}
+
+#[cfg(test)]
+mod email_initials_tests {
+    use super::{avatar_initials, email_initials};
+
+    #[test]
+    fn email_initials_takes_two_letters_from_local_part() {
+        assert_eq!(email_initials(Some("ab@example.com")), "AB");
+        assert_eq!(email_initials(Some("hello@x.com")), "HE");
+    }
+
+    #[test]
+    fn email_initials_pads_single_char() {
+        assert_eq!(email_initials(Some("a@b.c")), "AA");
+    }
+
+    #[test]
+    fn email_initials_falls_back_when_missing() {
+        assert_eq!(email_initials(None), "WH");
+        assert_eq!(email_initials(Some("")), "WH");
+        assert_eq!(email_initials(Some("   ")), "WH");
+    }
+
+    #[test]
+    fn avatar_initials_guest_is_question_mark() {
+        assert_eq!(avatar_initials(false, Some("ab@x.com")), "?");
+        assert_eq!(avatar_initials(true, Some("ab@x.com")), "AB");
+    }
 }

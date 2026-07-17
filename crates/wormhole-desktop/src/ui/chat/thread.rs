@@ -3,30 +3,32 @@ use std::collections::HashMap;
 use warpui::elements::Fill;
 use warpui::elements::{
     Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Expanded, Flex,
-    MainAxisSize, ParentElement, ScrollbarWidth,
+    MainAxisSize, ParentElement, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, UpdateView, View, ViewContext};
 
-use crate::ui::chat::bubble::{format_message_time_pub, outgoing_message_read, ChatBubbleView};
-use crate::ui::chat::layout::{
-    bubble_max_width, message_is_grouped, message_row_margin_bottom, thread_search_matches,
-    TG_THREAD_PAD_BOTTOM, TG_THREAD_PAD_TOP, TG_THREAD_PAD_X,
-};
-use crate::ui::chat::shell::ConversationSelection;
-use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
+use crate::ui::chat::bubble::{ChatBubbleView, format_message_time_pub, outgoing_message_read};
 use crate::ui::chat::image_asset::{
     chat_wallpaper_asset_id, insert_wallpaper_asset, load_wallpaper_bytes_from_path,
 };
-use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
+use crate::ui::chat::layout::{
+    TG_THREAD_PAD_BOTTOM, TG_THREAD_PAD_TOP, TG_THREAD_PAD_X, bubble_max_width, message_is_grouped,
+    message_row_margin_bottom,
+};
+use crate::ui::chat::shell::ConversationSelection;
+use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
 use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
+use crate::ui::core_handle::CoreHandle;
+use crate::ui::panel_primitives::{StatusTone, TG_BUBBLE_MAX_WIDTH, status_line};
+use wormhole_desktop_core::chat_commands::{
+    ChatAttachmentDto, ChatMessageDto, ChatMessageWindowParams, ChatSearchCursorDto,
+    ListChatMessagesParams, SearchChatMessagesParams, chat_config, chat_list_messages,
+    chat_message_window, chat_search_messages,
+};
 use wormhole_desktop_core::chat_rtc_call::video_signal_display_text;
 use wormhole_desktop_core::chat_ui_prefs::load_chat_ui_prefs;
 use wormhole_desktop_core::chat_wallpaper_storage::wallpaper_abs_path;
-use wormhole_desktop_core::chat_commands::{
-    chat_config, chat_list_messages, ChatAttachmentDto, ChatMessageDto, ListChatMessagesParams,
-};
 
 struct BubbleEntry {
     outgoing: bool,
@@ -43,7 +45,11 @@ pub struct ChatThreadView {
     loaded_for: Option<String>,
     last_message_tick: u64,
     last_selection_tick: u64,
-    last_search_query: String,
+    last_search_request_tick: u64,
+    last_search_nav_tick: u64,
+    search_hits: Vec<ChatMessageDto>,
+    search_next_cursor: Option<ChatSearchCursorDto>,
+    search_fetch_generation: u64,
     local_endpoint: Option<String>,
     messages: Vec<ChatMessageDto>,
     message_cache: HashMap<String, Vec<ChatMessageDto>>,
@@ -73,6 +79,10 @@ fn messages_snapshot_equal(a: &[ChatMessageDto], b: &[ChatMessageDto]) -> bool {
 
 const PENDING_DEDUP_WINDOW_MS: u64 = 30_000;
 const RECENT_MESSAGE_PAGE: usize = 50;
+
+fn message_position_id(message_id: &str) -> String {
+    format!("chat-message-{message_id}")
+}
 
 /// Merge `incoming` into `existing` by message id; newer `sent_at` wins on conflict.
 pub(crate) fn merge_messages_by_id(
@@ -162,7 +172,11 @@ impl ChatThreadView {
             loaded_for: None,
             last_message_tick: 0,
             last_selection_tick: 0,
-            last_search_query: String::new(),
+            last_search_request_tick: 0,
+            last_search_nav_tick: 0,
+            search_hits: Vec::new(),
+            search_next_cursor: None,
+            search_fetch_generation: 0,
             local_endpoint: None,
             messages: Vec::new(),
             message_cache: HashMap::new(),
@@ -198,11 +212,19 @@ impl ChatThreadView {
 
     fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let current = self.selection.lock().ok().and_then(|g| g.clone());
-        let (message_tick, selection_tick, wallpaper_tick) = self
-            .shell_state
-            .lock()
-            .map(|state| (state.message_tick, state.selection_tick, state.wallpaper_tick))
-            .unwrap_or((0, 0, 0));
+        let (message_tick, selection_tick, wallpaper_tick, search_request_tick, search_nav_tick) =
+            self.shell_state
+                .lock()
+                .map(|state| {
+                    (
+                        state.message_tick,
+                        state.selection_tick,
+                        state.wallpaper_tick,
+                        state.thread_search_request_tick,
+                        state.thread_search_nav_tick,
+                    )
+                })
+                .unwrap_or((0, 0, 0, 0, 0));
         let wallpaper_changed = wallpaper_tick != self.last_wallpaper_tick;
         if wallpaper_changed {
             self.last_wallpaper_tick = wallpaper_tick;
@@ -210,16 +232,16 @@ impl ChatThreadView {
                 self.refresh_wallpaper(conv_id, ctx);
             }
         }
-        let query = self.search_query();
-        let search_changed = query != self.last_search_query;
         let selection_changed = current != self.loaded_for;
         let tick_changed = message_tick != self.last_message_tick;
         let pending_changed = selection_tick != self.last_selection_tick;
-        if search_changed && !self.messages.is_empty() {
-            self.last_search_query = query;
-            self.rebuild_bubbles(ctx);
-            ctx.notify();
-            return;
+        if search_request_tick != self.last_search_request_tick {
+            self.last_search_request_tick = search_request_tick;
+            self.start_search(ctx);
+        }
+        if search_nav_tick != self.last_search_nav_tick {
+            self.last_search_nav_tick = search_nav_tick;
+            self.navigate_search(ctx);
         }
         if pending_changed {
             self.last_selection_tick = selection_tick;
@@ -234,7 +256,8 @@ impl ChatThreadView {
             if let Ok(mut state) = self.shell_state.lock() {
                 state.close_thread_search();
             }
-            self.last_search_query = String::new();
+            self.search_hits.clear();
+            self.search_next_cursor = None;
             self.fetch_error = None;
             if let Some(conv_id) = current.as_ref() {
                 let cached = self.message_cache.get(conv_id).cloned();
@@ -276,6 +299,206 @@ impl ChatThreadView {
             self.rebuild_bubbles(ctx);
             ctx.notify();
         }
+    }
+
+    fn start_search(&mut self, ctx: &mut ViewContext<Self>) {
+        self.fetch_search_page(true, None, 0, ctx);
+    }
+
+    fn fetch_search_page(
+        &mut self,
+        reset: bool,
+        cursor: Option<ChatSearchCursorDto>,
+        desired_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(conv_id) = self.loaded_for.clone() else {
+            return;
+        };
+        let (query, from_ms, to_ms) = self
+            .shell_state
+            .lock()
+            .map(|state| {
+                (
+                    state.thread_search_query.clone(),
+                    state.thread_search_from_ms,
+                    state.thread_search_to_ms,
+                )
+            })
+            .unwrap_or_default();
+        if query.trim().is_empty() && from_ms.is_none() && to_ms.is_none() {
+            self.search_hits.clear();
+            self.search_next_cursor = None;
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.thread_search_current = 0;
+                state.thread_search_total = 0;
+                state.thread_search_loading = false;
+                state.thread_search_error = None;
+            }
+            self.rebuild_bubbles(ctx);
+            ctx.notify();
+            return;
+        }
+        self.search_fetch_generation = self.search_fetch_generation.saturating_add(1);
+        let generation = self.search_fetch_generation;
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.thread_search_loading = true;
+            state.thread_search_error = None;
+        }
+        let core = self.core.clone();
+        let ascending = query.trim().is_empty();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let params = SearchChatMessagesParams {
+                    conv_id: conv_id.clone(),
+                    query: (!query.trim().is_empty()).then_some(query),
+                    from_ms,
+                    to_ms,
+                    ascending: Some(ascending),
+                    cursor,
+                    limit: Some(50),
+                };
+                let page = chat_search_messages(runtime.ctx.as_ref(), &runtime.state, params).await;
+                (conv_id, generation, reset, desired_index, page)
+            },
+            |view, output, ctx| {
+                let (conv_id, generation, reset, desired_index, page) = output;
+                if generation != view.search_fetch_generation
+                    || view.loaded_for.as_deref() != Some(conv_id.as_str())
+                {
+                    return;
+                }
+                match page {
+                    Ok(page) => {
+                        if reset {
+                            view.search_hits = page.messages;
+                        } else {
+                            for message in page.messages {
+                                if !view.search_hits.iter().any(|hit| hit.id == message.id) {
+                                    view.search_hits.push(message);
+                                }
+                            }
+                        }
+                        view.search_next_cursor = page.next_cursor;
+                        let current = desired_index.min(page.total.saturating_sub(1) as usize);
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.thread_search_current = current;
+                            state.thread_search_total = page.total as usize;
+                            state.thread_search_loading = false;
+                            state.thread_search_error = None;
+                        }
+                        view.rebuild_bubbles(ctx);
+                        view.ensure_search_target(current, ctx);
+                    }
+                    Err(error) => {
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.thread_search_loading = false;
+                            state.thread_search_error = Some(error);
+                            state.thread_search_current = 0;
+                            state.thread_search_total = 0;
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn navigate_search(&mut self, ctx: &mut ViewContext<Self>) {
+        let (current, total, delta) = self
+            .shell_state
+            .lock()
+            .map(|state| {
+                (
+                    state.thread_search_current,
+                    state.thread_search_total,
+                    state.thread_search_nav_delta,
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        if total == 0 || delta == 0 {
+            return;
+        }
+        let desired = if delta < 0 {
+            current.saturating_sub(1)
+        } else {
+            current.saturating_add(1).min(total.saturating_sub(1))
+        };
+        if desired >= self.search_hits.len() {
+            if let Some(cursor) = self.search_next_cursor.clone() {
+                self.fetch_search_page(false, Some(cursor), desired, ctx);
+            }
+            return;
+        }
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.thread_search_current = desired;
+        }
+        self.rebuild_bubbles(ctx);
+        self.ensure_search_target(desired, ctx);
+        ctx.notify();
+    }
+
+    fn ensure_search_target(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        let Some(hit) = self.search_hits.get(index).cloned() else {
+            return;
+        };
+        if self.messages.iter().any(|message| message.id == hit.id) {
+            self.scroll.scroll_to_position(ScrollTarget {
+                position_id: message_position_id(&hit.id),
+                mode: ScrollToPositionMode::FullyIntoView,
+            });
+            return;
+        }
+        let Some(conv_id) = self.loaded_for.clone() else {
+            return;
+        };
+        let target_id = hit.id.clone();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let params = ChatMessageWindowParams {
+                    conv_id: conv_id.clone(),
+                    anchor_message_id: target_id.clone(),
+                    before: Some(25),
+                    after: Some(25),
+                };
+                let result =
+                    chat_message_window(runtime.ctx.as_ref(), &runtime.state, params).await;
+                (conv_id, target_id, result)
+            },
+            |view, output, ctx| {
+                let (conv_id, target_id, result) = output;
+                if view.loaded_for.as_deref() != Some(conv_id.as_str()) {
+                    return;
+                }
+                let active_id = view.shell_state.lock().ok().and_then(|state| {
+                    view.search_hits
+                        .get(state.thread_search_current)
+                        .map(|hit| hit.id.clone())
+                });
+                if active_id.as_deref() != Some(target_id.as_str()) {
+                    return;
+                }
+                if let Ok(window) = result {
+                    let base = view
+                        .message_cache
+                        .get(&conv_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let merged = merge_messages_by_id(&base, &window);
+                    view.message_cache.insert(conv_id.clone(), merged.clone());
+                    view.messages = view.merge_messages_for_conv(&merged, &conv_id);
+                    view.rebuild_bubbles(ctx);
+                    view.scroll.scroll_to_position(ScrollTarget {
+                        position_id: message_position_id(&target_id),
+                        mode: ScrollToPositionMode::FullyIntoView,
+                    });
+                    ctx.notify();
+                }
+            },
+        );
     }
 
     fn pending_for_conv(&self, conv_id: &str) -> Vec<PendingOutgoingMessage> {
@@ -379,21 +602,6 @@ impl ChatThreadView {
             self.update_hint_bubble(ctx);
             ctx.notify();
         }
-
-        if before.is_none()
-            && fetched.len() >= RECENT_MESSAGE_PAGE
-            && !self
-                .history_exhausted
-                .get(conv_id)
-                .copied()
-                .unwrap_or(false)
-            && self.loading_older_conv.is_none()
-        {
-            let earliest = merged_base.first().map(|msg| msg.sent_at);
-            if let Some(sent_at) = earliest {
-                self.fetch_older_messages(conv_id.to_string(), Some(sent_at), ctx);
-            }
-        }
     }
 
     pub fn apply_incoming_message(
@@ -456,11 +664,18 @@ impl ChatThreadView {
         if self.loading_older_conv.is_some() {
             return "加载更早消息…".into();
         }
-        let query = self.search_query();
-        if !query.trim().is_empty()
-            && !self.messages.is_empty()
-            && self.bubbles.iter().all(|bubble| !bubble.visible)
-        {
+        let search_empty = self
+            .shell_state
+            .lock()
+            .map(|state| {
+                state.thread_search_open
+                    && !state.thread_search_loading
+                    && state.thread_search_total == 0
+                    && (!state.thread_search_query.trim().is_empty()
+                        || state.thread_search_from_ms.is_some())
+            })
+            .unwrap_or(false);
+        if search_empty {
             return "无匹配消息".into();
         }
         "暂无消息，发送第一条吧".into()
@@ -614,9 +829,9 @@ impl ChatThreadView {
                 let asset_id = chat_wallpaper_asset_id(&conv_id);
                 view.wallpaper_asset_id = Some(asset_id);
                 let abs = wallpaper_abs_path(&data_dir, &rel);
-                match load_wallpaper_bytes_from_path(&abs).and_then(|bytes| {
-                    insert_wallpaper_asset(ctx, &conv_id, bytes).map(|_| ())
-                }) {
+                match load_wallpaper_bytes_from_path(&abs)
+                    .and_then(|bytes| insert_wallpaper_asset(ctx, &conv_id, bytes).map(|_| ()))
+                {
                     Ok(()) => {
                         view.wallpaper_loaded = true;
                         ctx.notify();
@@ -628,13 +843,6 @@ impl ChatThreadView {
                 }
             },
         );
-    }
-
-    fn search_query(&self) -> String {
-        self.shell_state
-            .lock()
-            .map(|state| state.thread_search_query.clone())
-            .unwrap_or_default()
     }
 
     fn bubble_width_cap(&self) -> f32 {
@@ -649,7 +857,11 @@ impl ChatThreadView {
         self.bubbles.clear();
         let max_bubble_width = self.bubble_width_cap();
         let local = self.local_endpoint.as_deref();
-        let query = self.search_query();
+        let active_search_id = self.shell_state.lock().ok().and_then(|state| {
+            self.search_hits
+                .get(state.thread_search_current)
+                .map(|message| message.id.clone())
+        });
         let mut prev_outgoing: Option<bool> = None;
         let mut last_outgoing_index: Option<usize> = None;
         let mut outgoing_flags = Vec::with_capacity(self.messages.len());
@@ -671,19 +883,8 @@ impl ChatThreadView {
             let read = outgoing
                 && !msg.id.starts_with("pending:")
                 && outgoing_message_read(msg.sent_at, last_outgoing_index == Some(index));
-            let search_hit = !query.trim().is_empty()
-                && (thread_search_matches(&query, &body)
-                    || msg
-                        .attachments
-                        .iter()
-                        .any(|attachment| thread_search_matches(&query, &attachment.name)));
-            let visible = search_hit
-                || query.trim().is_empty()
-                || thread_search_matches(&query, &body)
-                || msg
-                    .attachments
-                    .iter()
-                    .any(|attachment| thread_search_matches(&query, &attachment.name));
+            let search_hit = active_search_id.as_deref() == Some(msg.id.as_str());
+            let visible = true;
             let handle = ctx.add_view(move |ctx| {
                 ChatBubbleView::new(
                     ctx,
@@ -742,9 +943,14 @@ impl View for ChatThreadView {
                     .unwrap_or(false);
                 let margin_bottom = message_row_margin_bottom(grouped_with_next);
                 col.add_child(
-                    Container::new(ChildView::new(&bubble.handle).finish())
-                        .with_margin_bottom(margin_bottom)
-                        .finish(),
+                    SavePosition::new(
+                        Container::new(ChildView::new(&bubble.handle).finish())
+                            .with_margin_bottom(margin_bottom)
+                            .finish(),
+                        &message_position_id(&self.messages[index].id),
+                    )
+                    .for_single_frame()
+                    .finish(),
                 );
             }
         }

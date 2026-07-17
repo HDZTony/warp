@@ -7,16 +7,17 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
 
 use warpui::elements::{
-    AfterLayoutContext, Align, AppContext, Border, ChildAnchor, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, Element, EventContext,
-    EventDispatchMode, EventHandler, Flex, Hoverable, LayoutContext, MainAxisAlignment,
-    MainAxisSize, MouseState, MouseStateHandle, OffsetPositioning, PaintContext, ParentAnchor,
-    ParentElement, ParentOffsetBounds, Point, Radius, SizeConstraint, Stack,
+    AfterLayoutContext, Align, AppContext, Border, ChildAnchor, ClippedScrollStateHandle,
+    ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, Element, EventContext, EventDispatchMode, EventHandler, Fill, Flex,
+    Hoverable, LayoutContext, MainAxisAlignment, MainAxisSize, MouseState, MouseStateHandle,
+    OffsetPositioning, PaintContext, ParentAnchor, ParentElement, ParentOffsetBounds, Point,
+    Radius, ScrollbarWidth, SizeConstraint, Stack,
 };
 use warpui::fonts::FamilyId;
 
 use crate::ui::cluster_layout::{
-    card_height, cards_row_card_width, BODY_MIN_HEIGHT, BODY_PADDING_BOTTOM, BODY_PADDING_TOP,
+    card_height, grid_card_width, grid_column_count, BODY_PADDING_BOTTOM, BODY_PADDING_TOP,
     CARD_GAP, TOPO_PAD,
 };
 
@@ -46,8 +47,11 @@ pub struct ClusterTopologyPanel {
     hub_index: usize,
     remarks: BTreeMap<String, String>,
     mono: FamilyId,
+    scroll: ClippedScrollStateHandle,
     child: Box<dyn Element>,
     built_width: f32,
+    built_columns: usize,
+    built_node_count: usize,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -70,8 +74,11 @@ impl ClusterTopologyPanel {
             hub_index,
             remarks,
             mono,
+            scroll: ClippedScrollStateHandle::new(),
             child: Flex::column().finish(),
             built_width: 0.0,
+            built_columns: 0,
+            built_node_count: 0,
             size: None,
             origin: None,
         }
@@ -99,37 +106,78 @@ impl ClusterTopologyPanel {
 
     fn rebuild(&mut self, container_width: f32) {
         let node_count = self.nodes.len().max(1);
-        let card_w = cards_row_card_width(container_width, node_count);
-        if self.built_width > 0.0 && (self.built_width - card_w).abs() < 0.5 {
+        let columns = grid_column_count(container_width).max(1);
+        let card_w = grid_card_width(container_width);
+        if self.built_width > 0.0
+            && (self.built_width - card_w).abs() < 0.5
+            && self.built_columns == columns
+            && self.built_node_count == node_count
+        {
             return;
         }
         self.built_width = card_w;
+        self.built_columns = columns;
+        self.built_node_count = node_count;
 
-        let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_main_axis_alignment(MainAxisAlignment::Start);
         let nodes = self.nodes.clone();
         let local_node_id = self.local_node_id.clone();
         let selected_node_id = self.selected_node_id.clone();
         let hovered_node_id = self.hovered_node_id.clone();
         let remarks = self.remarks.clone();
-        for (idx, node) in nodes.iter().enumerate() {
-            row.add_child(
-                Container::new(node_card(
-                    node,
-                    &local_node_id,
-                    &selected_node_id,
-                    &hovered_node_id,
-                    remarks.get(&node.node_id).map(String::as_str),
-                    card_w,
-                    self.mono,
-                ))
-                .with_horizontal_margin(if idx + 1 < node_count { CARD_GAP } else { 0.0 })
-                .finish(),
+
+        let mut grid = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_main_axis_size(MainAxisSize::Min);
+
+        let row_count = node_count.div_ceil(columns);
+        for row_idx in 0..row_count {
+            let start = row_idx * columns;
+            let end = (start + columns).min(nodes.len().max(1));
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Start)
+                .with_main_axis_alignment(MainAxisAlignment::Start);
+            if nodes.is_empty() {
+                break;
+            }
+            for (col_idx, node) in nodes[start..end].iter().enumerate() {
+                let is_last_in_row = col_idx + 1 >= end - start;
+                row.add_child(
+                    Container::new(node_card(
+                        node,
+                        &local_node_id,
+                        &selected_node_id,
+                        &hovered_node_id,
+                        remarks.get(&node.node_id).map(String::as_str),
+                        card_w,
+                        self.mono,
+                    ))
+                    .with_horizontal_margin(if is_last_in_row { 0.0 } else { CARD_GAP })
+                    .finish(),
+                );
+            }
+            let is_last_row = row_idx + 1 >= row_count;
+            grid.add_child(
+                Container::new(row.finish())
+                    .with_margin_bottom(if is_last_row { 0.0 } else { CARD_GAP })
+                    .finish(),
             );
         }
 
         let card_h = card_height(card_w);
+        let grid_content = Container::new(grid.finish())
+            .with_uniform_padding(TOPO_PAD)
+            .finish();
+
+        let scroll = ClippedScrollable::vertical(
+            self.scroll.clone(),
+            grid_content,
+            ScrollbarWidth::Auto,
+            Fill::None,
+            Fill::None,
+            Fill::None,
+        )
+        .finish();
+
         let mut stack = Stack::new().with_event_dispatch_mode(EventDispatchMode::Waterfall);
         stack.add_child(ClusterTopology::new(node_count, self.hub_index).live());
         if node_count <= 2 {
@@ -147,11 +195,7 @@ impl ClusterTopologyPanel {
                 .finish(),
             );
         }
-        stack.add_child(
-            Container::new(row.finish())
-                .with_uniform_padding(TOPO_PAD)
-                .finish(),
-        );
+        stack.add_child(scroll);
         self.child = stack.finish();
     }
 }
@@ -297,6 +341,15 @@ pub(crate) fn node_share_browsable(node: &ClusterNodeDto, is_local: bool) -> boo
     node.presence_status == NODE_PRESENCE_SIGNED_IN && has_endpoint
 }
 
+pub(crate) fn node_remote_desktop_available(node: &ClusterNodeDto, is_local: bool) -> bool {
+    !is_local
+        && node.online
+        && node
+            .chat_endpoint_id
+            .as_deref()
+            .is_some_and(|endpoint| !endpoint.trim().is_empty())
+}
+
 fn share_volume_count_hint(count: usize, mono: FamilyId) -> Box<dyn Element> {
     let label = if count == 0 {
         "尚未发布共享".to_string()
@@ -412,16 +465,16 @@ fn share_files_button(node_id: String, clickable: bool, mono: FamilyId) -> Box<d
     }
 }
 
-fn remote_desktop_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn Element> {
+fn remote_desktop_button(node_id: String, available: bool, mono: FamilyId) -> Box<dyn Element> {
     let inner = device_action_button(
         icons::DeviceActionIconKind::RemoteDesktop,
         "远程桌面",
-        online,
+        available,
         false,
         mono,
     );
 
-    if online {
+    if available {
         EventHandler::new(inner)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::OpenRemoteDesktop(node_id.clone()));
@@ -478,8 +531,9 @@ fn node_card(
     let display_label = node_display_label(node, is_local, remark);
     let (status_text, status_tone) = node_presence_label(node);
 
-    let mut body = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    body.add_child(
+    // Clickable region: thumb + name/status/share count (not action buttons).
+    let mut info = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    info.add_child(
         ConstrainedBox::new(
             Container::new(
                 ui_text::device_name(display_label, mono)
@@ -492,8 +546,52 @@ fn node_card(
         .with_min_height(32.0)
         .finish(),
     );
-    body.add_child(status_line(status_text, mono, status_tone));
-    body.add_child(share_volume_count_hint(node.share_volumes.len(), mono));
+    info.add_child(status_line(status_text, mono, status_tone));
+    info.add_child(share_volume_count_hint(node.share_volumes.len(), mono));
+
+    let info_block = Container::new(info.finish())
+        .with_horizontal_padding(12.0)
+        .with_padding_top(BODY_PADDING_TOP)
+        .finish();
+
+    let online = node.online;
+    // Hoverable tracks enter/leave; EventHandler::on_mouse_out does not clear on leave.
+    let clickable = Hoverable::new(
+        Arc::new(Mutex::new(MouseState::default())),
+        move |_| {
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(icons::device_thumb(
+                    &os_label,
+                    online,
+                    theme::accent_cool(),
+                    mono,
+                    card_width,
+                ))
+                .with_child(info_block)
+                .finish()
+        },
+    )
+    .on_hover(move |hovered, ctx, _, _| {
+        if hovered {
+            ctx.dispatch_typed_action(DevicesAction::SetNodeHover(Some(hover_in_id.clone())));
+        } else {
+            ctx.dispatch_typed_action(DevicesAction::ClearNodeHoverIf(hover_in_id.clone()));
+        }
+    })
+    .on_mouse_down(move |ctx, _, _| {
+        ctx.dispatch_typed_action(DevicesAction::NodeCardClick(click_id.clone()));
+    })
+    .on_right_click(move |ctx, _, position| {
+        ctx.dispatch_typed_action(DevicesAction::OpenDeviceContextMenu {
+            node_id: context_id.clone(),
+            x: position.x(),
+            y: position.y(),
+        });
+    })
+    .finish();
+
+    // Action buttons sit outside the card click handler so a single click opens.
     let mut actions = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Min);
@@ -512,13 +610,17 @@ fn node_card(
     );
     if !is_local {
         actions.add_child(
-            Container::new(remote_desktop_button(node_id.clone(), node.online, mono))
-                .with_margin_right(if node.removable {
-                    DEVICE_ACTION_GAP
-                } else {
-                    0.0
-                })
-                .finish(),
+            Container::new(remote_desktop_button(
+                node_id.clone(),
+                node_remote_desktop_available(node, is_local),
+                mono,
+            ))
+            .with_margin_right(if node.removable {
+                DEVICE_ACTION_GAP
+            } else {
+                0.0
+            })
+            .finish(),
         );
     }
     if node.removable {
@@ -528,7 +630,7 @@ fn node_card(
             mono,
         ));
     }
-    body.add_child(
+    let actions_block = Container::new(
         Align::new(
             Container::new(actions.finish())
                 .with_margin_top(8.0)
@@ -536,27 +638,14 @@ fn node_card(
         )
         .left()
         .finish(),
-    );
-
-    let body_block = Container::new(
-        ConstrainedBox::new(body.finish())
-            .with_min_height(BODY_MIN_HEIGHT)
-            .finish(),
     )
     .with_horizontal_padding(12.0)
-    .with_padding_top(BODY_PADDING_TOP)
     .with_padding_bottom(BODY_PADDING_BOTTOM)
     .finish();
 
     let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    col.add_child(icons::device_thumb(
-        &os_label,
-        node.online,
-        theme::accent_cool(),
-        mono,
-        card_width,
-    ));
-    col.add_child(body_block);
+    col.add_child(clickable);
+    col.add_child(actions_block);
 
     let border_color = if selected {
         theme::accent()
@@ -581,40 +670,8 @@ fn node_card(
     .finish();
 
     let card_h = card_height(card_width);
-    let mut visual = Stack::new();
-    visual.add_child(card);
-    if selected || hovered {
-        visual.add_child(selected_corner_brackets());
-    }
-
-    let interactive = EventHandler::new(visual.finish())
-        .on_mouse_in(
-            move |ctx, _, _| {
-                ctx.dispatch_typed_action(DevicesAction::SetNodeHover(Some(hover_in_id.clone())));
-                DispatchEventResult::PropagateToParent
-            },
-            None,
-        )
-        .on_mouse_out(move |ctx, _, _| {
-            ctx.dispatch_typed_action(DevicesAction::SetNodeHover(None));
-            DispatchEventResult::PropagateToParent
-        })
-        .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(DevicesAction::NodeCardClick(click_id.clone()));
-            DispatchEventResult::StopPropagation
-        })
-        .on_right_mouse_down(move |ctx, _, position| {
-            ctx.dispatch_typed_action(DevicesAction::OpenDeviceContextMenu {
-                node_id: context_id.clone(),
-                x: position.x(),
-                y: position.y(),
-            });
-            DispatchEventResult::StopPropagation
-        })
-        .finish();
-
     let mut card_stack = Stack::new();
-    card_stack.add_child(interactive);
+    card_stack.add_child(card);
     if is_local {
         card_stack.add_child(
             Align::new(
@@ -655,48 +712,9 @@ fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
     }
 }
 
-fn selected_corner_brackets() -> Box<dyn Element> {
-    let corner = |top_left: bool| {
-        let border = Border::new(1.0)
-            .with_sides(top_left, top_left, !top_left, !top_left)
-            .with_border_fill(theme::accent_cool());
-        Container::new(
-            ConstrainedBox::new(Flex::column().finish())
-                .with_width(8.0)
-                .with_height(8.0)
-                .finish(),
-        )
-        .with_border(border)
-        .finish()
-    };
-
-    let mut overlay = Stack::new();
-    overlay.add_child(
-        Align::new(
-            Container::new(corner(true))
-                .with_margin_top(6.0)
-                .with_margin_left(6.0)
-                .finish(),
-        )
-        .top_left()
-        .finish(),
-    );
-    overlay.add_child(
-        Align::new(
-            Container::new(corner(false))
-                .with_margin_bottom(6.0)
-                .with_margin_right(6.0)
-                .finish(),
-        )
-        .bottom_right()
-        .finish(),
-    );
-    overlay.finish()
-}
-
 #[cfg(test)]
 mod node_share_browsable_tests {
-    use super::node_share_browsable;
+    use super::{node_remote_desktop_available, node_share_browsable};
     use wormhole_desktop_core::cluster_commands::{
         ClusterNodeDto, ShareVolumeRosterDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE,
         NODE_PRESENCE_SIGNED_IN,
@@ -774,5 +792,18 @@ mod node_share_browsable_tests {
     fn offline_without_signed_in_not_browsable() {
         let node = sample_node(false, NODE_PRESENCE_OFFLINE, Some("endpoint-hex"), 1);
         assert!(!node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn remote_desktop_requires_remote_online_node_with_endpoint() {
+        let ready = sample_node(true, NODE_PRESENCE_ONLINE, Some("endpoint-hex"), 0);
+        assert!(node_remote_desktop_available(&ready, false));
+        assert!(!node_remote_desktop_available(&ready, true));
+
+        let offline = sample_node(false, NODE_PRESENCE_OFFLINE, Some("endpoint-hex"), 0);
+        assert!(!node_remote_desktop_available(&offline, false));
+
+        let missing = sample_node(true, NODE_PRESENCE_ONLINE, None, 0);
+        assert!(!node_remote_desktop_available(&missing, false));
     }
 }

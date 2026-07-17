@@ -6,8 +6,8 @@ use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, Wa
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
     Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler,
-    Expanded, Fill, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement,
-    ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
+    Expanded, Fill, Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning,
+    ParentAnchor, ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -97,16 +97,48 @@ pub enum TabSelectSource {
     Keyboard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteDesktopOrigin {
+    Chat,
+    Devices,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedeemTab {
     Redeem,
     History,
 }
 
+/// Persisted [`MouseStateHandle`]s for primary chrome tabs.
+///
+/// Must outlive each rebuild so [`Hoverable`] can clear hover when the pointer leaves
+/// (ephemeral handles reset `is_hovered` and can leave tooltips stuck).
+#[derive(Default)]
+struct TabHoverMouseStates {
+    devices: MouseStateHandle,
+    chat: MouseStateHandle,
+    warp: MouseStateHandle,
+    toolbox: MouseStateHandle,
+    settings: MouseStateHandle,
+}
+
+impl TabHoverMouseStates {
+    fn for_tab(&self, tab: AppTab) -> MouseStateHandle {
+        match tab {
+            AppTab::Devices | AppTab::WDrive | AppTab::Sync | AppTab::Display => {
+                self.devices.clone()
+            }
+            AppTab::Chat => self.chat.clone(),
+            AppTab::Warp => self.warp.clone(),
+            AppTab::Toolbox => self.toolbox.clone(),
+            AppTab::Settings => self.settings.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AppShellAction {
     SelectTab(AppTab, TabSelectSource),
-    SetTabHover(Option<AppTab>),
     DismissOnboarding,
     MinimizeWindow,
     ToggleMaximizeWindow,
@@ -129,9 +161,9 @@ pub enum AppShellAction {
 
 pub struct AppShellView {
     tab: AppTab,
-    hovered_tab: Option<AppTab>,
     tab_focus: AppTab,
     tab_bar_keyboard_focus: bool,
+    tab_hover_mouse_states: TabHoverMouseStates,
     core: CoreHandle,
     coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
     #[allow(dead_code)]
@@ -148,6 +180,7 @@ pub struct AppShellView {
     login_modal_open: bool,
     auth_authenticated: bool,
     auth_device_id: Option<String>,
+    auth_email: Option<String>,
     font: FamilyId,
     mono: FamilyId,
     hud_nodes: usize,
@@ -192,8 +225,9 @@ impl AppShellView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
-        #[cfg(any(windows, target_os = "linux"))]
-        tray: std::sync::Arc<wormhole_desktop_tray::TrayController>,
+        #[cfg(any(windows, target_os = "linux"))] tray: std::sync::Arc<
+            wormhole_desktop_tray::TrayController,
+        >,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
@@ -216,7 +250,7 @@ impl AppShellView {
                 ctx.notify();
             }
             ChatShellEvent::OpenRemoteDesktop { peer } => {
-                view.open_remote_desktop_for_peer(peer, ctx);
+                view.open_remote_desktop_for_identity(peer, RemoteDesktopOrigin::Chat, ctx);
             }
             ChatShellEvent::OpenLiveViewer { peer, title } => {
                 view.open_live_viewer_for_peer(peer, title.clone(), ctx);
@@ -240,7 +274,7 @@ impl AppShellView {
                 ctx.notify();
             }
             DevicesEvent::OpenRemoteDesktop { node_id } => {
-                view.open_remote_desktop_for_peer(node_id, ctx);
+                view.open_remote_desktop_for_identity(node_id, RemoteDesktopOrigin::Devices, ctx);
             }
         });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
@@ -253,9 +287,11 @@ impl AppShellView {
                 LoginModalEvent::AuthChanged {
                     authenticated,
                     device_id,
+                    email,
                 } => {
                     view.auth_authenticated = *authenticated;
                     view.auth_device_id = device_id.clone();
+                    view.auth_email = email.clone();
                     view.login_modal_open = false;
                     let settings_handle = view.settings.clone();
                     ctx.update_view(&settings_handle, |settings, ctx| {
@@ -275,6 +311,7 @@ impl AppShellView {
                     view.auth_authenticated = *authenticated;
                     if !authenticated {
                         view.auth_device_id = None;
+                        view.auth_email = None;
                         view.device_ready = false;
                         view.prompt_login_if_needed(ctx);
                     }
@@ -335,9 +372,9 @@ impl AppShellView {
         ));
         let view = Self {
             tab,
-            hovered_tab: None,
             tab_focus: tab,
             tab_bar_keyboard_focus: false,
+            tab_hover_mouse_states: TabHoverMouseStates::default(),
             core,
             coordinator,
             coordinator_view,
@@ -353,6 +390,7 @@ impl AppShellView {
             login_modal_open: false,
             auth_authenticated: false,
             auth_device_id: None,
+            auth_email: None,
             font,
             mono,
             hud_nodes: 1,
@@ -455,6 +493,7 @@ impl AppShellView {
                     view.auth_authenticated = auth_now;
                     if !auth_now {
                         view.auth_device_id = None;
+                        view.auth_email = None;
                     }
                     let device_ready = auth_now && !status.device_bootstrap_required;
                     let device_ready_changed = device_ready != view.device_ready;
@@ -747,28 +786,81 @@ impl AppShellView {
         }
     }
 
-    fn open_remote_desktop_for_peer(&self, peer: &str, _ctx: &mut ViewContext<Self>) {
-        let peer = peer.trim();
-        if peer.is_empty() {
+    fn open_remote_desktop_for_identity(
+        &self,
+        identity: &str,
+        origin: RemoteDesktopOrigin,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let identity = identity.trim().to_string();
+        if identity.is_empty() {
+            self.set_remote_desktop_result(origin, Err("当前终端缺少 P2P endpoint".into()), ctx);
             return;
         }
-        let short = if peer.chars().count() > 8 {
-            format!("{}…", peer.chars().take(8).collect::<String>())
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                wormhole_desktop_core::cluster_commands::resolve_cluster_remote_desktop_target(
+                    &runtime.state,
+                    &identity,
+                )
+                .await
+            },
+            move |view, result, ctx| {
+                let result = result.and_then(|target| view.enqueue_remote_desktop(target));
+                view.set_remote_desktop_result(origin, result, ctx);
+            },
+        );
+    }
+
+    fn enqueue_remote_desktop(
+        &self,
+        target: wormhole_desktop_core::cluster_commands::ClusterRemoteDesktopTargetDto,
+    ) -> Result<(), String> {
+        let label = if target.hostname.trim().is_empty() {
+            target.endpoint_id.chars().take(8).collect::<String>()
+        } else if target.os.trim().is_empty() {
+            target.hostname.clone()
         } else {
-            peer.to_string()
+            format!("{} · {}", target.os, target.hostname)
         };
-        let window_key = crate::wormhole_native_ipc::rdp_window_key(peer);
-        let title = format!("远程桌面 · {short}");
-        if let Ok(mut guard) = self.coordinator.lock() {
-            guard.enqueue(UiCommand::OpenRdp {
-                peer: peer.to_string(),
-                title,
-                reconnect: false,
-                window_key,
-                password: None,
-                totp_code: None,
-                fps: 60,
-            });
+        let window_key = crate::wormhole_native_ipc::rdp_window_key(&target.endpoint_id);
+        let mut guard = self
+            .coordinator
+            .lock()
+            .map_err(|_| "远程桌面窗口协调器不可用".to_string())?;
+        guard.enqueue(UiCommand::OpenRdp {
+            peer: target.endpoint_addr,
+            title: format!("远程桌面 · {label}"),
+            reconnect: false,
+            window_key,
+            password: None,
+            totp_code: None,
+            fps: 60,
+        });
+        Ok(())
+    }
+
+    fn set_remote_desktop_result(
+        &self,
+        origin: RemoteDesktopOrigin,
+        result: Result<(), String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match origin {
+            RemoteDesktopOrigin::Chat => {
+                let chat = self.chat.clone();
+                ctx.update_view(&chat, |chat, ctx| {
+                    chat.set_remote_desktop_result(result, ctx);
+                });
+            }
+            RemoteDesktopOrigin::Devices => {
+                let devices = self.devices.clone();
+                ctx.update_view(&devices, |devices, ctx| {
+                    devices.set_remote_desktop_result(result, ctx);
+                });
+            }
         }
     }
 
@@ -825,13 +917,17 @@ impl AppShellView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                cloud_auth_status(&state).await
+                let status = cloud_auth_status(&state).await;
+                let prefs_email = crate::ui::desktop_prefs::load_login_prefs(&state.data_dir).email;
+                (status, prefs_email)
             },
             |view, output, ctx| {
-                if let Ok(status) = output {
+                let (status, prefs_email) = output;
+                if let Ok(status) = status {
                     let auth_resolved = status.authenticated && !view.auth_authenticated;
                     view.auth_authenticated = status.authenticated;
                     view.auth_device_id = status.device_id;
+                    view.auth_email = status.email.or(prefs_email);
                     if auth_resolved {
                         view.refresh_auth_gated_views(ctx);
                     } else if !status.authenticated {
@@ -1224,96 +1320,90 @@ impl AppShellView {
 
     fn tab_button(&self, tab: AppTab) -> Box<dyn Element> {
         let selected = self.tab == tab;
-        let hovered = self.hovered_tab == Some(tab);
         let keyboard_focused = self.tab_bar_keyboard_focus && self.tab_focus == tab;
-        let text_color = if selected || hovered {
-            theme::accent_cool()
-        } else {
-            theme::muted()
-        };
-        let bg = if selected {
-            theme::accent_cool_bg_default()
-        } else if hovered {
-            theme::accent_cool_bg(10)
-        } else {
-            ColorU::new(0, 0, 0, 0)
-        };
+        let mono = self.mono;
         let label = Self::tab_label(tab);
+        let mouse_state = self.tab_hover_mouse_states.for_tab(tab);
 
-        let bottom_accent = if selected {
-            theme::accent_cool()
-        } else {
-            ColorU::transparent_black()
-        };
+        Hoverable::new(mouse_state, move |state| {
+            let hovered = state.is_hovered();
+            let text_color = if selected || hovered {
+                theme::accent_cool()
+            } else {
+                theme::muted()
+            };
+            let bg = if selected {
+                theme::accent_cool_bg_default()
+            } else if hovered {
+                theme::accent_cool_bg(10)
+            } else {
+                ColorU::new(0, 0, 0, 0)
+            };
 
-        let content_height = icons::TAB_ICON_SIZE;
-        let bottom_border = 2.0;
-        let vertical_pad = ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
+            let bottom_accent = if selected {
+                theme::accent_cool()
+            } else {
+                ColorU::transparent_black()
+            };
 
-        let mut container = Container::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(icons::tab_button_content(
-                    tab, false, text_color, label, self.mono,
-                ))
-                .finish(),
-        )
-        .with_vertical_padding(vertical_pad)
-        .with_horizontal_padding(14.0)
-        .with_background(bg)
-        .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
-        .with_border(Border::right(1.0).with_border_fill(theme::border()));
-        if keyboard_focused {
-            container =
-                container.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
-        }
-        let interactive = EventHandler::new(container.finish())
-            .on_mouse_in(
-                move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AppShellAction::SetTabHover(Some(tab)));
-                    DispatchEventResult::PropagateToParent
-                },
-                None,
+            let content_height = icons::TAB_ICON_SIZE;
+            let bottom_border = 2.0;
+            let vertical_pad =
+                ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
+
+            let mut container = Container::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_child(icons::tab_button_content(
+                        tab, false, text_color, label, mono,
+                    ))
+                    .finish(),
             )
-            .on_mouse_out(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AppShellAction::SetTabHover(None));
-                DispatchEventResult::PropagateToParent
-            })
-            .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
-                DispatchEventResult::StopPropagation
-            })
+            .with_vertical_padding(vertical_pad)
+            .with_horizontal_padding(14.0)
+            .with_background(bg)
+            .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
+            .with_border(Border::right(1.0).with_border_fill(theme::border()));
+            if keyboard_focused {
+                container = container
+                    .with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+            }
+            let button = container.finish();
+
+            if !hovered {
+                return button;
+            }
+
+            let tooltip = Container::new(
+                ui_text::cluster_ctrl(label, mono)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_vertical_padding(5.0)
+            .with_horizontal_padding(8.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
             .finish();
 
-        if !hovered {
-            return interactive;
-        }
-
-        let tooltip = Container::new(
-            ui_text::cluster_ctrl(label, self.mono)
-                .with_color(theme::text())
-                .finish(),
-        )
-        .with_vertical_padding(5.0)
-        .with_horizontal_padding(8.0)
-        .with_background(theme::panel_elevated())
-        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
-        .finish();
-
-        let mut stack = Stack::new();
-        stack.add_child(interactive);
-        stack.add_positioned_overlay_child(
-            tooltip,
-            OffsetPositioning::offset_from_parent(
-                vec2f(0.0, 6.0),
-                ParentOffsetBounds::WindowByPosition,
-                ParentAnchor::BottomMiddle,
-                ChildAnchor::TopMiddle,
-            ),
-        );
-        stack.finish()
+            let mut stack = Stack::new();
+            stack.add_child(button);
+            stack.add_positioned_overlay_child(
+                tooltip,
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0.0, 6.0),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::BottomMiddle,
+                    ChildAnchor::TopMiddle,
+                ),
+            );
+            stack.finish()
+        })
+        .on_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
+        })
+        .finish()
     }
 
     fn tab_bar(&self, app: &AppContext) -> Box<dyn Element> {
@@ -1362,7 +1452,7 @@ impl AppShellView {
         tab_row.add_child(Expanded::new(1.0, Empty::new().finish()).finish());
         tab_row.add_child(build_avatar_slot(
             self.auth_authenticated,
-            self.auth_device_id.as_deref(),
+            self.auth_email.as_deref(),
             self.avatar_panel_open,
             self.font,
         ));
@@ -1672,10 +1762,6 @@ impl TypedActionView for AppShellView {
 
     fn handle_action(&mut self, action: &AppShellAction, ctx: &mut ViewContext<Self>) {
         match action {
-            AppShellAction::SetTabHover(tab) => {
-                self.hovered_tab = *tab;
-                ctx.notify();
-            }
             AppShellAction::SelectTab(tab, source) => {
                 let warp_visible = *tab == AppTab::Warp;
                 let warp_handle = self.warp.clone();
@@ -1740,7 +1826,6 @@ impl TypedActionView for AppShellView {
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         let content = match action {
-            AppShellAction::SetTabHover(_) => return ActionAccessibilityContent::Empty,
             AppShellAction::SelectTab(tab, _) => AccessibilityContent::new_without_help(
                 format!("切换到{}", Self::tab_label(*tab)),
                 WarpA11yRole::MenuItemRole,

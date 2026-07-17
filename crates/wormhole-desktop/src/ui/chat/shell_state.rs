@@ -23,7 +23,7 @@ pub struct PendingOutgoingMessage {
 pub struct PendingOpenChat {
     pub title: String,
     pub os: String,
-    pub online: bool,
+    pub presence: String,
 }
 
 #[derive(Debug, Clone)]
@@ -32,8 +32,16 @@ pub struct ChatShellState {
     pub profile_open: bool,
     pub header_menu_open: bool,
     pub mute_flyout_open: bool,
-    pub remote_desktop_active: bool,
     pub thread_search_query: String,
+    pub thread_search_from_ms: Option<u64>,
+    pub thread_search_to_ms: Option<u64>,
+    pub thread_search_request_tick: u64,
+    pub thread_search_nav_tick: u64,
+    pub thread_search_nav_delta: i8,
+    pub thread_search_current: usize,
+    pub thread_search_total: usize,
+    pub thread_search_loading: bool,
+    pub thread_search_error: Option<String>,
     pub toast: String,
     pub toast_tone: StatusTone,
     pub message_tick: u64,
@@ -49,6 +57,7 @@ pub struct ChatShellState {
     /// Peer node opened in the live viewer for the active voice call.
     pub voice_live_peer: Option<String>,
     pub pending_open: Option<PendingOpenChat>,
+    pub selected_summary: Option<PendingOpenChat>,
     /// Last failure from opening a placeholder conversation (shown under compose).
     pub open_error: Option<String>,
     pub pending_outgoing: Vec<PendingOutgoingMessage>,
@@ -61,8 +70,16 @@ impl Default for ChatShellState {
             profile_open: false,
             header_menu_open: false,
             mute_flyout_open: false,
-            remote_desktop_active: false,
             thread_search_query: String::new(),
+            thread_search_from_ms: None,
+            thread_search_to_ms: None,
+            thread_search_request_tick: 0,
+            thread_search_nav_tick: 0,
+            thread_search_nav_delta: 0,
+            thread_search_current: 0,
+            thread_search_total: 0,
+            thread_search_loading: false,
+            thread_search_error: None,
             toast: String::new(),
             toast_tone: StatusTone::Neutral,
             message_tick: 0,
@@ -73,6 +90,7 @@ impl Default for ChatShellState {
             voice_call_active: false,
             voice_live_peer: None,
             pending_open: None,
+            selected_summary: None,
             open_error: None,
             pending_outgoing: Vec::new(),
         }
@@ -104,6 +122,25 @@ impl ChatShellState {
     pub fn close_thread_search(&mut self) {
         self.thread_search_open = false;
         self.thread_search_query.clear();
+        self.thread_search_from_ms = None;
+        self.thread_search_to_ms = None;
+        self.thread_search_current = 0;
+        self.thread_search_total = 0;
+        self.thread_search_loading = false;
+        self.thread_search_error = None;
+        self.thread_search_request_tick = self.thread_search_request_tick.saturating_add(1);
+    }
+
+    pub fn request_thread_search(&mut self) {
+        self.thread_search_request_tick = self.thread_search_request_tick.saturating_add(1);
+        self.thread_search_current = 0;
+        self.thread_search_total = 0;
+        self.thread_search_error = None;
+    }
+
+    pub fn navigate_thread_search(&mut self, delta: i8) {
+        self.thread_search_nav_delta = delta.signum();
+        self.thread_search_nav_tick = self.thread_search_nav_tick.saturating_add(1);
     }
 
     pub fn push_pending_outgoing(
@@ -159,9 +196,13 @@ impl ChatShellState {
         self.voice_call_phase = phase;
     }
 
-    pub fn set_pending_open(&mut self, title: String, os: String, online: bool) {
+    pub fn set_pending_open(&mut self, title: String, os: String, presence: String) {
         self.open_error = None;
-        self.pending_open = Some(PendingOpenChat { title, os, online });
+        self.pending_open = Some(PendingOpenChat {
+            title,
+            os,
+            presence,
+        });
         self.bump_selection_tick();
     }
 
@@ -169,6 +210,18 @@ impl ChatShellState {
         if self.pending_open.take().is_some() {
             self.bump_selection_tick();
         }
+    }
+
+    pub fn set_selected_summary(&mut self, title: String, os: String, presence: String) {
+        self.selected_summary = Some(PendingOpenChat {
+            title,
+            os,
+            presence,
+        });
+    }
+
+    pub fn clear_selected_summary(&mut self) {
+        self.selected_summary = None;
     }
 
     pub fn set_open_error(&mut self, err: impl Into<String>) {
@@ -219,7 +272,7 @@ mod tests {
         let mut state = ChatShellState::default();
         state.set_open_error("无法开始会话: offline");
         assert!(state.open_error.is_some());
-        state.set_pending_open("PC · host".into(), "Windows".into(), false);
+        state.set_pending_open("PC · host".into(), "Windows".into(), "offline".into());
         assert!(state.open_error.is_none());
         assert!(state.pending_open.is_some());
     }
