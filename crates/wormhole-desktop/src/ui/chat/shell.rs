@@ -17,7 +17,7 @@ use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
 };
-use crate::ui::chat::sidebar::ChatSidebarView;
+use crate::ui::chat::sidebar::{ChatSidebarEvent, ChatSidebarView};
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::chat::voice_call_ui::{accept, apply_voice_status, decline, voice_error_toast};

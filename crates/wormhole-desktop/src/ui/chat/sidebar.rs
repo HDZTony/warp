@@ -1348,6 +1348,14 @@ impl CaretBlinkHost for ChatSidebarView {
 mod tests {
     use super::*;
 
+    #[test]
+    fn presence_mapping_does_not_treat_unknown_as_offline() {
+        assert_eq!(presence_state(true, ""), "online");
+        assert_eq!(presence_state(false, "signed_in"), "recently_online");
+        assert_eq!(presence_state(false, "offline"), "offline");
+        assert_eq!(presence_state(false, "handshake_failed"), "unknown");
+    }
+
     use wormhole_desktop_core::cluster_commands::{ClusterNodeDto, ClusterStatusDto};
 
     fn sample_conv(id: &str, peer: &str) -> ChatConversationDto {

@@ -276,4 +276,18 @@ mod tests {
         assert!(state.open_error.is_none());
         assert!(state.pending_open.is_some());
     }
+
+    #[test]
+    fn search_request_and_navigation_are_explicit() {
+        let mut state = ChatShellState::default();
+        state.thread_search_current = 4;
+        state.thread_search_total = 9;
+        state.request_thread_search();
+        assert_eq!(state.thread_search_request_tick, 1);
+        assert_eq!(state.thread_search_current, 0);
+        assert_eq!(state.thread_search_total, 0);
+        state.navigate_thread_search(8);
+        assert_eq!(state.thread_search_nav_tick, 1);
+        assert_eq!(state.thread_search_nav_delta, 1);
+    }
 }
