@@ -76,7 +76,7 @@ impl ChatShellView {
         });
         let thread_search =
             ctx.add_typed_action_view(|ctx| ChatThreadSearchView::new(ctx, shell_state.clone()));
-        let thread = ctx.add_view(|ctx| {
+        let thread = ctx.add_typed_action_view(|ctx| {
             ChatThreadView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
         });
         let compose = ctx.add_typed_action_view(|ctx| {

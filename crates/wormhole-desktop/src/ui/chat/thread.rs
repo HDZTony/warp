@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
+use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::Fill;
 use warpui::elements::{
-    Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, Container, Expanded, Flex,
-    MainAxisSize, ParentElement, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
+    Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
+    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisSize, ParentElement, SavePosition,
+    ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, UpdateView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
 use crate::ui::chat::bubble::{ChatBubbleView, format_message_time_pub, outgoing_message_read};
 use crate::ui::chat::image_asset::{
@@ -21,6 +23,8 @@ use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState}
 use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{StatusTone, TG_BUBBLE_MAX_WIDTH, status_line};
+use crate::ui::theme;
+use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
     ChatAttachmentDto, ChatMessageDto, ChatMessageWindowParams, ChatSearchCursorDto,
     ListChatMessagesParams, SearchChatMessagesParams, chat_config, chat_list_messages,
@@ -59,6 +63,7 @@ pub struct ChatThreadView {
     loading_older_conv: Option<String>,
     fetch_generations: HashMap<String, u64>,
     next_fetch_seq: u64,
+    history_before: HashMap<String, u64>,
     history_exhausted: HashMap<String, bool>,
     fetch_error: Option<String>,
     scroll: ClippedScrollStateHandle,
@@ -79,6 +84,23 @@ fn messages_snapshot_equal(a: &[ChatMessageDto], b: &[ChatMessageDto]) -> bool {
 
 const PENDING_DEDUP_WINDOW_MS: u64 = 30_000;
 const RECENT_MESSAGE_PAGE: usize = 50;
+
+#[derive(Debug, Clone)]
+pub enum ChatThreadAction {
+    LoadEarlier,
+}
+
+fn advance_history_before(current: Option<u64>, fetched: &[ChatMessageDto]) -> Option<u64> {
+    fetched
+        .iter()
+        .map(|message| message.sent_at)
+        .min()
+        .map(|earliest| current.map_or(earliest, |cursor| cursor.min(earliest)))
+}
+
+fn page_exhausts_history(fetched_len: usize) -> bool {
+    fetched_len < RECENT_MESSAGE_PAGE
+}
 
 fn message_position_id(message_id: &str) -> String {
     format!("chat-message-{message_id}")
@@ -186,6 +208,7 @@ impl ChatThreadView {
             loading_older_conv: None,
             fetch_generations: HashMap::new(),
             next_fetch_seq: 0,
+            history_before: HashMap::new(),
             history_exhausted: HashMap::new(),
             fetch_error: None,
             scroll: ClippedScrollStateHandle::new(),
@@ -268,7 +291,6 @@ impl ChatThreadView {
                     Some(conv_id.clone())
                 };
                 self.loading_older_conv = None;
-                self.history_exhausted.remove(conv_id);
                 let base = cached.unwrap_or_default();
                 let merged = self.merge_messages_for_conv(&base, conv_id);
                 if !messages_snapshot_equal(&self.messages, &merged) {
@@ -594,8 +616,17 @@ impl ChatThreadView {
         self.message_cache
             .insert(conv_id.to_string(), merged_base.clone());
 
-        if before.is_some() && fetched.len() < RECENT_MESSAGE_PAGE {
+        if let Some(cursor) = advance_history_before(
+            self.history_before.get(conv_id).copied(),
+            &fetched,
+        ) {
+            self.history_before.insert(conv_id.to_string(), cursor);
+        }
+
+        if page_exhausts_history(fetched.len()) {
             self.history_exhausted.insert(conv_id.to_string(), true);
+        } else if before.is_none() {
+            self.history_exhausted.remove(conv_id);
         }
 
         if self.loaded_for.as_deref() == Some(conv_id) {
@@ -774,8 +805,6 @@ impl ChatThreadView {
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
-                let app = runtime.ctx.as_ref();
-                let state = runtime.state.clone();
                 let params = ListChatMessagesParams {
                     conv_id: conv_id.clone(),
                     limit: Some(RECENT_MESSAGE_PAGE as u32),
@@ -934,6 +963,47 @@ impl View for ChatThreadView {
                 .finish(),
             );
         } else {
+            let history_exhausted = self
+                .loaded_for
+                .as_ref()
+                .and_then(|conv_id| self.history_exhausted.get(conv_id))
+                .copied()
+                .unwrap_or(false);
+            let has_history_cursor = self
+                .loaded_for
+                .as_ref()
+                .is_some_and(|conv_id| self.history_before.contains_key(conv_id));
+            if has_history_cursor && !history_exhausted {
+                let loading = self.loading_older_conv.is_some();
+                let label = if loading {
+                    "正在加载更早消息…"
+                } else {
+                    "加载更早消息"
+                };
+                let color = if loading {
+                    theme::muted()
+                } else {
+                    theme::accent_cool()
+                };
+                let load_earlier = EventHandler::new(
+                    ConstrainedBox::new(
+                        Align::new(ui_text::body(label, self.font).with_color(color).finish())
+                            .finish(),
+                    )
+                    .with_min_height(32.0)
+                    .finish(),
+                )
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(ChatThreadAction::LoadEarlier);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish();
+                col.add_child(
+                    Container::new(Align::new(load_earlier).top_center().finish())
+                        .with_margin_bottom(8.0)
+                        .finish(),
+                );
+            }
             for (index, bubble) in self.bubbles.iter().enumerate() {
                 if !bubble.visible {
                     continue;
@@ -1000,6 +1070,39 @@ impl View for ChatThreadView {
     }
 }
 
+impl TypedActionView for ChatThreadView {
+    type Action = ChatThreadAction;
+
+    fn handle_action(&mut self, action: &ChatThreadAction, ctx: &mut ViewContext<Self>) {
+        match action {
+            ChatThreadAction::LoadEarlier => {
+                if self.loading_older_conv.is_some() {
+                    return;
+                }
+                let Some(conv_id) = self.loaded_for.clone() else {
+                    return;
+                };
+                let Some(before) = self.history_before.get(&conv_id).copied() else {
+                    return;
+                };
+                self.fetch_older_messages(conv_id, Some(before), ctx);
+                ctx.notify();
+            }
+        }
+    }
+
+    fn action_accessibility_contents(
+        &mut self,
+        _action: &ChatThreadAction,
+        _ctx: &mut ViewContext<Self>,
+    ) -> ActionAccessibilityContent {
+        ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
+            "加载更早消息",
+            WarpA11yRole::ButtonRole,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,6 +1116,27 @@ mod tests {
             sticker: None,
             attachments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn history_cursor_only_moves_toward_older_messages() {
+        let messages = vec![
+            sample_message("newest", "three", 30),
+            sample_message("oldest", "one", 10),
+            sample_message("middle", "two", 20),
+        ];
+
+        assert_eq!(advance_history_before(None, &messages), Some(10));
+        assert_eq!(advance_history_before(Some(5), &messages), Some(5));
+        assert_eq!(advance_history_before(Some(15), &messages), Some(10));
+        assert_eq!(advance_history_before(Some(5), &[]), None);
+    }
+
+    #[test]
+    fn short_history_page_marks_history_exhausted() {
+        assert!(page_exhausts_history(0));
+        assert!(page_exhausts_history(RECENT_MESSAGE_PAGE - 1));
+        assert!(!page_exhausts_history(RECENT_MESSAGE_PAGE));
     }
 
     #[test]
