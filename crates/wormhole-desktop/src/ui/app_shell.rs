@@ -1224,18 +1224,20 @@ impl AppShellView {
 
     fn tab_button(&self, tab: AppTab) -> Box<dyn Element> {
         let selected = self.tab == tab;
+        let hovered = self.hovered_tab == Some(tab);
         let keyboard_focused = self.tab_bar_keyboard_focus && self.tab_focus == tab;
-        let text_color = if selected {
+        let text_color = if selected || hovered {
             theme::accent_cool()
         } else {
             theme::muted()
         };
         let bg = if selected {
             theme::accent_cool_bg_default()
+        } else if hovered {
+            theme::accent_cool_bg(10)
         } else {
             ColorU::new(0, 0, 0, 0)
         };
-        let expand = self.tab == tab || self.hovered_tab == Some(tab);
         let label = Self::tab_label(tab);
 
         let bottom_accent = if selected {
@@ -1253,12 +1255,12 @@ impl AppShellView {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_child(icons::tab_button_content(
-                    tab, expand, text_color, label, self.mono,
+                    tab, false, text_color, label, self.mono,
                 ))
                 .finish(),
         )
         .with_vertical_padding(vertical_pad)
-        .with_horizontal_padding(if expand { 16.0 } else { 12.0 })
+        .with_horizontal_padding(14.0)
         .with_background(bg)
         .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
         .with_border(Border::right(1.0).with_border_fill(theme::border()));
@@ -1266,7 +1268,7 @@ impl AppShellView {
             container =
                 container.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
         }
-        EventHandler::new(container.finish())
+        let interactive = EventHandler::new(container.finish())
             .on_mouse_in(
                 move |ctx, _, _| {
                     ctx.dispatch_typed_action(AppShellAction::SetTabHover(Some(tab)));
@@ -1282,7 +1284,36 @@ impl AppShellView {
                 ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
                 DispatchEventResult::StopPropagation
             })
-            .finish()
+            .finish();
+
+        if !hovered {
+            return interactive;
+        }
+
+        let tooltip = Container::new(
+            ui_text::cluster_ctrl(label, self.mono)
+                .with_color(theme::text())
+                .finish(),
+        )
+        .with_vertical_padding(5.0)
+        .with_horizontal_padding(8.0)
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+        .finish();
+
+        let mut stack = Stack::new();
+        stack.add_child(interactive);
+        stack.add_positioned_overlay_child(
+            tooltip,
+            OffsetPositioning::offset_from_parent(
+                vec2f(0.0, 6.0),
+                ParentOffsetBounds::WindowByPosition,
+                ParentAnchor::BottomMiddle,
+                ChildAnchor::TopMiddle,
+            ),
+        );
+        stack.finish()
     }
 
     fn tab_bar(&self, app: &AppContext) -> Box<dyn Element> {

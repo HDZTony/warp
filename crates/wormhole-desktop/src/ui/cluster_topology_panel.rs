@@ -4,25 +4,27 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::Vector2F;
+use pathfinder_geometry::vector::{vec2f, Vector2F};
 
 use warpui::elements::{
-    AfterLayoutContext, Align, AppContext, Border, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DispatchEventResult, Element, EventContext, EventDispatchMode,
-    EventHandler, Flex, Hoverable, LayoutContext, MainAxisAlignment, MainAxisSize, MouseState,
-    MouseStateHandle, PaintContext, ParentElement, Point, Radius, SizeConstraint, Stack,
+    AfterLayoutContext, Align, AppContext, Border, ChildAnchor, ConstrainedBox, Container,
+    CornerRadius, CrossAxisAlignment, DispatchEventResult, Element, EventContext,
+    EventDispatchMode, EventHandler, Flex, Hoverable, LayoutContext, MainAxisAlignment,
+    MainAxisSize, MouseState, MouseStateHandle, OffsetPositioning, PaintContext, ParentAnchor,
+    ParentElement, ParentOffsetBounds, Point, Radius, SizeConstraint, Stack,
 };
 use warpui::fonts::FamilyId;
 
 use crate::ui::cluster_layout::{
-    card_height, cards_row_card_width, BODY_MIN_HEIGHT, CARD_GAP, TOPO_PAD,
+    card_height, cards_row_card_width, BODY_MIN_HEIGHT, BODY_PADDING_BOTTOM, BODY_PADDING_TOP,
+    CARD_GAP, TOPO_PAD,
 };
 
 const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
 const DEVICE_CHROME_INSET: f32 = 6.0;
 const DEVICE_DELETE_BTN: f32 = 26.0;
-const SHARE_BTN_HEIGHT: f32 = 28.0;
-const SHARE_BTN_PAD_X: f32 = 10.0;
+const DEVICE_ACTION_BTN_SIZE: f32 = 32.0;
+const DEVICE_ACTION_GAP: f32 = 6.0;
 
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
@@ -306,49 +308,97 @@ fn share_volume_count_hint(count: usize, mono: FamilyId) -> Box<dyn Element> {
     } else {
         theme::muted()
     };
+    Container::new(ui_text::cluster_ctrl(label, mono).with_color(tone).finish())
+        .with_vertical_margin(2.0)
+        .finish()
+}
+
+fn device_action_tooltip(label: &'static str, mono: FamilyId) -> Box<dyn Element> {
     Container::new(
         ui_text::cluster_ctrl(label, mono)
-            .with_color(tone)
+            .with_color(theme::text())
             .finish(),
     )
-    .with_vertical_margin(2.0)
+    .with_vertical_padding(5.0)
+    .with_horizontal_padding(8.0)
+    .with_background(theme::panel_elevated())
+    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
     .finish()
 }
 
-fn share_files_button(
-    node_id: String,
-    clickable: bool,
+fn device_action_button(
+    kind: icons::DeviceActionIconKind,
+    label: &'static str,
+    enabled: bool,
+    danger: bool,
     mono: FamilyId,
 ) -> Box<dyn Element> {
-    let (border, color, bg) = if clickable {
-        (theme::border_bright(), theme::text(), theme::panel())
-    } else {
-        (
-            dim_color(theme::border_bright(), 0.55),
-            theme::placeholder(),
-            theme::panel_elevated(),
-        )
-    };
-    let inner = Container::new(
-        ConstrainedBox::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(
-                    ui_text::cluster_ctrl("共享文件", mono)
-                        .with_color(color)
-                        .finish(),
-                )
+    let mouse_state: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
+    Hoverable::new(mouse_state, move |state| {
+        let pointer_hovered = state.is_hovered();
+        let hovered = pointer_hovered && enabled;
+        let (color, background) = if !enabled {
+            (theme::muted(), None)
+        } else if danger {
+            (
+                theme::danger(),
+                if hovered {
+                    Some(blend_color(theme::panel_elevated(), theme::danger(), 0.18))
+                } else {
+                    None
+                },
+            )
+        } else {
+            (
+                theme::text(),
+                if hovered {
+                    Some(theme::accent_cool_bg(16))
+                } else {
+                    None
+                },
+            )
+        };
+
+        let button_content =
+            ConstrainedBox::new(Align::new(icons::device_action_icon(kind, color)).finish())
+                .with_width(DEVICE_ACTION_BTN_SIZE)
+                .with_height(DEVICE_ACTION_BTN_SIZE)
+                .finish();
+        let button = match background {
+            Some(background) => Container::new(button_content)
+                .with_background(background)
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
                 .finish(),
-        )
-        .with_height(SHARE_BTN_HEIGHT)
-        .finish(),
-    )
-    .with_horizontal_padding(SHARE_BTN_PAD_X)
-    .with_background(bg)
-    .with_border(Border::all(1.0).with_border_fill(border))
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-    .finish();
+            None => Container::new(button_content).finish(),
+        };
+
+        let mut stack = Stack::new();
+        stack.add_child(button);
+        if pointer_hovered {
+            stack.add_positioned_overlay_child(
+                device_action_tooltip(label, mono),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0.0, -6.0),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopMiddle,
+                    ChildAnchor::BottomMiddle,
+                ),
+            );
+        }
+        stack.finish()
+    })
+    .finish()
+}
+
+fn share_files_button(node_id: String, clickable: bool, mono: FamilyId) -> Box<dyn Element> {
+    let inner = device_action_button(
+        icons::DeviceActionIconKind::ShareFiles,
+        "共享文件",
+        clickable,
+        false,
+        mono,
+    );
 
     if clickable {
         EventHandler::new(inner)
@@ -363,35 +413,13 @@ fn share_files_button(
 }
 
 fn remote_desktop_button(node_id: String, online: bool, mono: FamilyId) -> Box<dyn Element> {
-    let (border, color, bg) = if online {
-        (theme::border_bright(), theme::text(), theme::panel())
-    } else {
-        (
-            dim_color(theme::border_bright(), 0.55),
-            theme::placeholder(),
-            theme::panel_elevated(),
-        )
-    };
-    let inner = Container::new(
-        ConstrainedBox::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(
-                    ui_text::cluster_ctrl("远程桌面", mono)
-                        .with_color(color)
-                        .finish(),
-                )
-                .finish(),
-        )
-        .with_height(SHARE_BTN_HEIGHT)
-        .finish(),
-    )
-    .with_horizontal_padding(SHARE_BTN_PAD_X)
-    .with_background(bg)
-    .with_border(Border::all(1.0).with_border_fill(border))
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-    .finish();
+    let inner = device_action_button(
+        icons::DeviceActionIconKind::RemoteDesktop,
+        "远程桌面",
+        online,
+        false,
+        mono,
+    );
 
     if online {
         EventHandler::new(inner)
@@ -410,26 +438,13 @@ fn remove_device_button(
     node_id: String,
     mono: FamilyId,
 ) -> Box<dyn Element> {
-    let inner = Container::new(
-        ConstrainedBox::new(
-            Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(
-                    ui_text::cluster_ctrl("移除设备", mono)
-                        .with_color(theme::danger())
-                        .finish(),
-                )
-                .finish(),
-        )
-        .with_height(SHARE_BTN_HEIGHT)
-        .finish(),
-    )
-    .with_horizontal_padding(SHARE_BTN_PAD_X)
-    .with_background(theme::panel())
-    .with_border(Border::all(1.0).with_border_fill(theme::danger()))
-    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-    .finish();
+    let inner = device_action_button(
+        icons::DeviceActionIconKind::RemoveDevice,
+        "移除设备",
+        true,
+        true,
+        mono,
+    );
 
     EventHandler::new(inner)
         .on_left_mouse_down(move |ctx, _, _| {
@@ -479,53 +494,58 @@ fn node_card(
     );
     body.add_child(status_line(status_text, mono, status_tone));
     body.add_child(share_volume_count_hint(node.share_volumes.len(), mono));
+    let mut actions = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_main_axis_size(MainAxisSize::Min);
+    actions.add_child(
+        Container::new(share_files_button(
+            node_id.clone(),
+            node_share_browsable(node, is_local),
+            mono,
+        ))
+        .with_margin_right(if !is_local || node.removable {
+            DEVICE_ACTION_GAP
+        } else {
+            0.0
+        })
+        .finish(),
+    );
+    if !is_local {
+        actions.add_child(
+            Container::new(remote_desktop_button(node_id.clone(), node.online, mono))
+                .with_margin_right(if node.removable {
+                    DEVICE_ACTION_GAP
+                } else {
+                    0.0
+                })
+                .finish(),
+        );
+    }
+    if node.removable {
+        actions.add_child(remove_device_button(
+            node.device_id.clone(),
+            node.node_id.clone(),
+            mono,
+        ));
+    }
     body.add_child(
         Align::new(
-            Container::new(share_files_button(
-                node_id.clone(),
-                node_share_browsable(node, is_local),
-                mono,
-            ))
-            .with_vertical_margin(8.0)
-            .finish(),
+            Container::new(actions.finish())
+                .with_margin_top(8.0)
+                .finish(),
         )
         .left()
         .finish(),
     );
-    if !is_local {
-        body.add_child(
-            Align::new(
-                Container::new(remote_desktop_button(node_id.clone(), node.online, mono))
-                    .with_vertical_margin(2.0)
-                    .finish(),
-            )
-            .left()
-            .finish(),
-        );
-    }
-    if node.removable {
-        body.add_child(
-            Align::new(
-                Container::new(remove_device_button(
-                    node.device_id.clone(),
-                    node.node_id.clone(),
-                    mono,
-                ))
-                .with_vertical_margin(2.0)
-                .finish(),
-            )
-            .left()
-            .finish(),
-        );
-    }
 
     let body_block = Container::new(
         ConstrainedBox::new(body.finish())
             .with_min_height(BODY_MIN_HEIGHT)
             .finish(),
     )
-    .with_uniform_padding(12.0)
-    .with_padding_top(10.0)
+    .with_horizontal_padding(12.0)
+    .with_padding_top(BODY_PADDING_TOP)
+    .with_padding_bottom(BODY_PADDING_BOTTOM)
     .finish();
 
     let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -635,16 +655,6 @@ fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
     }
 }
 
-fn dim_color(color: ColorU, factor: f32) -> ColorU {
-    let scale = |component: u8| ((component as f32) * factor).round() as u8;
-    ColorU::new(
-        scale(color.r),
-        scale(color.g),
-        scale(color.b),
-        scale(color.a),
-    )
-}
-
 fn selected_corner_brackets() -> Box<dyn Element> {
     let corner = |top_left: bool| {
         let border = Border::new(1.0)
@@ -688,8 +698,8 @@ fn selected_corner_brackets() -> Box<dyn Element> {
 mod node_share_browsable_tests {
     use super::node_share_browsable;
     use wormhole_desktop_core::cluster_commands::{
-        ClusterNodeDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE, NODE_PRESENCE_SIGNED_IN,
-        ShareVolumeRosterDto,
+        ClusterNodeDto, ShareVolumeRosterDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE,
+        NODE_PRESENCE_SIGNED_IN,
     };
 
     fn sample_node(

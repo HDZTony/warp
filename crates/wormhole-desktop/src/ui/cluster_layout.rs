@@ -8,8 +8,11 @@ pub const TOPO_PAD: f32 = 14.0;
 pub const CARD_GAP: f32 = 12.0;
 /// Matches `minmax(200px, 1fr)`.
 pub const CARD_MIN_WIDTH: f32 = 200.0;
-/// Minimum `.device-body` height (name + status + share count + action buttons).
-pub const BODY_MIN_HEIGHT: f32 = 186.0;
+/// Minimum `.device-body` content height (name + status + share count + action buttons).
+pub const BODY_MIN_HEIGHT: f32 = 108.0;
+pub const BODY_PADDING_TOP: f32 = 10.0;
+pub const BODY_PADDING_BOTTOM: f32 = 12.0;
+pub const BODY_VERTICAL_PADDING: f32 = BODY_PADDING_TOP + BODY_PADDING_BOTTOM;
 pub const CARD_BORDER: f32 = 1.0;
 
 /// Edge inset factor from HTML `edgePoints` (`min(w,h) * 0.38`).
@@ -38,7 +41,7 @@ pub fn thumb_height(card_width: f32) -> f32 {
 }
 
 pub fn card_height(card_width: f32) -> f32 {
-    thumb_height(card_width) + BODY_MIN_HEIGHT + CARD_BORDER * 2.0
+    thumb_height(card_width) + BODY_MIN_HEIGHT + BODY_VERTICAL_PADDING + CARD_BORDER * 2.0
 }
 
 pub fn cards_row_card_width(container_width: f32, node_count: usize) -> f32 {
@@ -105,5 +108,14 @@ mod tests {
         let (p0, p1) = edge_points(from, to, card_w, card_height(card_w));
         assert!((p0.y() - y).abs() < 0.01);
         assert!((p1.y() - y).abs() < 0.01);
+    }
+
+    #[test]
+    fn card_height_includes_body_padding_and_border() {
+        let card_w = CARD_MIN_WIDTH;
+        assert_eq!(
+            card_height(card_w),
+            thumb_height(card_w) + BODY_MIN_HEIGHT + BODY_VERTICAL_PADDING + CARD_BORDER * 2.0
+        );
     }
 }

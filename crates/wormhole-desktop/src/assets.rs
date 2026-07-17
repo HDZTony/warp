@@ -21,6 +21,7 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("device-pc.svg"),
     bundled_icon!("device-phone.svg"),
     bundled_icon!("device-tablet.svg"),
+    bundled_icon!("device-remove.svg"),
     bundled_icon!("share-folder.svg"),
     bundled_icon!("share-file.svg"),
     bundled_icon!("share-pdf.svg"),
@@ -98,6 +99,25 @@ mod tests {
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+        }
+    }
+
+    #[test]
+    fn bundled_device_action_icons_resolve() {
+        let assets = WormholeAssets;
+        for name in [
+            "share-folder.svg",
+            "chat-header-rdp.svg",
+            "device-remove.svg",
+        ] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+            let markup = std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{name}: utf-8"));
+            assert!(
+                !markup.contains("currentColor"),
+                "{name} must use a white alpha mask"
+            );
+            assert!(markup.contains("white"), "{name} must contain a white mask");
         }
     }
 
