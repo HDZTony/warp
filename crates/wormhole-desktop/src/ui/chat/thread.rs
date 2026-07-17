@@ -301,6 +301,10 @@ impl ChatThreadView {
         }
     }
 
+    pub(crate) fn selection_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.poll(ctx);
+    }
+
     fn start_search(&mut self, ctx: &mut ViewContext<Self>) {
         self.fetch_search_page(true, None, 0, ctx);
     }

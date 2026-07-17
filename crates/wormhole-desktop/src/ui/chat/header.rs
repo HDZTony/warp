@@ -230,6 +230,10 @@ impl ChatHeaderView {
         self.refresh_from_selection(ctx);
     }
 
+    pub(crate) fn selection_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.poll(ctx);
+    }
+
     fn refresh_wallpaper_flag(&mut self, ctx: &mut ViewContext<Self>) {
         let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
         let Some(conv_id) = conv_id else {

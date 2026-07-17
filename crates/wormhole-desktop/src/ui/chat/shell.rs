@@ -109,6 +109,19 @@ impl ChatShellView {
                 });
             }
         });
+        let selected_header = header.clone();
+        let selected_thread = thread.clone();
+        ctx.subscribe_to_view(&sidebar, move |_, _, event, ctx| match event {
+            ChatSidebarEvent::Selected(_) => {
+                ctx.update_view(&selected_header, |header, ctx| {
+                    header.selection_changed(ctx);
+                });
+                ctx.update_view(&selected_thread, |thread, ctx| {
+                    thread.selection_changed(ctx);
+                });
+                ctx.notify();
+            }
+        });
         let font = crate::ui::fonts::load_ui_font(ctx);
         let event_rx = Arc::new(tokio::sync::Mutex::new(
             core.runtime().ctx.events.subscribe(),

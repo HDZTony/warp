@@ -555,39 +555,32 @@ fn node_card(
         .finish();
 
     let online = node.online;
-    // Hoverable tracks enter/leave; EventHandler::on_mouse_out does not clear on leave.
-    let clickable = Hoverable::new(
-        Arc::new(Mutex::new(MouseState::default())),
-        move |_| {
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(icons::device_thumb(
-                    &os_label,
-                    online,
-                    theme::accent_cool(),
-                    mono,
-                    card_width,
-                ))
-                .with_child(info_block)
-                .finish()
-        },
+    // Clicks on thumb/info only — hover for the whole card is wrapped below so the
+    // delete control stays inside the hover region.
+    let clickable = EventHandler::new(
+        Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(icons::device_thumb(
+                &os_label,
+                online,
+                theme::accent_cool(),
+                mono,
+                card_width,
+            ))
+            .with_child(info_block)
+            .finish(),
     )
-    .on_hover(move |hovered, ctx, _, _| {
-        if hovered {
-            ctx.dispatch_typed_action(DevicesAction::SetNodeHover(Some(hover_in_id.clone())));
-        } else {
-            ctx.dispatch_typed_action(DevicesAction::ClearNodeHoverIf(hover_in_id.clone()));
-        }
-    })
-    .on_mouse_down(move |ctx, _, _| {
+    .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(DevicesAction::NodeCardClick(click_id.clone()));
+        DispatchEventResult::StopPropagation
     })
-    .on_right_click(move |ctx, _, position| {
+    .on_right_mouse_down(move |ctx, _, position| {
         ctx.dispatch_typed_action(DevicesAction::OpenDeviceContextMenu {
             node_id: context_id.clone(),
             x: position.x(),
             y: position.y(),
         });
+        DispatchEventResult::StopPropagation
     })
     .finish();
 
@@ -696,10 +689,23 @@ fn node_card(
         );
     }
 
-    ConstrainedBox::new(card_stack.finish())
-        .with_width(card_width)
-        .with_height(card_h)
-        .finish()
+    ConstrainedBox::new(
+        Hoverable::new(
+            Arc::new(Mutex::new(MouseState::default())),
+            move |_| card_stack.finish(),
+        )
+        .on_hover(move |hovered, ctx, _, _| {
+            if hovered {
+                ctx.dispatch_typed_action(DevicesAction::SetNodeHover(Some(hover_in_id.clone())));
+            } else {
+                ctx.dispatch_typed_action(DevicesAction::ClearNodeHoverIf(hover_in_id.clone()));
+            }
+        })
+        .finish(),
+    )
+    .with_width(card_width)
+    .with_height(card_h)
+    .finish()
 }
 
 fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
