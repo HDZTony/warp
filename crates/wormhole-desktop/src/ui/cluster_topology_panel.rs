@@ -690,10 +690,9 @@ fn node_card(
     }
 
     ConstrainedBox::new(
-        Hoverable::new(
-            Arc::new(Mutex::new(MouseState::default())),
-            move |_| card_stack.finish(),
-        )
+        Hoverable::new(Arc::new(Mutex::new(MouseState::default())), move |_| {
+            card_stack.finish()
+        })
         .on_hover(move |hovered, ctx, _, _| {
             if hovered {
                 ctx.dispatch_typed_action(DevicesAction::SetNodeHover(Some(hover_in_id.clone())));

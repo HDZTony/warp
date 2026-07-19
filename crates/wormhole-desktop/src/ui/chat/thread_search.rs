@@ -10,8 +10,8 @@ use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::icons;
 use crate::ui::panel_primitives::chat_search_pill;
 use crate::ui::text_field_input::{
-    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
-    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click,
+    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;

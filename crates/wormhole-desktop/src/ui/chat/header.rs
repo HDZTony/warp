@@ -18,7 +18,7 @@ use crate::ui::chat::voice_call_ui::{
     voice_status_to_header_line,
 };
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{StatusTone, TG_AVATAR_SM_SIZE, online_dot, tg_avatar};
+use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_SM_SIZE};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;

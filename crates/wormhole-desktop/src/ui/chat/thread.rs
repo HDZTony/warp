@@ -10,25 +10,25 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
 
-use crate::ui::chat::bubble::{ChatBubbleView, format_message_time_pub, outgoing_message_read};
+use crate::ui::chat::bubble::{format_message_time_pub, outgoing_message_read, ChatBubbleView};
 use crate::ui::chat::image_asset::{
     chat_wallpaper_asset_id, insert_wallpaper_asset, load_wallpaper_bytes_from_path,
 };
 use crate::ui::chat::layout::{
-    TG_THREAD_PAD_BOTTOM, TG_THREAD_PAD_TOP, TG_THREAD_PAD_X, bubble_max_width, message_is_grouped,
-    message_row_margin_bottom,
+    bubble_max_width, message_is_grouped, message_row_margin_bottom, TG_THREAD_PAD_BOTTOM,
+    TG_THREAD_PAD_TOP, TG_THREAD_PAD_X,
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
 use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{StatusTone, TG_BUBBLE_MAX_WIDTH, status_line};
+use crate::ui::panel_primitives::{status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    ChatAttachmentDto, ChatMessageDto, ChatMessageWindowParams, ChatSearchCursorDto,
-    ListChatMessagesParams, SearchChatMessagesParams, chat_config, chat_list_messages,
-    chat_message_window, chat_search_messages,
+    chat_config, chat_list_messages, chat_message_window, chat_search_messages, ChatAttachmentDto,
+    ChatMessageDto, ChatMessageWindowParams, ChatSearchCursorDto, ListChatMessagesParams,
+    SearchChatMessagesParams,
 };
 use wormhole_desktop_core::chat_rtc_call::video_signal_display_text;
 use wormhole_desktop_core::chat_ui_prefs::load_chat_ui_prefs;
@@ -616,10 +616,9 @@ impl ChatThreadView {
         self.message_cache
             .insert(conv_id.to_string(), merged_base.clone());
 
-        if let Some(cursor) = advance_history_before(
-            self.history_before.get(conv_id).copied(),
-            &fetched,
-        ) {
+        if let Some(cursor) =
+            advance_history_before(self.history_before.get(conv_id).copied(), &fetched)
+        {
             self.history_before.insert(conv_id.to_string(), cursor);
         }
 

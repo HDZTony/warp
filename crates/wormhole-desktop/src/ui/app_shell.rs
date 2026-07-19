@@ -1366,8 +1366,8 @@ impl AppShellView {
             .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
             .with_border(Border::right(1.0).with_border_fill(theme::border()));
             if keyboard_focused {
-                container = container
-                    .with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+                container =
+                    container.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
             }
             let button = container.finish();
 

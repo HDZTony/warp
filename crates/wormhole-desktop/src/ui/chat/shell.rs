@@ -15,15 +15,15 @@ use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
-    SharedChatShellState, chat_event_triggers_refresh, new_shared_shell_state,
+    chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
 };
 use crate::ui::chat::sidebar::{ChatSidebarEvent, ChatSidebarView};
 use crate::ui::chat::thread::ChatThreadView;
 use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::chat::voice_call_ui::{accept, apply_voice_status, decline, voice_error_toast};
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::{DeviceGateStatus, load_device_gate, wrap_with_device_gate};
-use crate::ui::panel_primitives::{StatusTone, status_line, tab_content_fill};
+use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
+use crate::ui::panel_primitives::{status_line, tab_content_fill, StatusTone};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::ChatEventDto;
