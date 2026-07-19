@@ -16,6 +16,9 @@ use crate::ui_text;
 use wormhole_desktop_core::sync_commands::{
     list_sync_queue, search_sync_entries, sync_status, SearchSyncParams, SyncEntryDto,
 };
+use wormhole_desktop_core::toolbox_ui::{
+    toolbox_list_tools, ToolExecutorKind, ToolInstallStage,
+};
 use wormhole_desktop_core::workspace_ui::{
     workspace_list_workers, workspace_open_file, workspace_start_session_worker, WorkspaceMode,
     WorkspaceOpenRequest,
@@ -24,7 +27,7 @@ use wormhole_desktop_core::workspace_ui::{
 #[derive(Debug, Clone)]
 pub enum SyncAction {
     Refresh,
-    OpenWithPaint(String),
+    OpenWithTool { entry_id: String, tool_id: String },
 }
 
 pub struct SyncView {
@@ -37,6 +40,7 @@ pub struct SyncView {
     loading: bool,
     remote_files: Vec<SyncEntryDto>,
     workers: Vec<RemoteWorkerSummary>,
+    runtime_tools: Vec<RemoteToolSummary>,
     remote_status: String,
     busy_entry_id: Option<String>,
 }
@@ -48,7 +52,7 @@ struct RemoteWorkerSummary {
     hostname: String,
     available: bool,
     vm_ready: bool,
-    can_paint: bool,
+    apps: Vec<String>,
     adapter_detail: String,
 }
 
@@ -60,8 +64,17 @@ impl RemoteWorkerSummary {
             .contains("has not advertised a workspace worker vm control endpoint")
     }
 
-    fn can_open_workspace(&self) -> bool {
-        self.available && self.vm_ready && self.can_paint && self.has_control_endpoint()
+    fn can_open_workspace(&self, tool_id: &str) -> bool {
+        self.available
+            && self.vm_ready
+            && self.has_control_endpoint()
+            && if tool_id.eq_ignore_ascii_case("default") {
+                !self.apps.is_empty()
+            } else {
+                self.apps
+                    .iter()
+                    .any(|app| app.eq_ignore_ascii_case(tool_id))
+            }
     }
 
     fn blocking_detail(&self) -> &str {
@@ -70,6 +83,25 @@ impl RemoteWorkerSummary {
         } else {
             self.adapter_detail.as_str()
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RemoteToolSummary {
+    id: String,
+    name: String,
+    extensions: Vec<String>,
+    installable: bool,
+}
+
+impl RemoteToolSummary {
+    fn supports_path(&self, path: &str) -> bool {
+        let Some(extension) = path.rsplit('.').next().filter(|value| *value != path) else {
+            return false;
+        };
+        self.extensions
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
     }
 }
 
@@ -86,6 +118,7 @@ impl SyncView {
             loading: true,
             remote_files: Vec::new(),
             workers: Vec::new(),
+            runtime_tools: Vec::new(),
             remote_status: "正在检查远程打开入口…".into(),
             busy_entry_id: None,
         };
@@ -138,28 +171,43 @@ impl SyncView {
                     workers
                         .into_iter()
                         .map(|worker| {
-                            let can_paint = worker.images.iter().any(|image| {
-                                image.installed_apps.iter().any(|app| {
-                                    app.trim().eq_ignore_ascii_case("paint")
-                                        || app.trim().eq_ignore_ascii_case("default")
-                                })
-                            });
+                            let apps = worker
+                                .images
+                                .iter()
+                                .flat_map(|image| image.installed_apps.iter().cloned())
+                                .collect();
                             RemoteWorkerSummary {
                                 node_id: worker.node_id,
                                 dispatch_endpoint_id: worker.dispatch_endpoint_id,
                                 hostname: worker.hostname,
                                 available: worker.available,
                                 vm_ready: worker.vm_ready,
-                                can_paint,
+                                apps,
                                 adapter_detail: worker.adapter.detail,
                             }
                         })
                         .collect::<Vec<_>>()
                 });
-                (gate, status, queue, files, workers)
+                let tools = toolbox_list_tools(&state).await.map(|tools| {
+                    tools
+                        .into_iter()
+                        .filter(|tool| tool.descriptor.executor == ToolExecutorKind::SourceRuntime)
+                        .map(|tool| RemoteToolSummary {
+                            id: tool.descriptor.id,
+                            name: tool.descriptor.name,
+                            extensions: tool.descriptor.extensions,
+                            installable: tool.status.available_version.is_some()
+                                || matches!(
+                                    tool.status.stage,
+                                    ToolInstallStage::Prepared | ToolInstallStage::Ready
+                                ),
+                        })
+                        .collect::<Vec<_>>()
+                });
+                (gate, status, queue, files, workers, tools)
             },
             |view, output, ctx| {
-                let (gate, status, queue, files, workers) = output;
+                let (gate, status, queue, files, workers, tools) = output;
                 view.gate = gate.clone();
                 if gate.needs_poll() {
                     view.schedule_gate_then_refresh(ctx);
@@ -196,22 +244,7 @@ impl SyncView {
                     .collect();
                 match files {
                     Ok(files) => {
-                        view.remote_files = files
-                            .into_iter()
-                            .filter(|entry| {
-                                entry
-                                    .path
-                                    .rsplit('.')
-                                    .next()
-                                    .map(|ext| {
-                                        matches!(
-                                            ext.to_ascii_lowercase().as_str(),
-                                            "png" | "jpg" | "jpeg" | "bmp"
-                                        )
-                                    })
-                                    .unwrap_or(false)
-                            })
-                            .collect();
+                        view.remote_files = files;
                     }
                     Err(error) => {
                         view.remote_files.clear();
@@ -222,10 +255,10 @@ impl SyncView {
                     Ok(workers) => {
                         view.workers = workers;
                         if view.remote_files.is_empty() {
-                            view.remote_status = "没有可用的图片同步条目".into();
+                            view.remote_status = "没有可远程打开的同步文件".into();
                         } else {
                             view.remote_status = format!(
-                                "可远程打开的图片: {} 个；发现 worker: {} 个",
+                                "同步文件: {} 个；发现来源运行器: {} 个",
                                 view.remote_files.len(),
                                 view.workers.len()
                             );
@@ -236,12 +269,19 @@ impl SyncView {
                         view.remote_status = format!("Worker 查询失败: {error}");
                     }
                 }
+                match tools {
+                    Ok(tools) => view.runtime_tools = tools,
+                    Err(error) => {
+                        view.runtime_tools.clear();
+                        view.remote_status = format!("读取运行器工具目录失败: {error}");
+                    }
+                }
                 ctx.notify();
             },
         );
     }
 
-    fn open_with_paint(&mut self, entry_id: String, ctx: &mut ViewContext<Self>) {
+    fn open_with_tool(&mut self, entry_id: String, tool_id: String, ctx: &mut ViewContext<Self>) {
         let Some(entry) = self
             .remote_files
             .iter()
@@ -270,10 +310,16 @@ impl SyncView {
             ctx.notify();
             return;
         };
-        if !worker.can_open_workspace() {
+        let tool_name = self
+            .runtime_tools
+            .iter()
+            .find(|tool| tool.id == tool_id)
+            .map(|tool| tool.name.clone())
+            .unwrap_or_else(|| tool_id.clone());
+        if !worker.can_open_workspace(&tool_id) {
             self.remote_status = format!(
-                "{} 暂不能用 Paint 打开：{}",
-                worker.hostname,
+                "{} 暂不能用 {} 打开：{}",
+                worker.hostname, tool_name,
                 worker.blocking_detail()
             );
             ctx.notify();
@@ -282,7 +328,7 @@ impl SyncView {
         let worker_node = worker.node_id.clone();
         let worker_hostname = worker.hostname.clone();
         self.busy_entry_id = Some(entry.id.clone());
-        self.remote_status = format!("正在让 {} 用 Paint 打开 {}…", worker_hostname, entry.path);
+        self.remote_status = format!("正在让 {} 用 {} 打开 {}…", worker_hostname, tool_name, entry.path);
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -290,7 +336,7 @@ impl SyncView {
                 let request = WorkspaceOpenRequest {
                     entry_id: entry.id,
                     cluster_id: None,
-                    requested_app: Some("paint".to_string()),
+                    requested_app: Some(tool_id),
                     worker_node_id: Some(worker_node.clone()),
                     policy_id: None,
                     mode: WorkspaceMode::Edit,
@@ -326,7 +372,7 @@ impl SyncView {
         let mut candidates = self
             .workers
             .iter()
-            .filter(|worker| worker.can_open_workspace());
+            .filter(|worker| worker.available && worker.vm_ready && worker.has_control_endpoint());
         let first = candidates.next()?;
         if candidates.next().is_some() {
             None
@@ -370,9 +416,14 @@ impl SyncView {
         let fallback_worker = (author == "local" || author == "未知来源")
             .then(|| self.worker_for_entry_author(None))
             .flatten();
+        let compatible_tools = self
+            .runtime_tools
+            .iter()
+            .filter(|tool| tool.supports_path(&entry.path))
+            .collect::<Vec<_>>();
         let detail = match worker {
-            Some(worker) if worker.can_open_workspace() => {
-                format!("来源: {} · Paint 可用", worker.hostname)
+            Some(worker) if worker.available && worker.vm_ready && worker.has_control_endpoint() => {
+                format!("来源: {} · 文件留在来源机运行器", worker.hostname)
             }
             Some(worker) => format!("来源: {} · {}", worker.hostname, worker.blocking_detail()),
             None if fallback_worker.is_some() => {
@@ -384,10 +435,6 @@ impl SyncView {
             None => format!("来源 worker 未在线: {author}"),
         };
         let selectable_worker = worker.or(fallback_worker);
-        let disabled = self.busy_entry_id.is_some()
-            || selectable_worker
-                .map(|worker| !worker.can_open_workspace())
-                .unwrap_or(true);
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         let mut text = Flex::column();
         text.add_child(ui_text::body(entry.path.clone(), self.font).finish());
@@ -401,11 +448,31 @@ impl SyncView {
                 .with_uniform_padding(6.0)
                 .finish(),
         );
-        row.add_child(self.action_button(
-            "Paint 打开",
-            SyncAction::OpenWithPaint(entry.id.clone()),
-            disabled,
-        ));
+        let mut actions = Flex::column();
+        if compatible_tools.is_empty() {
+            actions.add_child(status_line(
+                "没有兼容工具",
+                self.font,
+                StatusTone::Placeholder,
+            ));
+        } else {
+            for tool in compatible_tools {
+                let disabled = self.busy_entry_id.is_some()
+                    || !tool.installable
+                    || selectable_worker
+                        .map(|worker| !worker.can_open_workspace(&tool.id))
+                        .unwrap_or(true);
+                actions.add_child(self.action_button(
+                    &format!("用 {} 打开", tool.name),
+                    SyncAction::OpenWithTool {
+                        entry_id: entry.id.clone(),
+                        tool_id: tool.id.clone(),
+                    },
+                    disabled,
+                ));
+            }
+        }
+        row.add_child(actions.finish());
         Container::new(row.finish())
             .with_uniform_padding(6.0)
             .with_background(theme::panel())
@@ -435,7 +502,7 @@ impl SyncView {
 
         col.add_child(section_title("远程打开", self.font));
         col.add_child(section_hint(
-            "按 version_author 路由到来源电脑的 Workspace worker。",
+            "选择工具箱软件后，按文件当前版本来源路由到对端 Ubuntu 运行器。",
             self.font,
         ));
         col.add_child(status_line(
@@ -491,7 +558,9 @@ impl TypedActionView for SyncView {
     fn handle_action(&mut self, action: &SyncAction, ctx: &mut ViewContext<Self>) {
         match action {
             SyncAction::Refresh => self.refresh(ctx),
-            SyncAction::OpenWithPaint(entry_id) => self.open_with_paint(entry_id.clone(), ctx),
+            SyncAction::OpenWithTool { entry_id, tool_id } => {
+                self.open_with_tool(entry_id.clone(), tool_id.clone(), ctx)
+            }
         }
     }
 }

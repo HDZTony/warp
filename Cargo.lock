@@ -20162,6 +20162,7 @@ dependencies = [
  "display-client",
  "display-core",
  "display-server",
+ "ed25519-dalek 2.2.0",
  "getrandom 0.2.16",
  "hkdf",
  "hmac 0.12.1",
@@ -20239,6 +20240,7 @@ name = "wormhole-desktop-tray"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "gtk",
  "image",
  "tray-icon",
 ]

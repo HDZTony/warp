@@ -28,17 +28,24 @@ use wormhole_desktop_core::cluster_commands::{
     add_storage_volume_to_node, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
     create_cluster as create_cluster_command, create_share_entry, delete_cluster,
     delete_share_entry, join_cluster, leave_cluster, list_share_directory, open_share_entry,
-    prepare_cluster_invite_for_copy, remote_open_share_entry, remove_cluster_device,
-    remove_cluster_node, remove_storage_volume_from_node, rename_share_entry,
-    switch_active_cluster, sync_share_entry, AddStorageVolumeParams, CachedClusterInvite,
-    ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams, CreateClusterParams,
-    CreateShareEntryKind, CreateShareEntryParams, DeleteClusterParams, JoinClusterOutcome,
-    JoinClusterParams, JoinedClusterDto, LeaveClusterParams, ListShareDirectoryParams,
-    RemoveClusterDeviceParams, RemoveClusterNodeParams, RenameShareEntryParams,
-    ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
+    prepare_cluster_invite_for_copy, remote_open_share_entry, remote_open_share_entry_on_host,
+    remove_cluster_device, remove_cluster_node, remove_storage_volume_from_node,
+    rename_share_entry, switch_active_cluster, sync_share_entry, AddStorageVolumeParams,
+    CachedClusterInvite, ClusterNodeDto, ClusterStatusDto, CreateClusterInviteParams,
+    CreateClusterParams, CreateShareEntryKind, CreateShareEntryParams, DeleteClusterParams,
+    JoinClusterOutcome, JoinClusterParams, JoinedClusterDto, LeaveClusterParams,
+    ListShareDirectoryParams, RemoveClusterDeviceParams, RemoveClusterNodeParams,
+    RenameShareEntryParams, ShareEntryActionParams, ShareEntryDto, SwitchActiveClusterParams,
     NODE_PRESENCE_HANDSHAKE_FAILED, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
+use wormhole_desktop_core::workspace_ui::{
+    workspace_app_preference, workspace_approve_provision_job,
+    workspace_approve_provision_job_with_candidate, workspace_list_provision_jobs,
+    workspace_list_workers, workspace_probe_vm_candidates, workspace_save_app_preference,
+    WorkspaceProvisionJob, WorkspaceProvisionRequest, WorkspaceProvisionStage,
+    WorkspaceVmCandidate, WorkspaceWorker,
+};
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -115,6 +122,16 @@ pub struct DevicesView {
     share_unshare_busy: bool,
     share_file_busy: bool,
     last_file_click: Option<(String, std::time::Instant)>,
+    selected_share_file: Option<String>,
+    workspace_workers: Vec<WorkspaceWorker>,
+    workspace_vm_candidates: Vec<WorkspaceVmCandidate>,
+    workspace_jobs: Vec<WorkspaceProvisionJob>,
+    workspace_remote_job: Option<WorkspaceProvisionJob>,
+    workspace_status: String,
+    workspace_loading: bool,
+    workspace_selected_app: String,
+    workspace_dismissed_approval: Option<String>,
+    workspace_auto_opened_job: Option<String>,
     bootstrap_busy: bool,
     bootstrap_pending_since: Option<Instant>,
     /// First time we observed remote `signed_in` without Online (for relay tip).
@@ -197,6 +214,16 @@ impl DevicesView {
             share_unshare_busy: false,
             share_file_busy: false,
             last_file_click: None,
+            selected_share_file: None,
+            workspace_workers: Vec::new(),
+            workspace_vm_candidates: Vec::new(),
+            workspace_jobs: Vec::new(),
+            workspace_remote_job: None,
+            workspace_status: "选择远端文件以检测来源电脑运行器".into(),
+            workspace_loading: false,
+            workspace_selected_app: "default".into(),
+            workspace_dismissed_approval: None,
+            workspace_auto_opened_job: None,
             bootstrap_busy: false,
             bootstrap_pending_since: None,
             signed_in_peers_since: None,
@@ -424,6 +451,7 @@ impl DevicesView {
                         view.bootstrap_pending_since = None;
                     }
                 }
+                view.refresh_workspace(ctx);
                 ctx.notify();
             },
         );
@@ -671,15 +699,352 @@ impl DevicesView {
                     Ok(entries) => {
                         view.share_entries = entries;
                         view.share_error = None;
+                        if view
+                            .selected_share_file
+                            .as_ref()
+                            .is_some_and(|name| !view.share_entries.iter().any(|e| &e.name == name))
+                        {
+                            view.selected_share_file = None;
+                        }
                     }
                     Err(e) => {
                         view.share_entries.clear();
                         view.share_error = Some(e);
                     }
                 }
+                view.refresh_workspace(ctx);
                 ctx.notify();
             },
         );
+        ctx.notify();
+    }
+
+    fn selected_share_entry(&self) -> Option<&ShareEntryDto> {
+        let selected = self.selected_share_file.as_deref()?;
+        self.share_entries
+            .iter()
+            .find(|entry| entry.name == selected && entry.kind.eq_ignore_ascii_case("file"))
+    }
+
+    fn select_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        let Some(entry) = self
+            .share_entries
+            .iter()
+            .find(|entry| entry.name == entry_name && entry.kind.eq_ignore_ascii_case("file"))
+        else {
+            return;
+        };
+        let preference_file = entry.name.clone();
+        let entry_id = entry.entry_id.clone();
+        self.selected_share_file = Some(entry_name);
+        self.workspace_selected_app = recommended_workspace_app(&preference_file).to_string();
+        if self
+            .workspace_remote_job
+            .as_ref()
+            .is_some_and(|job| entry_id.as_deref() != Some(job.request.entry_id.as_str()))
+        {
+            self.workspace_remote_job = None;
+        }
+        self.refresh_workspace(ctx);
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                workspace_app_preference(&state, &preference_file).await
+            },
+            |view, result, ctx| {
+                if let Ok(Some(app)) = result {
+                    if view.selected_share_entry().is_some_and(|entry| {
+                        workspace_apps_for_file(&entry.name).contains(&app.as_str())
+                    }) {
+                        view.workspace_selected_app = app;
+                        view.update_workspace_status_from_selection();
+                    }
+                }
+                ctx.notify();
+            },
+        );
+        ctx.notify();
+    }
+
+    fn refresh_workspace(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.workspace_loading {
+            return;
+        }
+        self.workspace_loading = true;
+        let core = self.core.clone();
+        let remote_job = self
+            .workspace_remote_job
+            .as_ref()
+            .map(|job| (job.request.source_node_id.clone(), job.job_id.clone()));
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let workers = workspace_list_workers(&state).await;
+                let jobs = workspace_list_provision_jobs(&state).await;
+                let candidates = workspace_probe_vm_candidates().await;
+                let remote = if let Some((node_id, job_id)) = remote_job {
+                    Some(
+                        wormhole_desktop_core::cluster_commands::remote_workspace_provision_status(
+                            &state, &node_id, &job_id,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+                (workers, jobs, candidates, remote)
+            },
+            |view, output, ctx| {
+                view.workspace_loading = false;
+                let (workers, jobs, candidates, remote) = output;
+                match workers {
+                    Ok(workers) => view.workspace_workers = workers,
+                    Err(error) => {
+                        view.workspace_workers.clear();
+                        view.workspace_status = format!("Workspace worker 检测失败: {error}");
+                    }
+                }
+                if let Ok(jobs) = jobs {
+                    if jobs.iter().any(|job| {
+                        job.stage == WorkspaceProvisionStage::Failed
+                            && job.import_candidate.is_some()
+                            && view.workspace_dismissed_approval.as_deref()
+                                == Some(job.job_id.as_str())
+                    }) {
+                        view.workspace_dismissed_approval = None;
+                    }
+                    view.workspace_jobs = jobs;
+                }
+                if let Ok(candidates) = candidates {
+                    view.workspace_vm_candidates = candidates;
+                }
+                if let Some(result) = remote {
+                    match result {
+                        Ok(job) => {
+                            view.workspace_status = job.detail.clone();
+                            let should_open = job.stage == WorkspaceProvisionStage::Ready
+                                && view.workspace_auto_opened_job.as_deref()
+                                    != Some(job.job_id.as_str());
+                            if should_open {
+                                view.workspace_auto_opened_job = Some(job.job_id.clone());
+                            }
+                            view.workspace_remote_job = Some(job);
+                            if should_open {
+                                view.workspace_open_selected(ctx);
+                            }
+                        }
+                        Err(error) => {
+                            view.workspace_status = format!("读取远端安装进度失败: {error}");
+                        }
+                    }
+                } else {
+                    view.update_workspace_status_from_selection();
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn update_workspace_status_from_selection(&mut self) {
+        let Some(entry) = self.selected_share_entry() else {
+            self.workspace_status = "选择远端文件以检测来源电脑运行器".into();
+            return;
+        };
+        let Some(author) = entry.version_author.as_deref() else {
+            self.workspace_status =
+                "文件缺少 SyncIndex 来源节点，请在来源电脑重新扫描后刷新".into();
+            return;
+        };
+        let Some(worker) = self.workspace_worker_for_author(author) else {
+            self.workspace_status = "来源电脑尚未准备 Ubuntu 工具运行器".into();
+            return;
+        };
+        if workspace_worker_supports_app(worker, &self.workspace_selected_app) {
+            self.workspace_status = format!("{} · 隔离工具运行器已就绪", worker.hostname);
+        } else {
+            self.workspace_status = format!(
+                "{} 在线，但镜像未提供 {}",
+                worker.hostname, self.workspace_selected_app
+            );
+        }
+    }
+
+    fn workspace_worker_for_author(&self, author: &str) -> Option<&WorkspaceWorker> {
+        self.workspace_workers.iter().find(|worker| {
+            worker.node_id == author || worker.dispatch_endpoint_id.as_deref() == Some(author)
+        })
+    }
+
+    fn workspace_open_selected(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.share_file_busy {
+            return;
+        }
+        let Some(entry) = self.selected_share_entry() else {
+            return;
+        };
+        let mut params = self.share_action_params(&entry.name);
+        params.requested_app = Some(self.workspace_selected_app.clone());
+        let entry_name = entry.name.clone();
+        self.share_file_busy = true;
+        self.workspace_status = format!("正在来源电脑的隔离运行器中打开 {entry_name}…");
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                remote_open_share_entry(&state, params).await
+            },
+            move |view, result, ctx| {
+                view.share_file_busy = false;
+                view.workspace_status = match result {
+                    Ok(session) => format!(
+                        "会话 {} 已提交，正在等待 Ubuntu 运行器就绪",
+                        session.session_id
+                    ),
+                    Err(error) => format!("来源电脑运行器打开失败: {error}"),
+                };
+                ctx.notify();
+            },
+        );
+        ctx.notify();
+    }
+
+    fn workspace_request_provision(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.workspace_loading || self.workspace_remote_job.is_some() {
+            return;
+        }
+        let Some(entry) = self.selected_share_entry() else {
+            return;
+        };
+        let Some(cluster_id) = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.cluster_id.clone())
+        else {
+            self.workspace_status = "当前共享浏览没有有效的 cluster_id".into();
+            ctx.notify();
+            return;
+        };
+        let Some(source_node_id) = entry.version_author.clone() else {
+            self.workspace_status = "文件缺少 SyncIndex 来源节点，无法安装到正确电脑".into();
+            ctx.notify();
+            return;
+        };
+        let Some(entry_id) = entry.entry_id.clone() else {
+            self.workspace_status = "文件缺少 SyncIndex entry_id，无法创建安装任务".into();
+            ctx.notify();
+            return;
+        };
+        let request = WorkspaceProvisionRequest {
+            cluster_id,
+            source_node_id: source_node_id.clone(),
+            entry_id,
+            requested_app: self.workspace_selected_app.clone(),
+            image_id: None,
+            version: None,
+            licensing_acknowledged: false,
+            requested_by_node_id: None,
+        };
+        self.workspace_loading = true;
+        self.workspace_status = "正在向来源电脑请求准备 Ubuntu 工具运行器…".into();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                wormhole_desktop_core::cluster_commands::request_remote_workspace_provision(
+                    &state,
+                    &source_node_id,
+                    request,
+                )
+                .await
+            },
+            |view, result, ctx| {
+                view.workspace_loading = false;
+                match result {
+                    Ok(job) => {
+                        view.workspace_status = job.detail.clone();
+                        view.workspace_remote_job = Some(job);
+                    }
+                    Err(error) => {
+                        view.workspace_status = format!("请求安装失败: {error}");
+                    }
+                }
+                ctx.notify();
+            },
+        );
+        ctx.notify();
+    }
+
+    fn workspace_retry_provision(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.workspace_loading {
+            return;
+        }
+        self.workspace_remote_job = None;
+        self.workspace_auto_opened_job = None;
+        self.workspace_request_provision(ctx);
+    }
+
+    fn workspace_approve_job(
+        &mut self,
+        job_id: String,
+        candidate_vm_name: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.workspace_loading = true;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                if let Some(vm_name) = candidate_vm_name {
+                    workspace_approve_provision_job_with_candidate(&state, &job_id, &vm_name).await
+                } else {
+                    workspace_approve_provision_job(&state, &job_id).await
+                }
+            },
+            |view, result, ctx| {
+                view.workspace_loading = false;
+                match result {
+                    Ok(job) => {
+                        view.workspace_status = job.detail;
+                        view.workspace_dismissed_approval = None;
+                    }
+                    Err(error) => {
+                        view.workspace_status = format!("批准安装失败: {error}");
+                    }
+                }
+                view.refresh_workspace(ctx);
+                ctx.notify();
+            },
+        );
+        ctx.notify();
+    }
+
+    fn workspace_next_app(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(entry) = self.selected_share_entry() else {
+            return;
+        };
+        let file_name = entry.name.clone();
+        let apps = workspace_apps_for_file(&file_name);
+        let current = apps
+            .iter()
+            .position(|app| *app == self.workspace_selected_app)
+            .unwrap_or(0);
+        self.workspace_selected_app = apps[(current + 1) % apps.len()].to_string();
+        let app = self.workspace_selected_app.clone();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                workspace_save_app_preference(&state, &file_name, &app).await
+            },
+            |view, result, ctx| {
+                if let Err(error) = result {
+                    view.workspace_status = format!("保存打开方式失败: {error}");
+                }
+                ctx.notify();
+            },
+        );
+        self.update_workspace_status_from_selection();
         ctx.notify();
     }
 
@@ -716,6 +1081,8 @@ impl DevicesView {
         self.browsing_node_id = Some(node_id.clone());
         self.browsing_label = label;
         self.share_entries.clear();
+        self.selected_share_file = None;
+        self.workspace_remote_job = None;
         self.share_error = None;
         self.share_path.clear();
         self.share_history_back.clear();
@@ -767,6 +1134,8 @@ impl DevicesView {
         self.browsing_node_id = None;
         self.browsing_label.clear();
         self.share_entries.clear();
+        self.selected_share_file = None;
+        self.workspace_remote_job = None;
         self.share_error = None;
         self.cancel_share_directory_load();
         self.share_path.clear();
@@ -801,6 +1170,8 @@ impl DevicesView {
         self.share_history_back.push(self.share_path.clone());
         self.share_history_forward.clear();
         self.share_path = next;
+        self.selected_share_file = None;
+        self.workspace_remote_job = None;
         self.share_status = None;
         self.share_new_menu_open = false;
         self.share_context_entry = None;
@@ -816,6 +1187,8 @@ impl DevicesView {
         };
         self.share_history_forward.push(self.share_path.clone());
         self.share_path = prev;
+        self.selected_share_file = None;
+        self.workspace_remote_job = None;
         self.share_status = None;
         self.share_new_menu_open = false;
         self.share_context_entry = None;
@@ -831,6 +1204,8 @@ impl DevicesView {
         };
         self.share_history_back.push(self.share_path.clone());
         self.share_path = next;
+        self.selected_share_file = None;
+        self.workspace_remote_job = None;
         self.share_status = None;
         self.share_new_menu_open = false;
         self.share_context_entry = None;
@@ -1158,6 +1533,10 @@ impl DevicesView {
             entry_name: entry_name.to_string(),
             remote_size: entry.map(|entry| entry.size),
             remote_modified_at: entry.map(|entry| entry.modified_at),
+            entry_id: entry.and_then(|entry| entry.entry_id.clone()),
+            version_id: entry.and_then(|entry| entry.version_id.clone()),
+            version_author: entry.and_then(|entry| entry.version_author.clone()),
+            requested_app: Some(recommended_workspace_app(entry_name).to_string()),
         }
     }
 
@@ -1229,12 +1608,35 @@ impl DevicesView {
     }
 
     fn remote_open_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
-        self.run_share_file_action(
-            entry_name.clone(),
-            "正在远程打开…",
-            "已请求远程打开",
-            |state, params| Box::pin(async move { remote_open_share_entry(&state, params).await }),
-            ctx,
+        if self.share_file_busy {
+            return;
+        }
+        let params = self.share_action_params(&entry_name);
+        self.share_file_busy = true;
+        self.share_status = Some("正在来源 Windows 打开并连接桌面…".into());
+        self.close_share_context_menu(ctx);
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                remote_open_share_entry_on_host(&state, params).await
+            },
+            move |view, result, ctx| {
+                view.share_file_busy = false;
+                match result {
+                    Ok(target) => {
+                        view.share_status = Some(format!("Windows 打开方式已启动 · {entry_name}"));
+                        ctx.emit(DevicesEvent::OpenRemoteDesktop {
+                            node_id: target.node_id,
+                        });
+                    }
+                    Err(error) => {
+                        view.share_status = Some(format!("来源 Windows 打开失败 · {error}"));
+                    }
+                }
+                ctx.notify();
+            },
         );
     }
 
@@ -1253,6 +1655,7 @@ impl DevicesView {
     }
 
     fn handle_share_file_click(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
+        self.select_share_file(entry_name.clone(), ctx);
         let now = std::time::Instant::now();
         if let Some((last_name, last_at)) = &self.last_file_click {
             if last_name == &entry_name && last_at.elapsed() < Duration::from_millis(450) {
@@ -3585,8 +3988,19 @@ impl DevicesView {
             .finish(),
         );
 
+        let selected =
+            !is_folder && self.selected_share_file.as_deref() == Some(entry.name.as_str());
         let inner = Container::new(row.finish())
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_background(if selected {
+                theme::accent_cool_bg(18)
+            } else {
+                theme::panel()
+            })
+            .with_border(Border::all(1.0).with_border_fill(if selected {
+                theme::accent_cool()
+            } else {
+                theme::border()
+            }))
             .finish();
 
         let menu_name = name.clone();
@@ -3662,6 +4076,173 @@ impl DevicesView {
         } else {
             "此文件夹为空"
         }
+    }
+
+    fn workspace_panel(&self) -> Box<dyn Element> {
+        let mut panel = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max);
+        panel.add_child(section_title("在来源电脑打开", self.font));
+        panel.add_child(section_hint(
+            "应用在来源电脑的隔离运行器中执行，不控制来源桌面。",
+            self.font,
+        ));
+
+        let Some(entry) = self.selected_share_entry() else {
+            panel.add_child(status_line(
+                "选择一个远端文件",
+                self.font,
+                StatusTone::Placeholder,
+            ));
+            return Container::new(
+                ConstrainedBox::new(panel.finish())
+                    .with_width(340.0)
+                    .with_min_width(300.0)
+                    .finish(),
+            )
+            .with_uniform_padding(14.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .finish();
+        };
+
+        panel.add_child(
+            ui_text::body(entry.name.clone(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        panel.add_child(
+            ui_text::mono(format_size(entry.size), self.mono)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        panel.add_child(section_title("来源电脑 Ubuntu 工具运行器", self.font));
+        panel.add_child(section_hint(
+            "文件不上传云端；客户端仅接收隔离运行器的画面和输入。",
+            self.font,
+        ));
+        panel.add_child(section_title("来源", self.font));
+        let source = entry
+            .version_author
+            .as_deref()
+            .map(|author| truncate_middle(author, 34))
+            .unwrap_or_else(|| "未解析".into());
+        panel.add_child(
+            ui_text::mono(source, self.mono)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        panel.add_child(section_title("打开方式", self.font));
+        if self.workspace_selected_app == "onlyoffice" {
+            panel.add_child(status_line(
+                workspace_app_label(&self.workspace_selected_app),
+                self.font,
+                StatusTone::Neutral,
+            ));
+        } else {
+            panel.add_child(self.toolbar_button(
+                workspace_app_label(&self.workspace_selected_app),
+                DevicesAction::WorkspaceNextApp,
+                false,
+                156.0,
+                true,
+            ));
+        }
+
+        let tone = match self.workspace_remote_job.as_ref().map(|job| &job.stage) {
+            Some(WorkspaceProvisionStage::Failed) => StatusTone::Danger,
+            Some(WorkspaceProvisionStage::RebootRequired) => StatusTone::Warn,
+            Some(WorkspaceProvisionStage::Ready) => StatusTone::Success,
+            _ => StatusTone::Neutral,
+        };
+        panel.add_child(section_title("环境", self.font));
+        panel.add_child(status_line(self.workspace_status.clone(), self.font, tone));
+        if let Some(job) = &self.workspace_remote_job {
+            if job.bytes_total > 0 && job.bytes_downloaded > 0 {
+                let percent = job.bytes_downloaded.saturating_mul(100) / job.bytes_total;
+                panel.add_child(
+                    ui_text::mono(
+                        format!(
+                            "{}% · {} / {}",
+                            percent,
+                            format_size(job.bytes_downloaded),
+                            format_size(job.bytes_total)
+                        ),
+                        self.mono,
+                    )
+                    .with_color(theme::accent_cool())
+                    .finish(),
+                );
+            }
+        }
+
+        let can_open = entry.version_author.as_deref().is_some_and(|author| {
+            self.workspace_worker_for_author(author)
+                .is_some_and(|worker| {
+                    worker.available
+                        && worker.vm_ready
+                        && workspace_worker_supports_app(worker, &self.workspace_selected_app)
+                })
+        });
+        panel.add_child(
+            Container::new(Flex::column().finish())
+                .with_vertical_margin(8.0)
+                .finish(),
+        );
+        if can_open {
+            panel.add_child(self.toolbar_button(
+                if self.workspace_selected_app == "onlyoffice" {
+                    "用 ONLYOFFICE 打开"
+                } else {
+                    "在来源电脑打开"
+                },
+                DevicesAction::WorkspaceOpenSelected,
+                false,
+                180.0,
+                !self.share_file_busy,
+            ));
+        } else if self
+            .workspace_remote_job
+            .as_ref()
+            .is_some_and(|job| job.stage == WorkspaceProvisionStage::Failed)
+        {
+            panel.add_child(self.toolbar_button(
+                "重新请求安装",
+                DevicesAction::WorkspaceRetryProvision,
+                false,
+                180.0,
+                !self.workspace_loading,
+            ));
+        } else if self.workspace_remote_job.is_none() {
+            panel.add_child(self.toolbar_button(
+                "请求来源电脑安装",
+                DevicesAction::WorkspaceRequestProvision,
+                false,
+                180.0,
+                entry.entry_id.is_some()
+                    && entry.version_author.is_some()
+                    && !self.workspace_loading,
+            ));
+        } else {
+            panel.add_child(self.toolbar_button(
+                "刷新安装状态",
+                DevicesAction::WorkspaceRefresh,
+                false,
+                180.0,
+                !self.workspace_loading,
+            ));
+        }
+
+        Container::new(
+            ConstrainedBox::new(panel.finish())
+                .with_width(340.0)
+                .with_min_width(300.0)
+                .finish(),
+        )
+        .with_uniform_padding(14.0)
+        .with_background(theme::canvas())
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
     }
 
     fn files_view(&self) -> Box<dyn Element> {
@@ -3793,10 +4374,23 @@ impl DevicesView {
             .finish(),
         );
 
-        Container::new(col.finish())
+        let file_list = Container::new(col.finish())
             .with_background(theme::panel())
             .with_uniform_padding(12.0)
-            .finish()
+            .finish();
+        if self.browsing_local() {
+            return file_list;
+        }
+        let mut split = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max);
+        split.add_child(Expanded::new(1.0, file_list).finish());
+        split.add_child(
+            Container::new(self.workspace_panel())
+                .with_margin_left(8.0)
+                .finish(),
+        );
+        split.finish()
     }
 
     fn share_add_modal(&self) -> Box<dyn Element> {
@@ -3968,7 +4562,7 @@ impl DevicesView {
             needs_sync,
         ));
         menu.add_child(self.share_context_item(
-            "远程打开",
+            "在 Windows 打开…",
             Some(DevicesAction::ShareRemoteOpenFile(name.clone())),
             false,
             can_remote,
@@ -4462,6 +5056,174 @@ impl DevicesView {
             body
         }
     }
+
+    fn pending_workspace_approval(&self) -> Option<&WorkspaceProvisionJob> {
+        self.workspace_jobs.iter().find(|job| {
+            (job.stage == WorkspaceProvisionStage::AwaitingLocalApproval
+                || (job.stage == WorkspaceProvisionStage::Failed && job.import_candidate.is_some()))
+                && self.workspace_dismissed_approval.as_deref() != Some(job.job_id.as_str())
+        })
+    }
+
+    fn workspace_approval_modal(&self, job: &WorkspaceProvisionJob) -> Box<dyn Element> {
+        let requester = job
+            .request
+            .requested_by_node_id
+            .as_deref()
+            .map(|value| truncate_middle(value, 36))
+            .unwrap_or_else(|| "集群成员".into());
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let failed_candidate =
+            job.stage == WorkspaceProvisionStage::Failed && job.import_candidate.is_some();
+        dialog.add_child(
+            ui_text::title(
+                if failed_candidate {
+                    "已有虚拟机无法安全克隆"
+                } else {
+                    "允许安装远程虚拟机？"
+                },
+                self.font,
+            )
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(
+                    format!(
+                        "{requester} 请求在这台来源电脑安装 {}，用于打开同步文件。",
+                        job.manifest.name
+                    ),
+                    self.font,
+                )
+                .with_color(theme::text())
+                .finish(),
+            )
+            .with_margin_top(12.0)
+            .finish(),
+        );
+        dialog.add_child(status_line(
+            format!(
+                "镜像 {} · {} · {}",
+                job.manifest.version,
+                job.manifest.installed_apps.join(", "),
+                format_size(job.manifest.size_bytes)
+            ),
+            self.font,
+            StatusTone::Neutral,
+        ));
+        if failed_candidate {
+            dialog.add_child(status_line(
+                job.last_error.clone().unwrap_or_else(|| job.detail.clone()),
+                self.font,
+                StatusTone::Danger,
+            ));
+        }
+        let compatible_candidates = self
+            .workspace_vm_candidates
+            .iter()
+            .filter(|candidate| candidate.importable)
+            .count();
+        dialog.add_child(status_line(
+            if failed_candidate {
+                "原 VM 保持不变。可以显式改用组织私有签名镜像。".into()
+            } else if compatible_candidates > 0 {
+                format!(
+                    "已检测到 {compatible_candidates} 个关闭的 Hyper-V VHDX 候选；将只读验收并克隆，不修改原 VM。"
+                )
+            } else {
+                "未发现可安全克隆的已关闭 Hyper-V VM，将使用组织私有镜像。".into()
+            },
+            self.font,
+            StatusTone::Muted,
+        ));
+        dialog.add_child(status_line(
+            "批准后将触发本机 UAC，可能启用 Hyper-V 并要求重启。镜像及应用许可由组织负责。",
+            self.font,
+            StatusTone::Warn,
+        ));
+        if !failed_candidate {
+            for candidate in self
+                .workspace_vm_candidates
+                .iter()
+                .filter(|candidate| candidate.importable)
+                .take(3)
+            {
+                dialog.add_child(
+                    Container::new(self.toolbar_button(
+                        &format!("克隆 {}", truncate_middle(&candidate.vm_name, 28)),
+                        DevicesAction::WorkspaceApproveProvisionCandidate {
+                            job_id: job.job_id.clone(),
+                            vm_name: candidate.vm_name.clone(),
+                        },
+                        false,
+                        260.0,
+                        !self.workspace_loading,
+                    ))
+                    .with_margin_top(8.0)
+                    .finish(),
+                );
+            }
+            if compatible_candidates > 3 {
+                dialog.add_child(status_line(
+                    format!(
+                        "另有 {} 个候选未显示，请整理 VM 后刷新。",
+                        compatible_candidates - 3
+                    ),
+                    self.font,
+                    StatusTone::Muted,
+                ));
+            }
+        }
+        let mut actions = Flex::row()
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        actions.add_child(self.toolbar_button(
+            "稍后",
+            DevicesAction::WorkspaceDismissApproval(job.job_id.clone()),
+            false,
+            72.0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(6.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            if failed_candidate {
+                "改用组织镜像"
+            } else {
+                "下载组织镜像"
+            },
+            DevicesAction::WorkspaceApproveProvision(job.job_id.clone()),
+            true,
+            136.0,
+            !self.workspace_loading,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(460.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+        Container::new(Align::new(panel).finish())
+            .with_uniform_padding(24.0)
+            .with_background(ColorU::new(8, 7, 11, 190))
+            .finish()
+    }
 }
 
 fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
@@ -4525,6 +5287,48 @@ fn share_type_label(entry: &ShareEntryDto) -> String {
     }
 }
 
+fn workspace_apps_for_file(name: &str) -> &'static [&'static str] {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" => &["paint", "default"],
+        "doc" | "docx" | "rtf" | "xls" | "xlsx" | "csv" | "ppt" | "pptx" => &["onlyoffice"],
+        "txt" | "md" | "log" => &["notepad", "default"],
+        _ => &["default"],
+    }
+}
+
+fn recommended_workspace_app(name: &str) -> &'static str {
+    workspace_apps_for_file(name)[0]
+}
+
+fn workspace_app_label(app: &str) -> &'static str {
+    match app {
+        "paint" => "Paint",
+        "word" => "Microsoft Word",
+        "excel" => "Microsoft Excel",
+        "powerpoint" => "Microsoft PowerPoint",
+        "notepad" => "Notepad",
+        "onlyoffice" => "ONLYOFFICE Desktop Editors",
+        _ => "虚拟机默认应用",
+    }
+}
+
+fn workspace_worker_supports_app(worker: &WorkspaceWorker, app: &str) -> bool {
+    worker.images.iter().any(|image| {
+        if app.eq_ignore_ascii_case("default") {
+            !image.installed_apps.is_empty()
+        } else {
+            image
+                .installed_apps
+                .iter()
+                .any(|installed| installed.eq_ignore_ascii_case(app))
+        }
+    })
+}
+
 fn default_share_browse_path() -> String {
     #[cfg(windows)]
     {
@@ -4580,7 +5384,14 @@ impl View for DevicesView {
             ViewMode::Grid => self.grid_shell(),
             ViewMode::Files => self.files_shell(),
         };
-        tab_content_fill(body)
+        if let Some(job) = self.pending_workspace_approval() {
+            let mut stack = Stack::new();
+            stack.add_child(body);
+            stack.add_child(self.workspace_approval_modal(job));
+            tab_content_fill(stack.finish())
+        } else {
+            tab_content_fill(body)
+        }
     }
 }
 
@@ -4678,6 +5489,21 @@ impl TypedActionView for DevicesView {
             }
             DevicesAction::CloseShareContextMenu => self.close_share_context_menu(ctx),
             DevicesAction::ShareFileClick(name) => self.handle_share_file_click(name.clone(), ctx),
+            DevicesAction::WorkspaceRefresh => self.refresh_workspace(ctx),
+            DevicesAction::WorkspaceNextApp => self.workspace_next_app(ctx),
+            DevicesAction::WorkspaceOpenSelected => self.workspace_open_selected(ctx),
+            DevicesAction::WorkspaceRequestProvision => self.workspace_request_provision(ctx),
+            DevicesAction::WorkspaceRetryProvision => self.workspace_retry_provision(ctx),
+            DevicesAction::WorkspaceApproveProvision(job_id) => {
+                self.workspace_approve_job(job_id.clone(), None, ctx);
+            }
+            DevicesAction::WorkspaceApproveProvisionCandidate { job_id, vm_name } => {
+                self.workspace_approve_job(job_id.clone(), Some(vm_name.clone()), ctx);
+            }
+            DevicesAction::WorkspaceDismissApproval(job_id) => {
+                self.workspace_dismissed_approval = Some(job_id.clone());
+                ctx.notify();
+            }
             DevicesAction::NodeCardClick(node_id) => {
                 self.handle_node_card_click(node_id.clone(), ctx);
             }
@@ -4978,6 +5804,21 @@ mod share_browse_path_tests {
                 "Linux must not use macOS Shared path: {path}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_office_route_tests {
+    use super::{recommended_workspace_app, workspace_app_label, workspace_apps_for_file};
+
+    #[test]
+    fn office_files_use_onlyoffice_without_default_fallback() {
+        assert_eq!(workspace_apps_for_file("report.docx"), &["onlyoffice"]);
+        assert_eq!(recommended_workspace_app("budget.xlsx"), "onlyoffice");
+        assert_eq!(
+            workspace_app_label("onlyoffice"),
+            "ONLYOFFICE Desktop Editors"
+        );
     }
 }
 
