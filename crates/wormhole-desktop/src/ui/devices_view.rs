@@ -134,7 +134,7 @@ pub struct DevicesView {
     workspace_auto_opened_job: Option<String>,
     bootstrap_busy: bool,
     bootstrap_pending_since: Option<Instant>,
-    /// First time we observed remote `signed_in` without Online (for relay tip).
+    /// First time we observed a remote device that was recently seen but is not online.
     signed_in_peers_since: Option<Instant>,
     caret_blink: CaretBlink,
     selected_node_id: Option<String>,
@@ -154,7 +154,7 @@ const TOOLBAR_BTN_PAD_X: f32 = 18.0;
 const CLUSTER_SELECT_MIN_WIDTH: f32 = 240.0;
 const GRID_SECTION_TITLE_HEIGHT: f32 = 28.0;
 const BOOTSTRAP_PENDING_HINT_AFTER: Duration = Duration::from_secs(35);
-const SIGNED_IN_RELAY_HINT_AFTER: Duration = Duration::from_secs(30);
+const RECENTLY_SEEN_HINT_AFTER: Duration = Duration::from_secs(30);
 const STABLE_CLUSTER_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 impl DevicesView {
@@ -290,7 +290,7 @@ impl DevicesView {
 
     fn signed_in_peers_slow(&self) -> bool {
         self.signed_in_peers_since
-            .is_some_and(|started| started.elapsed() >= SIGNED_IN_RELAY_HINT_AFTER)
+            .is_some_and(|started| started.elapsed() >= RECENTLY_SEEN_HINT_AFTER)
     }
 
     fn apply_cluster_status(&mut self, status: ClusterStatusDto, ctx: &mut ViewContext<Self>) {
@@ -471,24 +471,16 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let gossip =
-                    wormhole_desktop_core::cluster_commands::refresh_cluster_gossip_peers_now(
-                        &state,
-                    )
-                    .await;
                 let status = fetch_cluster_for_ui(&state).await;
                 let remarks = load_device_remarks(&state.data_dir)
                     .await
                     .unwrap_or_default();
-                (gossip, status, remarks)
+                (status, remarks)
             },
             move |view, output, ctx| {
                 view.cluster_refresh_busy = false;
-                let (gossip, status, remarks) = output;
+                let (status, remarks) = output;
                 view.device_remarks = remarks;
-                if let Err(err) = gossip {
-                    view.status_flash = Some(format!("REFRESH FAILED · {err}"));
-                }
                 match status {
                     Ok(status) => {
                         let node_count = status.nodes.len();
@@ -1849,7 +1841,7 @@ impl DevicesView {
             return flash.clone();
         }
         if self.cluster_refresh_busy {
-            return "REFRESH · 正在同步集群终端…".to_string();
+            return "REFRESH · 正在刷新设备目录…".to_string();
         }
         if self.cluster_syncing {
             return "CLUSTER · SYNCING · 后台同步集群…".to_string();
@@ -1883,7 +1875,7 @@ impl DevicesView {
                 format!("{online} ONLINE"),
             ];
             if signed_in > 0 {
-                parts.push(format!("{signed_in} 已登录"));
+                parts.push(format!("{signed_in} 最近在线"));
             }
             if pending > 0 {
                 parts.push(format!("{pending} 握手中"));
@@ -1895,9 +1887,9 @@ impl DevicesView {
                 parts.push("后台重试连接中".into());
             } else if signed_in > 0 {
                 if self.signed_in_peers_slow() {
-                    parts.push("检查设置→P2P Relay=国内".into());
+                    parts.push("等待设备续租或重新上线".into());
                 } else {
-                    parts.push("P2P 经 relay 拨号中".into());
+                    parts.push("正在确认设备在线状态".into());
                 }
             }
             return parts.join(" · ");

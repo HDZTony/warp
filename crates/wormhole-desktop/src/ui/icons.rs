@@ -1,15 +1,19 @@
 //! SVG icons from `docs/design/desktop-current.html` (bundled under `assets/svg/`).
+//! Toolbox app marks are multi-color PNGs under `assets/tool-icons/` (via `Image`).
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex, Icon,
-    MainAxisAlignment, MainAxisSize, ParentElement, Radius, Stack,
+    Image, MainAxisAlignment, MainAxisSize, ParentElement, Radius, Stack,
 };
 use warpui::Element;
+use warpui_core::assets::asset_cache::AssetSource;
+use warpui_core::image_cache::CacheOption;
 
 use crate::ui::app_shell::AppTab;
 use crate::ui::cluster_layout::CARD_MIN_WIDTH;
 use crate::ui::hud_effects::DeviceEnergyLines;
+use crate::ui::panel_primitives::HUD_RADIUS;
 use crate::ui::spinning_icon;
 use crate::ui::theme;
 
@@ -30,6 +34,33 @@ pub const DEVICE_THUMB_HEIGHT: f32 = 132.0;
 pub const CLUSTER_REFRESH_BTN_SIZE: f32 = 32.0;
 pub const CLUSTER_REFRESH_ICON_SIZE: f32 = 16.0;
 pub const CLUSTER_REFRESH_ICON_PATH: &str = "cluster-refresh.svg";
+/// Desktop-style toolbox app icon (official brand mark PNG).
+pub const TOOL_APP_ICON_SIZE: f32 = 52.0;
+
+/// Resolve a catalog `icon` name or tool id to a bundled PNG path.
+pub fn tool_app_icon_asset_path(icon: Option<&str>, tool_id: &str) -> &'static str {
+    let key = icon.unwrap_or(tool_id);
+    match key {
+        "tool-onlyoffice.png" | "onlyoffice" => "tool-onlyoffice.png",
+        "tool-graphite.png" | "graphite" => "tool-graphite.png",
+        "tool-blender.png" | "blender" => "tool-blender.png",
+        _ => "tool-onlyoffice.png",
+    }
+}
+
+/// Multi-color toolbox app icon (`AssetSource::Bundled` PNG).
+pub fn tool_app_icon(icon: Option<&str>, tool_id: &str, opacity: f32) -> Box<dyn Element> {
+    let path = tool_app_icon_asset_path(icon, tool_id);
+    ConstrainedBox::new(
+        Image::new(AssetSource::Bundled { path }, CacheOption::BySize)
+            .with_opacity(opacity.clamp(0.0, 1.0))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+    )
+    .with_width(TOOL_APP_ICON_SIZE)
+    .with_height(TOOL_APP_ICON_SIZE)
+    .finish()
+}
 
 pub fn icon(path: &'static str, size: f32, color: ColorU) -> Box<dyn Element> {
     ConstrainedBox::new(Icon::new(path, color).finish())
@@ -358,6 +389,22 @@ mod tests {
         assert_eq!(
             DeviceActionIconKind::RemoveDevice.asset_path(),
             "device-remove.svg"
+        );
+    }
+
+    #[test]
+    fn tool_app_icon_paths_map_catalog_names() {
+        assert_eq!(
+            tool_app_icon_asset_path(Some("tool-blender.png"), "blender"),
+            "tool-blender.png"
+        );
+        assert_eq!(
+            tool_app_icon_asset_path(None, "graphite"),
+            "tool-graphite.png"
+        );
+        assert_eq!(
+            tool_app_icon_asset_path(Some("tool-onlyoffice.png"), "onlyoffice"),
+            "tool-onlyoffice.png"
         );
     }
 }

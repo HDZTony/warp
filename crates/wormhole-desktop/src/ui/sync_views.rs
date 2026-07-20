@@ -16,9 +16,7 @@ use crate::ui_text;
 use wormhole_desktop_core::sync_commands::{
     list_sync_queue, search_sync_entries, sync_status, SearchSyncParams, SyncEntryDto,
 };
-use wormhole_desktop_core::toolbox_ui::{
-    toolbox_list_tools, ToolExecutorKind, ToolInstallStage,
-};
+use wormhole_desktop_core::toolbox_ui::{toolbox_list_tools, ToolExecutorKind, ToolInstallStage};
 use wormhole_desktop_core::workspace_ui::{
     workspace_list_workers, workspace_open_file, workspace_start_session_worker, WorkspaceMode,
     WorkspaceOpenRequest,
@@ -319,7 +317,8 @@ impl SyncView {
         if !worker.can_open_workspace(&tool_id) {
             self.remote_status = format!(
                 "{} 暂不能用 {} 打开：{}",
-                worker.hostname, tool_name,
+                worker.hostname,
+                tool_name,
                 worker.blocking_detail()
             );
             ctx.notify();
@@ -328,7 +327,10 @@ impl SyncView {
         let worker_node = worker.node_id.clone();
         let worker_hostname = worker.hostname.clone();
         self.busy_entry_id = Some(entry.id.clone());
-        self.remote_status = format!("正在让 {} 用 {} 打开 {}…", worker_hostname, tool_name, entry.path);
+        self.remote_status = format!(
+            "正在让 {} 用 {} 打开 {}…",
+            worker_hostname, tool_name, entry.path
+        );
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -422,7 +424,9 @@ impl SyncView {
             .filter(|tool| tool.supports_path(&entry.path))
             .collect::<Vec<_>>();
         let detail = match worker {
-            Some(worker) if worker.available && worker.vm_ready && worker.has_control_endpoint() => {
+            Some(worker)
+                if worker.available && worker.vm_ready && worker.has_control_endpoint() =>
+            {
                 format!("来源: {} · 文件留在来源机运行器", worker.hostname)
             }
             Some(worker) => format!("来源: {} · {}", worker.hostname, worker.blocking_detail()),

@@ -12,7 +12,19 @@ macro_rules! bundled_icon {
     };
 }
 
+macro_rules! bundled_tool_icon {
+    ($name:literal) => {
+        (
+            $name,
+            include_bytes!(concat!("../assets/tool-icons/", $name)) as &[u8],
+        )
+    };
+}
+
 static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
+    bundled_tool_icon!("tool-onlyoffice.png"),
+    bundled_tool_icon!("tool-graphite.png"),
+    bundled_tool_icon!("tool-blender.png"),
     bundled_icon!("tab-devices.svg"),
     bundled_icon!("tab-chat.svg"),
     bundled_icon!("tab-agent.svg"),
@@ -99,6 +111,22 @@ mod tests {
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
+        }
+    }
+
+    #[test]
+    fn bundled_tool_app_icons_are_png() {
+        let assets = WormholeAssets;
+        for name in [
+            "tool-onlyoffice.png",
+            "tool-graphite.png",
+            "tool-blender.png",
+        ] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+                "{name} should be a PNG"
+            );
         }
     }
 
