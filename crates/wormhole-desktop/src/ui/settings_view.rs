@@ -18,6 +18,10 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
+use wormhole_desktop_core::email_connector_commands::{
+    email_connector_disconnect, email_connector_list, email_connector_start_oauth,
+    email_connector_test_read, EmailConnectorDto,
+};
 use wormhole_desktop_core::settings_cache_commands::{
     clear_settings_cache, settings_cache_status, ClearSettingsCacheParams, SettingsCacheStatusDto,
 };
@@ -48,6 +52,10 @@ pub enum SettingsAction {
     Login,
     Logout,
     RefreshAccount,
+    RefreshEmailConnectors,
+    ConnectEmail(String),
+    DisconnectEmail(String),
+    TestEmail(String),
     ToggleClusterSection,
     OpenClusterManagement,
     ToggleRelaySection,
@@ -77,6 +85,10 @@ pub struct SettingsView {
     auth_status_tone: StatusTone,
     auth_busy: bool,
     auth_device_id: Option<String>,
+    email_connectors: Vec<EmailConnectorDto>,
+    email_busy: bool,
+    email_message: String,
+    email_tone: StatusTone,
     cluster_expanded: bool,
     cluster_id: Option<String>,
     cluster_name: Option<String>,
@@ -125,6 +137,10 @@ impl SettingsView {
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
             auth_device_id: None,
+            email_connectors: Vec::new(),
+            email_busy: false,
+            email_message: String::new(),
+            email_tone: StatusTone::Placeholder,
             cluster_expanded: false,
             cluster_id: None,
             cluster_name: None,
@@ -145,10 +161,43 @@ impl SettingsView {
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
+        view.refresh_email_connectors(ctx);
         view.refresh_cluster(ctx);
         view.refresh_relay(ctx);
         view.refresh_cache(ctx);
         view
+    }
+
+    fn refresh_email_connectors(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.auth_user_id.is_none() {
+            self.email_connectors.clear();
+            self.email_message = "登录 Wormhole 后可连接邮箱。".into();
+            self.email_tone = StatusTone::Placeholder;
+            return;
+        }
+        self.email_busy = true;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                email_connector_list(&state).await
+            },
+            |view, output, ctx| {
+                view.email_busy = false;
+                match output {
+                    Ok(result) => {
+                        view.email_connectors = result.items;
+                        view.email_message.clear();
+                        view.email_tone = StatusTone::Success;
+                    }
+                    Err(error) => {
+                        view.email_message = format!("读取邮箱连接器失败: {error}");
+                        view.email_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
@@ -828,6 +877,103 @@ impl SettingsView {
         self.flat_section(col.finish())
     }
 
+    fn email_connector_row(&self, provider: &str, label: &str) -> Box<dyn Element> {
+        let connection = self
+            .email_connectors
+            .iter()
+            .find(|item| item.provider == provider && item.connected);
+        let detail = connection
+            .and_then(|item| item.email.as_deref())
+            .unwrap_or("未连接")
+            .to_string();
+        let mut labels = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        labels.add_child(
+            ui_text::body(label.to_string(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        labels.add_child(
+            ui_text::mono(detail, self.font)
+                .with_color(if connection.is_some() {
+                    theme::accent_cool()
+                } else {
+                    theme::muted()
+                })
+                .finish(),
+        );
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, labels.finish()).finish());
+        if connection.is_some() {
+            row.add_child(
+                Container::new(self.stateful_action_button(
+                    "测试读取",
+                    SettingsAction::TestEmail(provider.to_string()),
+                    self.email_busy,
+                    false,
+                ))
+                .with_margin_right(8.0)
+                .finish(),
+            );
+            row.add_child(self.stateful_action_button(
+                "断开",
+                SettingsAction::DisconnectEmail(provider.to_string()),
+                self.email_busy,
+                false,
+            ));
+        } else {
+            row.add_child(self.stateful_action_button(
+                "连接",
+                SettingsAction::ConnectEmail(provider.to_string()),
+                self.email_busy || self.auth_user_id.is_none(),
+                true,
+            ));
+        }
+        Container::new(row.finish())
+            .with_uniform_padding(10.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .finish()
+    }
+
+    fn email_connectors_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("CONNECTORS · 邮箱", self.font));
+        col.add_child(section_hint(
+            "通过官方 OAuth 连接 Gmail 或 Outlook。Wormhole 不保存邮箱密码；发送和修改邮件需要明确确认。",
+            self.font,
+        ));
+        col.add_child(self.email_connector_row("gmail", "Gmail"));
+        col.add_child(
+            Container::new(self.email_connector_row("outlook", "Microsoft Outlook"))
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        col.add_child(
+            Container::new(self.stateful_action_button(
+                if self.email_busy {
+                    "正在刷新…"
+                } else {
+                    "刷新连接状态"
+                },
+                SettingsAction::RefreshEmailConnectors,
+                self.email_busy || self.auth_user_id.is_none(),
+                false,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        if !self.email_message.is_empty() {
+            col.add_child(status_line(
+                self.email_message.clone(),
+                self.font,
+                self.email_tone,
+            ));
+        }
+        self.flat_section(col.finish())
+    }
+
     fn cluster_block(&self) -> Box<dyn Element> {
         let summary = self
             .cluster_name
@@ -1148,6 +1294,7 @@ impl View for SettingsView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("设置", self.font));
         col.add_child(self.account_block());
+        col.add_child(self.email_connectors_block());
         col.add_child(self.shared_path_block());
         col.add_child(self.cluster_block());
         col.add_child(self.relay_block());
@@ -1187,6 +1334,103 @@ impl TypedActionView for SettingsView {
         match action {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
+            SettingsAction::RefreshEmailConnectors => self.refresh_email_connectors(ctx),
+            SettingsAction::ConnectEmail(provider) => {
+                if self.email_busy {
+                    return;
+                }
+                self.email_busy = true;
+                self.email_message =
+                    format!("正在创建 {} 授权链接…", email_provider_label(provider));
+                self.email_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                let provider = provider.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        let result = email_connector_start_oauth(&state, &provider).await?;
+                        tokio::task::spawn_blocking(move || {
+                            open_external_url(&result.authorization_url)
+                        })
+                        .await
+                        .map_err(|error| format!("启动浏览器失败: {error}"))??;
+                        Ok::<(), String>(())
+                    },
+                    |view, output, ctx| {
+                        view.email_busy = false;
+                        match output {
+                            Ok(()) => {
+                                view.email_message =
+                                    "授权页已在系统浏览器打开；完成后点击“刷新连接状态”。".into();
+                                view.email_tone = StatusTone::Placeholder;
+                            }
+                            Err(error) => {
+                                view.email_message = format!("连接邮箱失败: {error}");
+                                view.email_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::DisconnectEmail(provider) => {
+                if self.email_busy {
+                    return;
+                }
+                self.email_busy = true;
+                let core = self.core.clone();
+                let provider = provider.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        email_connector_disconnect(&state, &provider).await
+                    },
+                    |view, output, ctx| {
+                        view.email_busy = false;
+                        match output {
+                            Ok(()) => {
+                                view.email_message = "邮箱已断开。".into();
+                                view.email_tone = StatusTone::Success;
+                                view.refresh_email_connectors(ctx);
+                            }
+                            Err(error) => {
+                                view.email_message = format!("断开邮箱失败: {error}");
+                                view.email_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::TestEmail(provider) => {
+                if self.email_busy {
+                    return;
+                }
+                self.email_busy = true;
+                let core = self.core.clone();
+                let provider = provider.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        email_connector_test_read(&state, &provider).await
+                    },
+                    |view, output, ctx| {
+                        view.email_busy = false;
+                        match output {
+                            Ok(result) => {
+                                view.email_message =
+                                    format!("邮箱读取成功，返回 {} 封邮件。", result.count);
+                                view.email_tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.email_message = format!("邮箱读取失败: {error}");
+                                view.email_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
             SettingsAction::RefreshRelay => self.refresh_relay(ctx),
             SettingsAction::RefreshCache => self.refresh_cache(ctx),
             SettingsAction::ToggleClusterSection => {
@@ -1442,6 +1686,33 @@ fn storage_paths_differ(current: &str, draft: &str) -> bool {
     current.trim() != draft.trim()
 }
 
+fn email_provider_label(provider: &str) -> &'static str {
+    match provider {
+        "gmail" => "Gmail",
+        "outlook" => "Microsoft Outlook",
+        _ => "邮箱",
+    }
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://127.0.0.1:")) {
+        return Err("拒绝打开非 HTTPS 授权地址".into());
+    }
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .status();
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = std::process::Command::new("xdg-open").arg(url).status();
+    status
+        .map_err(|error| error.to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "系统浏览器启动失败".into())
+}
+
 const SETTINGS_FOLD_TOGGLE_MAX_WIDTH: f32 = 420.0;
 const SETTINGS_FORM_MAX_WIDTH: f32 = 560.0;
 const SETTINGS_FOLD_CHEVRON_SIZE: f32 = 14.0;
@@ -1494,9 +1765,15 @@ fn format_cache_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_summary_label, format_cache_size, is_relay_mode, relay_mode_label,
-        settings_fold_chevron_path, storage_paths_differ,
+        cache_summary_label, email_provider_label, format_cache_size, is_relay_mode,
+        relay_mode_label, settings_fold_chevron_path, storage_paths_differ,
     };
+
+    #[test]
+    fn email_provider_labels_are_stable() {
+        assert_eq!(email_provider_label("gmail"), "Gmail");
+        assert_eq!(email_provider_label("outlook"), "Microsoft Outlook");
+    }
     use wormhole_desktop_core::settings_cache_commands::SettingsCacheStatusDto;
 
     #[test]

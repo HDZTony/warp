@@ -62,13 +62,16 @@ pub fn accent_bg(alpha: u8) -> ColorU {
     ColorU::new(253, 249, 230, alpha)
 }
 
+
 pub fn accent_bg_default() -> ColorU {
     accent_bg(40)
 }
 
+
 pub fn accent_cool_bg(alpha: u8) -> ColorU {
     ColorU::new(222, 231, 247, alpha)
 }
+
 
 pub fn accent_cool_bg_default() -> ColorU {
     accent_cool_bg(20)
