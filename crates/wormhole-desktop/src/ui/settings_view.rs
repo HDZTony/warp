@@ -713,6 +713,7 @@ impl SettingsView {
                         self.storage_focused,
                         self.busy,
                         true,
+                        self.storage_field.cursor,
                     ))
                     .with_uniform_padding(10.0)
                     .with_background(theme::bg())

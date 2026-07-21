@@ -2958,6 +2958,7 @@ impl DevicesView {
             self.create_cluster_name_focused,
             false,
             self.caret_blink.visible,
+            self.create_cluster_name_field.cursor,
         );
         let input = wrap_text_field_focus_on_click(
             TextFieldInput::builder(field, |ctx, action| {
@@ -4885,6 +4886,7 @@ impl DevicesView {
             self.share_rename_focused,
             false,
             self.caret_blink.visible,
+            self.share_rename_field.cursor,
         );
         let input = wrap_text_field_focus_on_click(
             TextFieldInput::builder(field, |ctx, action| {

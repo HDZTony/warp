@@ -437,6 +437,7 @@ impl ChatComposeView {
             self.input_focused,
             self.sending,
             self.caret_blink.visible,
+            self.field_state.cursor,
         );
         let input = TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatComposeAction::TextEdit(action));

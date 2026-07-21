@@ -35,14 +35,33 @@ pub enum TextFieldEditAction {
     EndImeSuppress,
     InsertNewline,
     Paste(String),
+    MoveLeft,
+    MoveRight,
+    MoveUp,
+    MoveDown,
+    MoveHome,
+    MoveEnd,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TextFieldState {
     pub marked_text: String,
     pub marked_range: Range<usize>,
+    /// Character index into `draft` (not byte index).
+    pub cursor: usize,
     /// After [`TextFieldEditAction::ClearAll`], drop stale IME preedit/commits until the user types again.
     suppress_ime_replay: bool,
+}
+
+impl Default for TextFieldState {
+    fn default() -> Self {
+        Self {
+            marked_text: String::new(),
+            marked_range: 0..0,
+            cursor: 0,
+            suppress_ime_replay: false,
+        }
+    }
 }
 
 impl TextFieldState {
@@ -55,14 +74,25 @@ impl TextFieldState {
         self.marked_range = 0..0;
     }
 
+    /// Clamp cursor to the draft length (call after externally replacing draft).
+    pub fn clamp_cursor(&mut self, draft: &str) {
+        self.cursor = self.cursor.min(char_len(draft));
+    }
+
+    pub fn move_cursor_to_end(&mut self, draft: &str) {
+        self.cursor = char_len(draft);
+    }
+
     pub fn apply(&mut self, draft: &mut String, action: &TextFieldEditAction) {
+        self.clamp_cursor(draft);
         match action {
             TextFieldEditAction::TypedCharacters(chars) => {
                 if self.suppress_ime_replay {
                     return;
                 }
                 self.clear_marked();
-                draft.push_str(chars);
+                insert_at_char(draft, self.cursor, chars);
+                self.cursor = self.cursor.saturating_add(char_len(chars));
             }
             TextFieldEditAction::SetMarkedText {
                 marked_text,
@@ -92,32 +122,164 @@ impl TextFieldState {
                 if !self.marked_text.is_empty() {
                     pop_char(&mut self.marked_text);
                     sync_marked_range(self);
-                } else {
-                    pop_char(draft);
+                } else if self.cursor > 0 {
+                    self.cursor = delete_char_before(draft, self.cursor);
                 }
             }
             TextFieldEditAction::Delete => {
                 if !self.marked_text.is_empty() {
                     self.marked_text = self.marked_text.chars().skip(1).collect();
                     sync_marked_range(self);
+                } else {
+                    delete_char_at(draft, self.cursor);
                 }
             }
             TextFieldEditAction::ClearAll => {
                 self.clear_marked();
                 draft.clear();
+                self.cursor = 0;
                 self.suppress_ime_replay = true;
             }
             TextFieldEditAction::InsertNewline => {
                 self.suppress_ime_replay = false;
                 self.clear_marked();
-                draft.push('\n');
+                insert_at_char(draft, self.cursor, "\n");
+                self.cursor = self.cursor.saturating_add(1);
             }
             TextFieldEditAction::Paste(text) => {
                 self.suppress_ime_replay = false;
                 self.clear_marked();
-                draft.push_str(text);
+                let cleaned: String = text
+                    .chars()
+                    .filter(|ch| *ch == '\n' || !ch.is_control())
+                    .collect();
+                insert_at_char(draft, self.cursor, &cleaned);
+                self.cursor = self.cursor.saturating_add(char_len(&cleaned));
+            }
+            TextFieldEditAction::MoveLeft => {
+                if self.marked_text.is_empty() && self.cursor > 0 {
+                    self.cursor -= 1;
+                }
+            }
+            TextFieldEditAction::MoveRight => {
+                if self.marked_text.is_empty() {
+                    let len = char_len(draft);
+                    if self.cursor < len {
+                        self.cursor += 1;
+                    }
+                }
+            }
+            TextFieldEditAction::MoveHome => {
+                if self.marked_text.is_empty() {
+                    self.cursor = line_start(draft, self.cursor);
+                }
+            }
+            TextFieldEditAction::MoveEnd => {
+                if self.marked_text.is_empty() {
+                    self.cursor = line_end(draft, self.cursor);
+                }
+            }
+            TextFieldEditAction::MoveUp => {
+                if self.marked_text.is_empty() {
+                    self.cursor = move_vertical(draft, self.cursor, true);
+                }
+            }
+            TextFieldEditAction::MoveDown => {
+                if self.marked_text.is_empty() {
+                    self.cursor = move_vertical(draft, self.cursor, false);
+                }
             }
         }
+        self.clamp_cursor(draft);
+    }
+}
+
+fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn split_at_char(s: &str, idx: usize) -> (String, String) {
+    let idx = idx.min(char_len(s));
+    let mut chars = s.chars();
+    let before: String = chars.by_ref().take(idx).collect();
+    let after: String = chars.collect();
+    (before, after)
+}
+
+fn insert_at_char(s: &mut String, idx: usize, insert: &str) {
+    if insert.is_empty() {
+        return;
+    }
+    let (before, after) = split_at_char(s, idx);
+    *s = format!("{before}{insert}{after}");
+}
+
+fn delete_char_before(s: &mut String, idx: usize) -> usize {
+    if idx == 0 {
+        return 0;
+    }
+    let (before, after) = split_at_char(s, idx);
+    let mut new_before = before;
+    pop_char(&mut new_before);
+    let new_idx = char_len(&new_before);
+    *s = format!("{new_before}{after}");
+    new_idx
+}
+
+fn delete_char_at(s: &mut String, idx: usize) {
+    let len = char_len(s);
+    if idx >= len {
+        return;
+    }
+    let (before, after) = split_at_char(s, idx);
+    let mut after_chars = after.chars();
+    let _ = after_chars.next();
+    let rest: String = after_chars.collect();
+    *s = format!("{before}{rest}");
+}
+
+fn line_start(draft: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = draft.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let mut i = cursor;
+    while i > 0 && chars[i - 1] != '\n' {
+        i -= 1;
+    }
+    i
+}
+
+fn line_end(draft: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = draft.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let mut i = cursor;
+    while i < chars.len() && chars[i] != '\n' {
+        i += 1;
+    }
+    i
+}
+
+fn move_vertical(draft: &str, cursor: usize, up: bool) -> usize {
+    let chars: Vec<char> = draft.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let start = line_start(draft, cursor);
+    let col = cursor - start;
+    if up {
+        if start == 0 {
+            return cursor;
+        }
+        let prev_end = start - 1;
+        let prev_start = line_start(draft, prev_end);
+        let prev_len = prev_end - prev_start;
+        prev_start + col.min(prev_len)
+    } else {
+        let end = line_end(draft, cursor);
+        if end >= chars.len() {
+            return cursor;
+        }
+        let next_start = end + 1;
+        let next_end = line_end(draft, next_start);
+        let next_len = next_end - next_start;
+        next_start + col.min(next_len)
     }
 }
 
@@ -274,6 +436,7 @@ pub fn render_field_with_caret(
     focused: bool,
     disabled: bool,
     caret_blink: bool,
+    cursor: usize,
 ) -> Box<dyn Element> {
     render_field_with_caret_sized(
         draft,
@@ -283,6 +446,7 @@ pub fn render_field_with_caret(
         focused,
         disabled,
         caret_blink,
+        cursor,
         ui_text::BODY_SIZE,
     )
 }
@@ -299,6 +463,7 @@ pub fn render_compose_field_with_caret(
     focused: bool,
     disabled: bool,
     caret_blink: bool,
+    cursor: usize,
 ) -> Box<dyn Element> {
     let show_caret = focused && !disabled;
     if compose_should_show_placeholder(draft, marked) {
@@ -325,6 +490,7 @@ pub fn render_compose_field_with_caret(
         focused,
         disabled,
         caret_blink,
+        cursor,
         ui_text::CHAT_COMPOSE_FONT_SIZE,
     )
 }
@@ -338,6 +504,7 @@ pub fn render_search_field_with_caret(
     focused: bool,
     disabled: bool,
     caret_blink: bool,
+    cursor: usize,
 ) -> Box<dyn Element> {
     let show_caret = focused && !disabled;
     if compose_should_show_placeholder(draft, marked) {
@@ -360,6 +527,7 @@ pub fn render_search_field_with_caret(
         focused,
         disabled,
         caret_blink,
+        cursor,
         ui_text::BODY_SIZE,
     )
 }
@@ -372,29 +540,40 @@ fn render_field_with_caret_sized(
     focused: bool,
     disabled: bool,
     caret_blink: bool,
+    cursor: usize,
     font_size: f32,
 ) -> Box<dyn Element> {
     let show_caret = focused && !disabled;
     let draft_empty = draft.is_empty() && marked.is_empty();
-    let field = render_field_text_sized(
+    if show_caret && draft_empty {
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(render_caret(true, caret_blink));
+        return row.finish();
+    }
+
+    if !show_caret {
+        return render_field_text_sized(
+            draft,
+            marked,
+            placeholder,
+            font,
+            focused,
+            disabled,
+            font_size,
+        );
+    }
+
+    render_field_text_with_caret_sized(
         draft,
         marked,
         placeholder,
         font,
         focused,
         disabled,
+        caret_blink,
+        cursor,
         font_size,
-    );
-    let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-    if show_caret && draft_empty {
-        row.add_child(render_caret(true, caret_blink));
-    } else {
-        row.add_child(field);
-        if show_caret {
-            row.add_child(render_caret(true, caret_blink));
-        }
-    }
-    row.finish()
+    )
 }
 
 pub fn display_with_preedit(draft: &str, marked: &str, placeholder: &str) -> String {
@@ -429,6 +608,17 @@ pub fn render_field_text(
     )
 }
 
+fn field_text_el(
+    text: String,
+    color: pathfinder_color::ColorU,
+    font: FamilyId,
+    font_size: f32,
+) -> Box<dyn Element> {
+    warpui::elements::Text::new(text, font, font_size)
+        .with_color(color)
+        .finish()
+}
+
 fn render_field_text_sized(
     draft: &str,
     marked: &str,
@@ -438,14 +628,14 @@ fn render_field_text_sized(
     disabled: bool,
     font_size: f32,
 ) -> Box<dyn Element> {
-    let field_text = |text: String, color: pathfinder_color::ColorU| {
-        warpui::elements::Text::new(text, font, font_size)
-            .with_color(color)
-            .finish()
-    };
     let show_placeholder = should_show_placeholder(focused, draft, marked);
     if show_placeholder {
-        return field_text(placeholder.to_string(), theme::placeholder());
+        return field_text_el(
+            placeholder.to_string(),
+            theme::placeholder(),
+            font,
+            font_size,
+        );
     }
 
     let text_color = if disabled {
@@ -460,7 +650,7 @@ fn render_field_text_sized(
     };
 
     if marked.is_empty() {
-        return field_text(draft.to_string(), text_color);
+        return field_text_el(draft.to_string(), text_color, font, font_size);
     }
 
     if !draft.contains('\n') {
@@ -468,9 +658,19 @@ fn render_field_text_sized(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(warpui::elements::MainAxisSize::Min);
         if !draft.is_empty() {
-            row.add_child(field_text(draft.to_string(), text_color));
+            row.add_child(field_text_el(
+                draft.to_string(),
+                text_color,
+                font,
+                font_size,
+            ));
         }
-        row.add_child(field_text(marked.to_string(), marked_color));
+        row.add_child(field_text_el(
+            marked.to_string(),
+            marked_color,
+            font,
+            font_size,
+        ));
         return row.finish();
     }
 
@@ -483,13 +683,159 @@ fn render_field_text_sized(
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(warpui::elements::MainAxisSize::Min);
             if !line.is_empty() {
-                row.add_child(field_text((*line).to_string(), text_color));
+                row.add_child(field_text_el(
+                    (*line).to_string(),
+                    text_color,
+                    font,
+                    font_size,
+                ));
             }
-            row.add_child(field_text(marked.to_string(), marked_color));
+            row.add_child(field_text_el(
+                marked.to_string(),
+                marked_color,
+                font,
+                font_size,
+            ));
             col.add_child(row.finish());
         } else {
-            col.add_child(field_text((*line).to_string(), text_color));
+            col.add_child(field_text_el(
+                (*line).to_string(),
+                text_color,
+                font,
+                font_size,
+            ));
         }
+    }
+    col.finish()
+}
+
+fn render_field_text_with_caret_sized(
+    draft: &str,
+    marked: &str,
+    placeholder: &str,
+    font: FamilyId,
+    focused: bool,
+    disabled: bool,
+    caret_blink: bool,
+    cursor: usize,
+    font_size: f32,
+) -> Box<dyn Element> {
+    let show_placeholder = should_show_placeholder(focused, draft, marked);
+    if show_placeholder {
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        row.add_child(field_text_el(
+            placeholder.to_string(),
+            theme::placeholder(),
+            font,
+            font_size,
+        ));
+        row.add_child(render_caret(true, caret_blink));
+        return row.finish();
+    }
+
+    let text_color = if disabled {
+        theme::placeholder()
+    } else {
+        theme::text()
+    };
+    let marked_color = if focused {
+        theme::accent_cool()
+    } else {
+        theme::muted()
+    };
+
+    let cursor = cursor.min(char_len(draft));
+    let (before, after) = split_at_char(draft, cursor);
+    let prefix = if marked.is_empty() {
+        before.clone()
+    } else {
+        format!("{before}{marked}")
+    };
+
+    if !prefix.contains('\n') && !after.contains('\n') {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(warpui::elements::MainAxisSize::Min);
+        if !before.is_empty() {
+            row.add_child(field_text_el(before, text_color, font, font_size));
+        }
+        if !marked.is_empty() {
+            row.add_child(field_text_el(
+                marked.to_string(),
+                marked_color,
+                font,
+                font_size,
+            ));
+        }
+        row.add_child(render_caret(true, caret_blink));
+        if !after.is_empty() {
+            row.add_child(field_text_el(after, text_color, font, font_size));
+        }
+        return row.finish();
+    }
+
+    // Multiline: caret on the line that contains the cursor (marked text sits on that line).
+    let caret_line = prefix.chars().filter(|c| *c == '\n').count();
+    let prefix_lines: Vec<&str> = prefix.split('\n').collect();
+    let after_lines: Vec<&str> = after.split('\n').collect();
+    let total_lines = prefix_lines.len() + after_lines.len().saturating_sub(1);
+
+    let mut col = Flex::column().with_main_axis_size(warpui::elements::MainAxisSize::Min);
+    for idx in 0..total_lines {
+        if idx < caret_line {
+            col.add_child(field_text_el(
+                prefix_lines[idx].to_string(),
+                text_color,
+                font,
+                font_size,
+            ));
+            continue;
+        }
+        if idx == caret_line {
+            let line_before = prefix_lines.get(idx).copied().unwrap_or("");
+            let line_after = after_lines.first().copied().unwrap_or("");
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(warpui::elements::MainAxisSize::Min);
+            if !marked.is_empty() && line_before.ends_with(marked) {
+                let draft_part = &line_before[..line_before.len().saturating_sub(marked.len())];
+                if !draft_part.is_empty() {
+                    row.add_child(field_text_el(
+                        draft_part.to_string(),
+                        text_color,
+                        font,
+                        font_size,
+                    ));
+                }
+                row.add_child(field_text_el(
+                    marked.to_string(),
+                    marked_color,
+                    font,
+                    font_size,
+                ));
+            } else if !line_before.is_empty() {
+                row.add_child(field_text_el(
+                    line_before.to_string(),
+                    text_color,
+                    font,
+                    font_size,
+                ));
+            }
+            row.add_child(render_caret(true, caret_blink));
+            if !line_after.is_empty() {
+                row.add_child(field_text_el(
+                    line_after.to_string(),
+                    text_color,
+                    font,
+                    font_size,
+                ));
+            }
+            col.add_child(row.finish());
+            continue;
+        }
+        let after_idx = idx - caret_line;
+        let line = after_lines.get(after_idx).copied().unwrap_or("");
+        col.add_child(field_text_el(line.to_string(), text_color, font, font_size));
     }
     col.finish()
 }
@@ -698,8 +1044,28 @@ impl Element for TextFieldInput {
                         (self.on_edit)(ctx, action);
                         return true;
                     }
-                    "left" | "right" | "up" | "down" | "home" | "end" => {
-                        // Consume navigation keys while focused so shell tab arrows do not fire.
+                    "left" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveLeft);
+                        return true;
+                    }
+                    "right" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveRight);
+                        return true;
+                    }
+                    "up" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveUp);
+                        return true;
+                    }
+                    "down" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveDown);
+                        return true;
+                    }
+                    "home" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveHome);
+                        return true;
+                    }
+                    "end" => {
+                        (self.on_edit)(ctx, TextFieldEditAction::MoveEnd);
                         return true;
                     }
                     "enter" | "return" | "escape" | "tab" => {
@@ -762,6 +1128,7 @@ mod tests {
             &TextFieldEditAction::TypedCharacters("你".into()),
         );
         assert_eq!(draft, "你");
+        assert_eq!(state.cursor, 1);
         assert!(state.marked_text.is_empty());
     }
 
@@ -798,6 +1165,7 @@ mod tests {
     fn backspace_shrinks_preedit_without_touching_draft() {
         let mut draft = "committed".to_string();
         let mut state = TextFieldState::new();
+        state.move_cursor_to_end(&draft);
         state.apply(
             &mut draft,
             &TextFieldEditAction::SetMarkedText {
@@ -826,6 +1194,7 @@ mod tests {
 
         let mut draft = "user@example.com".to_string();
         let mut state = TextFieldState::new();
+        state.move_cursor_to_end(&draft);
         state.apply(
             &mut draft,
             &TextFieldEditAction::SetMarkedText {
@@ -843,6 +1212,7 @@ mod tests {
         let mut state = TextFieldState::new();
         state.apply(&mut draft, &TextFieldEditAction::ClearAll);
         assert!(draft.is_empty());
+        assert_eq!(state.cursor, 0);
 
         state.apply(
             &mut draft,
@@ -866,5 +1236,49 @@ mod tests {
             &TextFieldEditAction::TypedCharacters("a".into()),
         );
         assert_eq!(draft, "a");
+        assert_eq!(state.cursor, 1);
+    }
+
+    #[test]
+    fn arrow_keys_move_cursor_through_utf8() {
+        let mut draft = "你好世界".to_string();
+        let mut state = TextFieldState::new();
+        state.move_cursor_to_end(&draft);
+        assert_eq!(state.cursor, 4);
+        state.apply(&mut draft, &TextFieldEditAction::MoveLeft);
+        assert_eq!(state.cursor, 3);
+        state.apply(&mut draft, &TextFieldEditAction::MoveLeft);
+        assert_eq!(state.cursor, 2);
+        state.apply(&mut draft, &TextFieldEditAction::MoveHome);
+        assert_eq!(state.cursor, 0);
+        state.apply(&mut draft, &TextFieldEditAction::MoveEnd);
+        assert_eq!(state.cursor, 4);
+    }
+
+    #[test]
+    fn insert_and_backspace_at_cursor_middle() {
+        let mut draft = "你好世界".to_string();
+        let mut state = TextFieldState::new();
+        state.cursor = 2;
+        state.apply(
+            &mut draft,
+            &TextFieldEditAction::TypedCharacters("中".into()),
+        );
+        assert_eq!(draft, "你好中世界");
+        assert_eq!(state.cursor, 3);
+        state.apply(&mut draft, &TextFieldEditAction::Backspace);
+        assert_eq!(draft, "你好世界");
+        assert_eq!(state.cursor, 2);
+    }
+
+    #[test]
+    fn move_up_down_across_lines() {
+        let mut draft = "abc\ndef".to_string();
+        let mut state = TextFieldState::new();
+        state.cursor = 5; // on 'e'
+        state.apply(&mut draft, &TextFieldEditAction::MoveUp);
+        assert_eq!(state.cursor, 1); // 'b'
+        state.apply(&mut draft, &TextFieldEditAction::MoveDown);
+        assert_eq!(state.cursor, 5);
     }
 }

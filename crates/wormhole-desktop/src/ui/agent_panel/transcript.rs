@@ -1,7 +1,8 @@
 use pathfinder_color::ColorU;
+use std::sync::{Arc, Mutex};
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Flex, MainAxisSize, ParentElement,
+    EventHandler, Flex, MainAxisSize, ParentElement, SelectableArea, SelectionHandle,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -34,6 +35,9 @@ pub fn channel_color(channel: &str, level: &str) -> ColorU {
     match channel {
         "user" => theme::text(),
         "assistant" => theme::accent_cool(),
+        "command_execution" | "mcp_tool_call" | "file_change" | "web_search" | "stdout" => {
+            theme::muted()
+        }
         "status" => theme::warn(),
         _ => theme::muted(),
     }
@@ -52,6 +56,28 @@ fn user_icon_badge() -> Box<dyn Element> {
     .with_corner_radius(warpui::elements::CornerRadius::with_all(
         warpui::elements::Radius::Pixels(999.0),
     ))
+    .finish()
+}
+
+fn copy_icon_button(text: String, as_assistant: bool) -> Box<dyn Element> {
+    Container::new(
+        EventHandler::new(
+            ConstrainedBox::new(icons::agent_icon("agent-copy.svg", theme::muted()))
+                .with_width(14.0)
+                .with_height(14.0)
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            if as_assistant {
+                ctx.dispatch_typed_action(super::AgentPanelAction::CopyAssistantText(text.clone()));
+            } else {
+                ctx.dispatch_typed_action(super::AgentPanelAction::CopyUserPrompt(text.clone()));
+            }
+            DispatchEventResult::StopPropagation
+        })
+        .finish(),
+    )
+    .with_uniform_padding(4.0)
     .finish()
 }
 
@@ -87,27 +113,15 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
     .with_max_width(USER_BUBBLE_MAX_WIDTH)
     .finish();
 
-    let copy_btn = Container::new(
-        EventHandler::new(
-            ConstrainedBox::new(icons::agent_icon("agent-copy.svg", theme::muted()))
-                .with_width(14.0)
-                .with_height(14.0)
-                .finish(),
-        )
-        .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(super::AgentPanelAction::CopyUserPrompt(prompt.clone()));
-            DispatchEventResult::StopPropagation
-        })
-        .finish(),
-    )
-    .with_uniform_padding(4.0)
-    .finish();
-
     Align::new(
         Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::End)
             .with_child(bubble)
-            .with_child(Container::new(copy_btn).with_margin_top(6.0).finish())
+            .with_child(
+                Container::new(copy_icon_button(prompt, false))
+                    .with_margin_top(6.0)
+                    .finish(),
+            )
             .finish(),
     )
     .right()
@@ -137,6 +151,7 @@ fn render_assistant_body(
     mono: FamilyId,
     line: &TranscriptLine,
 ) -> Box<dyn Element> {
+    let copy_text = line.text.clone();
     let mut col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_main_axis_size(MainAxisSize::Min);
@@ -147,7 +162,10 @@ fn render_assistant_body(
                 .finish(),
         );
     }
-    let use_mono = matches!(line.channel.as_str(), "stdout" | "stderr");
+    let use_mono = matches!(
+        line.channel.as_str(),
+        "stdout" | "stderr" | "command_execution" | "mcp_tool_call" | "file_change" | "web_search"
+    );
     if use_mono {
         col.add_child(
             ui_text::mono(line.text.clone(), mono)
@@ -161,6 +179,11 @@ fn render_assistant_body(
                 .finish(),
         );
     }
+    col.add_child(
+        Container::new(copy_icon_button(copy_text, true))
+            .with_margin_top(6.0)
+            .finish(),
+    );
     col.finish()
 }
 
@@ -200,7 +223,8 @@ fn render_live_line(line: &TranscriptLine, font: FamilyId, mono: FamilyId) -> Bo
     match line.channel.as_str() {
         "user" => render_user_message(font, &line.text),
         "status" => render_status_line(font, &line.text),
-        "assistant" | "stdout" | "stderr" => render_assistant_body(font, mono, line),
+        "assistant" | "stdout" | "stderr" | "command_execution" | "mcp_tool_call"
+        | "file_change" | "web_search" => render_assistant_body(font, mono, line),
         _ => Container::new(
             ui_text::mono(
                 format!("[{}] {}", line.channel.to_uppercase(), line.text),
@@ -218,6 +242,8 @@ pub fn render_transcript(
     model: &TranscriptViewModel,
     font: FamilyId,
     mono: FamilyId,
+    selection_handle: SelectionHandle,
+    selected_text: Arc<Mutex<Option<String>>>,
 ) -> Box<dyn Element> {
     let mut column = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -247,10 +273,21 @@ pub fn render_transcript(
         }
     }
 
-    Container::new(
+    let body = Container::new(
         ConstrainedBox::new(column.finish())
             .with_max_width(AGENT_THREAD_MAX_WIDTH)
             .finish(),
+    )
+    .finish();
+
+    SelectableArea::new(
+        selection_handle,
+        move |args, _, _| {
+            if let Ok(mut slot) = selected_text.lock() {
+                *slot = args.selection.filter(|s| !s.is_empty());
+            }
+        },
+        body,
     )
     .finish()
 }

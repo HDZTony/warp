@@ -546,6 +546,7 @@ pub fn build_redeem_modal(
     history_scroll: &ClippedScrollStateHandle,
     font: FamilyId,
     mono: FamilyId,
+    cursor: usize,
 ) -> Box<dyn Element> {
     let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     dialog.add_child(redeem_tab_bar(active_tab, font));
@@ -561,6 +562,7 @@ pub fn build_redeem_modal(
             busy,
             font,
             mono,
+            cursor,
         )),
         RedeemTab::History => dialog.add_child(redeem_history_panel(
             history,
@@ -702,6 +704,7 @@ fn redeem_balance_panel(
     busy: bool,
     font: FamilyId,
     mono: FamilyId,
+    cursor: usize,
 ) -> Box<dyn Element> {
     let field = render_field_with_caret(
         draft,
@@ -711,6 +714,7 @@ fn redeem_balance_panel(
         focused,
         false,
         caret_visible,
+        cursor,
     );
     let input = wrap_text_field_focus_on_click(
         TextFieldInput::builder(field, |ctx, action| {

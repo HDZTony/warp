@@ -1699,6 +1699,7 @@ impl View for AppShellView {
                 &self.redeem_history_scroll,
                 self.font,
                 self.mono,
+                self.redeem_code_field.cursor,
             ));
         }
         if self.purchase_modal_open {

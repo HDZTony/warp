@@ -7,7 +7,7 @@ mod transcript;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -37,7 +37,7 @@ use wormhole_desktop_core::warp_embed_prefs::{
 use wormhole_desktop_core::{
     agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback, agent_list_sessions,
     agent_read_local_session_events, agent_start_session_with_codex_fallback, agent_status,
-    AgentSessionDto, AgentStartRequest, AgentTurnBackend,
+    agent_stop_session, AgentSessionDto, AgentStartRequest, AgentTurnBackend, CODEX_TURN_CANCELLED,
 };
 
 use crate::ui::clipboard::write_clipboard_text;
@@ -142,6 +142,8 @@ pub enum AgentPanelAction {
     },
     CloseSessionContextMenu,
     CopyUserPrompt(String),
+    CopyAssistantText(String),
+    CopySelection,
     ClearAndUnfocus,
     ToggleComposerFocus,
     TextFieldEdit(TextFieldEditAction),
@@ -224,6 +226,10 @@ pub struct AgentPanelView {
     mono: FamilyId,
     state: Arc<Mutex<PanelState>>,
     generation: Arc<Mutex<u64>>,
+    /// Monotonic id for the in-flight Chat/Task run; Stop bumps this to drop late stream writes.
+    active_run_id: Arc<AtomicU64>,
+    /// Cancel sender for the current Chat `codex` child (watch `true` = stop).
+    turn_cancel_tx: Arc<Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
     event_poll_inflight: Arc<AtomicBool>,
     visible: bool,
     access_mode: AgentAccessMode,
@@ -234,6 +240,8 @@ pub struct AgentPanelView {
     run_timer_running: bool,
     generation_notify_tx: async_channel::Sender<()>,
     generation_notify_rx: async_channel::Receiver<()>,
+    selection_handle: warpui::elements::SelectionHandle,
+    selected_text: Arc<Mutex<Option<String>>>,
 }
 
 impl AgentPanelView {
@@ -296,6 +304,8 @@ impl AgentPanelView {
                 project_head_hover: None,
             })),
             generation: Arc::new(Mutex::new(0)),
+            active_run_id: Arc::new(AtomicU64::new(0)),
+            turn_cancel_tx: Arc::new(Mutex::new(None)),
             event_poll_inflight: Arc::new(AtomicBool::new(false)),
             visible: false,
             access_mode,
@@ -306,6 +316,8 @@ impl AgentPanelView {
             run_timer_running: false,
             generation_notify_tx,
             generation_notify_rx,
+            selection_handle: warpui::elements::SelectionHandle::default(),
+            selected_text: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -438,6 +450,8 @@ impl AgentPanelView {
         panel.busy = false;
         panel.run_started_at = None;
         panel.draft.clear();
+        panel.field_state.cursor = 0;
+        panel.field_state.clear_marked();
         panel.sidebar_search.clear();
         panel.input_focused = true;
         panel.sidebar_search_focused = false;
@@ -456,6 +470,8 @@ impl AgentPanelView {
         let draft = panel.draft.clone();
         Self::insert_new_session(panel, project_id);
         panel.draft = draft;
+        let end = panel.draft.chars().count();
+        panel.field_state.cursor = end;
     }
 
     fn upsert_sidebar_session(panel: &mut PanelState, session: sidebar::AgentSession) {
@@ -797,6 +813,9 @@ impl AgentPanelView {
         state: &Arc<Mutex<PanelState>>,
         keystroke: &Keystroke,
     ) -> Option<AgentPanelAction> {
+        if (keystroke.ctrl || keystroke.meta) && keystroke.key.eq_ignore_ascii_case("c") {
+            return Some(AgentPanelAction::CopySelection);
+        }
         if keystroke.ctrl || keystroke.meta || keystroke.alt {
             return None;
         }
@@ -1696,6 +1715,88 @@ impl AgentPanelView {
         ctx.notify();
     }
 
+    fn copy_assistant_text(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        if !text.trim().is_empty() && write_clipboard_text(text).is_ok() {
+            if let Ok(mut panel) = self.state.lock() {
+                panel.status = "已复制回复".into();
+            }
+        }
+        ctx.notify();
+    }
+
+    fn copy_selection(&mut self, ctx: &mut ViewContext<Self>) {
+        let selected = self
+            .selected_text
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .filter(|s| !s.is_empty());
+        if let Some(text) = selected {
+            if write_clipboard_text(&text).is_ok() {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.status = "已复制选中文本".into();
+                }
+            }
+        }
+        ctx.notify();
+    }
+
+    fn stop_active_run(&mut self, ctx: &mut ViewContext<Self>) {
+        // Invalidate in-flight Chat stream / Task start callbacks.
+        self.active_run_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut slot) = self.turn_cancel_tx.lock() {
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(true);
+            }
+        }
+
+        let session_to_stop = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|panel| panel.active_session_id.clone());
+
+        if let Ok(mut panel) = self.state.lock() {
+            panel.busy = false;
+            panel.polling_session = false;
+            panel.run_started_at = None;
+            if !panel.active_sidebar_session_id.is_empty() {
+                let id = panel.active_sidebar_session_id.clone();
+                if let Some(session) = panel.sidebar_sessions.iter_mut().find(|s| s.id == id) {
+                    session.running = false;
+                }
+            }
+            Self::push_line(
+                &mut panel,
+                TranscriptLine {
+                    channel: "status".into(),
+                    text: CODEX_TURN_CANCELLED.into(),
+                    level: "info".into(),
+                },
+            );
+            panel.status = CODEX_TURN_CANCELLED.into();
+        }
+
+        if let Some(session_id) = session_to_stop {
+            let core = self.core.clone();
+            let shared = Arc::clone(&self.state);
+            ctx.spawn(
+                async move { agent_stop_session(session_id, core.app_state()).await },
+                move |_view, output, ctx| {
+                    if let Err(err) = output {
+                        if let Ok(mut panel) = shared.lock() {
+                            panel.status = format!("停止会话失败: {err}");
+                        }
+                    }
+                    ctx.notify();
+                },
+            );
+        }
+
+        self.bump();
+        ctx.notify();
+    }
+
     fn dismiss_composer_menus(&mut self, ctx: &mut ViewContext<Self>) {
         let mut changed = false;
         if let Ok(mut panel) = self.state.lock() {
@@ -1928,6 +2029,8 @@ impl AgentPanelView {
             state.busy = false;
             state.run_started_at = None;
             state.draft.clear();
+            state.field_state.cursor = 0;
+            state.field_state.clear_marked();
             state.status = "已开启新对话".into();
             state.active_sidebar_session_id.clear();
             state.thread_title = "新会话".into();
@@ -1983,6 +2086,8 @@ impl AgentPanelView {
             state.busy = true;
             state.run_started_at = Some(SystemTime::now());
             state.draft.clear();
+            state.field_state.cursor = 0;
+            state.field_state.clear_marked();
             let title = Self::session_label_from_dto(&AgentSessionDto {
                 id: String::new(),
                 status: String::new(),
@@ -2031,8 +2136,16 @@ impl AgentPanelView {
         let shared_async = Arc::clone(&self.state);
         let shared_callback = Arc::clone(&self.state);
         let generation_callback = Arc::clone(&self.generation);
+        let active_run_id = Arc::clone(&self.active_run_id);
+        let run_id = self.active_run_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        if let Ok(mut slot) = self.turn_cancel_tx.lock() {
+            *slot = Some(cancel_tx);
+        }
         let access_mode = self.access_mode;
         let generation_notify = self.generation_notify_tx.clone();
+        let active_run_id_stream = Arc::clone(&active_run_id);
+        let active_run_id_done = Arc::clone(&active_run_id);
         ctx.spawn(
             async move {
                 let data_dir = core.data_dir();
@@ -2083,7 +2196,10 @@ impl AgentPanelView {
                 let state = core.app_state();
                 let stream_shared = Arc::clone(&shared_async);
                 let stream_notify = generation_notify.clone();
-                agent_chat_with_codex_fallback(params, state, move |event| {
+                agent_chat_with_codex_fallback(params, state, Some(cancel_rx), move |event| {
+                    if active_run_id_stream.load(Ordering::SeqCst) != run_id {
+                        return;
+                    }
                     let level = if event.channel == "error" {
                         "error".to_string()
                     } else {
@@ -2103,7 +2219,14 @@ impl AgentPanelView {
                 })
                 .await
             },
-            move |_view, output, ctx| {
+            move |view, output, ctx| {
+                if let Ok(mut slot) = view.turn_cancel_tx.lock() {
+                    *slot = None;
+                }
+                if active_run_id_done.load(Ordering::SeqCst) != run_id {
+                    ctx.notify();
+                    return;
+                }
                 let mut panel = shared_callback.lock().expect("agent panel state");
                 match output {
                     Ok(result) => {
@@ -2130,15 +2253,17 @@ impl AgentPanelView {
                         };
                     }
                     Err(err) => {
-                        Self::push_line(
-                            &mut panel,
-                            TranscriptLine {
-                                channel: "stderr".into(),
-                                text: err.clone(),
-                                level: "error".into(),
-                            },
-                        );
-                        panel.status = err;
+                        if err != CODEX_TURN_CANCELLED {
+                            Self::push_line(
+                                &mut panel,
+                                TranscriptLine {
+                                    channel: "stderr".into(),
+                                    text: err.clone(),
+                                    level: "error".into(),
+                                },
+                            );
+                            panel.status = err;
+                        }
                     }
                 }
                 panel.busy = false;
@@ -2157,6 +2282,8 @@ impl AgentPanelView {
         let shared = Arc::clone(&self.state);
         let shared_callback = Arc::clone(&self.state);
         let generation = Arc::clone(&self.generation);
+        let active_run_id = Arc::clone(&self.active_run_id);
+        let run_id = self.active_run_id.fetch_add(1, Ordering::SeqCst) + 1;
         ctx.spawn(
             async move {
                 let data_dir = core.data_dir();
@@ -2203,6 +2330,10 @@ impl AgentPanelView {
                 agent_start_session_with_codex_fallback(request, state).await
             },
             move |view, output, ctx| {
+                if active_run_id.load(Ordering::SeqCst) != run_id {
+                    ctx.notify();
+                    return;
+                }
                 let mut panel = shared_callback.lock().expect("agent panel state");
                 let mut started = false;
                 match output {
@@ -2309,6 +2440,8 @@ impl AgentPanelView {
                 return;
             }
             state.draft = text;
+            let end = state.draft.chars().count();
+            state.field_state.cursor = end;
         }
         self.bump();
         ctx.notify();
@@ -2545,6 +2678,7 @@ impl AgentPanelView {
         caret_blink: bool,
         busy: bool,
         placeholder: &str,
+        cursor: usize,
     ) -> Box<dyn Element> {
         let field = render_compose_field_with_caret(
             draft,
@@ -2554,6 +2688,7 @@ impl AgentPanelView {
             input_focused,
             busy,
             caret_blink,
+            cursor,
         );
 
         let draft_empty = draft.trim().is_empty();
@@ -2908,6 +3043,7 @@ impl View for AgentPanelView {
         let state = self.state.lock().expect("agent panel state");
         let draft = state.draft.clone();
         let marked = state.field_state.marked_text.clone();
+        let cursor = state.field_state.cursor;
         let busy = state.busy;
         let elapsed_seconds = run_elapsed_seconds(state.run_started_at, SystemTime::now());
         let _mode = state.mode;
@@ -2985,6 +3121,7 @@ impl View for AgentPanelView {
                         caret_blink,
                         busy,
                         placeholder,
+                        cursor,
                     ))
                     .on_left_mouse_down(|ctx, _, _| {
                         ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
@@ -3081,7 +3218,14 @@ impl View for AgentPanelView {
             }
         } else {
             let thread_body = Container::new(
-                Align::new(render_transcript(&transcript_model, self.font, self.mono)).finish(),
+                Align::new(render_transcript(
+                    &transcript_model,
+                    self.font,
+                    self.mono,
+                    self.selection_handle.clone(),
+                    Arc::clone(&self.selected_text),
+                ))
+                .finish(),
             )
             .with_padding_left(24.0)
             .with_padding_right(24.0)
@@ -3440,10 +3584,13 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::CloseSessionContextMenu => self.close_session_context_menu(ctx),
             AgentPanelAction::CopyUserPrompt(text) => self.copy_user_prompt(text, ctx),
+            AgentPanelAction::CopyAssistantText(text) => self.copy_assistant_text(text, ctx),
+            AgentPanelAction::CopySelection => self.copy_selection(ctx),
             AgentPanelAction::ClearAndUnfocus => {
                 if let Ok(mut panel) = self.state.lock() {
                     panel.draft.clear();
                     panel.field_state.clear_marked();
+                    panel.field_state.cursor = 0;
                     panel.input_focused = false;
                 }
                 sync_caret_blink(self, ctx);
@@ -3466,20 +3613,7 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::LaunchTerminal => self.launch_terminal(ctx),
             AgentPanelAction::RefreshStatus => self.refresh_status(ctx),
             AgentPanelAction::Stop => {
-                if let Ok(mut panel) = self.state.lock() {
-                    panel.busy = false;
-                    panel.polling_session = false;
-                    panel.run_started_at = None;
-                    if !panel.active_sidebar_session_id.is_empty() {
-                        let id = panel.active_sidebar_session_id.clone();
-                        if let Some(session) =
-                            panel.sidebar_sessions.iter_mut().find(|s| s.id == id)
-                        {
-                            session.running = false;
-                        }
-                    }
-                }
-                ctx.notify();
+                self.stop_active_run(ctx);
             }
             AgentPanelAction::TextFieldEdit(edit) => {
                 if let Ok(mut panel) = self.state.lock() {
@@ -3639,6 +3773,12 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::CopyUserPrompt(_) => {
                 AccessibilityContent::new_without_help("复制指令", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::CopyAssistantText(_) => {
+                AccessibilityContent::new_without_help("复制回复", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::CopySelection => {
+                AccessibilityContent::new_without_help("复制选中文本", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::ClearAndUnfocus | AgentPanelAction::ToggleComposerFocus => {
                 return ActionAccessibilityContent::Empty;

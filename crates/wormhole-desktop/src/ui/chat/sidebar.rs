@@ -750,6 +750,7 @@ impl ChatSidebarView {
             search_focused,
             false,
             self.caret_blink.visible,
+            self.search_field.cursor,
         );
         let input = TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatSidebarAction::SearchEdit(action));

@@ -379,6 +379,7 @@ impl ChatProfilePanelView {
             self.remark_focused,
             false,
             self.caret_blink.visible,
+            self.remark_field.cursor,
         );
         let input = wrap_text_field_focus_on_click(
             TextFieldInput::builder(field, |ctx, action| {

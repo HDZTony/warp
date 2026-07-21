@@ -289,6 +289,7 @@ impl LoginModalView {
         on_edit: LoginModalAction,
         click_focus: LoginModalAction,
         tab_focus: LoginModalAction,
+        cursor: usize,
     ) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(
@@ -304,6 +305,7 @@ impl LoginModalView {
             focused,
             false,
             self.caret_blink.visible,
+            cursor,
         );
         let edit_action = on_edit.clone();
         let tab_action = tab_focus.clone();
@@ -506,6 +508,7 @@ impl LoginModalView {
             LoginModalAction::EmailEdit(TextFieldEditAction::TypedCharacters(String::new())),
             LoginModalAction::FocusEmail,
             LoginModalAction::FocusPassword,
+            self.email_field.cursor,
         ));
         let password_tab = if is_register {
             LoginModalAction::FocusConfirmPassword
@@ -521,6 +524,7 @@ impl LoginModalView {
             LoginModalAction::PasswordEdit(TextFieldEditAction::TypedCharacters(String::new())),
             LoginModalAction::FocusPassword,
             password_tab,
+            self.password_field.cursor,
         ));
         if is_register {
             col.add_child(self.field_block(
@@ -534,6 +538,7 @@ impl LoginModalView {
                 )),
                 LoginModalAction::FocusConfirmPassword,
                 LoginModalAction::FocusEmail,
+                self.confirm_password_field.cursor,
             ));
         } else {
             col.add_child(self.login_options_block());

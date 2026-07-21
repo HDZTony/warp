@@ -184,6 +184,7 @@ impl View for ChatThreadSearchView {
             self.focused,
             false,
             self.caret_blink.visible,
+            self.field_state.cursor,
         );
         let input = TextFieldInput::builder(field, |ctx, action| {
             ctx.dispatch_typed_action(ChatThreadSearchAction::QueryEdit(action));
