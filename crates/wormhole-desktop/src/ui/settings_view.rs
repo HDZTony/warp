@@ -1,7 +1,10 @@
+use std::sync::{Arc, Mutex};
+
+use pathfinder_color::ColorU;
 use warpui::elements::{
     Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, MainAxisSize,
-    ParentElement, Radius, ScrollbarWidth,
+    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, Hoverable,
+    MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -9,9 +12,7 @@ use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
-use crate::ui::panel_primitives::{
-    section_hint, section_title, status_line, tab_content_fill, StatusTone,
-};
+use crate::ui::panel_primitives::{section_hint, status_line, tab_content_fill, StatusTone};
 use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
@@ -33,6 +34,111 @@ use wormhole_desktop_core::{
     NetworkRelayStatusDto, SaveNetworkRelayParams,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPage {
+    Account,
+    Email,
+    Cluster,
+    Relay,
+    SharedPath,
+    Cache,
+    Archive,
+    VirtualMachine,
+}
+
+impl SettingsPage {
+    fn all() -> &'static [SettingsPage] {
+        &[
+            SettingsPage::Account,
+            SettingsPage::Email,
+            SettingsPage::Cluster,
+            SettingsPage::Relay,
+            SettingsPage::SharedPath,
+            SettingsPage::Cache,
+            SettingsPage::Archive,
+            SettingsPage::VirtualMachine,
+        ]
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            SettingsPage::Account => "账号",
+            SettingsPage::Email => "邮箱",
+            SettingsPage::Cluster => "设置集群",
+            SettingsPage::Relay => "P2P Relay",
+            SettingsPage::SharedPath => "共享文件",
+            SettingsPage::Cache => "清理缓存",
+            SettingsPage::Archive => "历史归档",
+            SettingsPage::VirtualMachine => "虚拟机",
+        }
+    }
+
+    fn eyebrow(self) -> (&'static str, &'static str) {
+        match self {
+            SettingsPage::Account => ("ACCOUNT", "账号"),
+            SettingsPage::Email => ("CONNECTORS", "邮箱"),
+            SettingsPage::Cluster => ("CLUSTER", "设置集群"),
+            SettingsPage::Relay => ("P2P", "Relay"),
+            SettingsPage::SharedPath => ("DATA", "共享文件存放位置"),
+            SettingsPage::Cache => ("CACHE", "清理缓存"),
+            SettingsPage::Archive => ("ARCHIVE", "历史对话归档"),
+            SettingsPage::VirtualMachine => ("SYSTEM", "虚拟机"),
+        }
+    }
+
+    fn group(self) -> &'static str {
+        match self {
+            SettingsPage::Account | SettingsPage::Email => "常规",
+            SettingsPage::Cluster | SettingsPage::Relay => "集群",
+            SettingsPage::SharedPath => "数据",
+            SettingsPage::Cache | SettingsPage::Archive => "存储",
+            SettingsPage::VirtualMachine => "系统",
+        }
+    }
+
+    fn icon_path(self) -> &'static str {
+        match self {
+            SettingsPage::Account | SettingsPage::Email => "agent-user.svg",
+            SettingsPage::Cluster => "tab-devices.svg",
+            SettingsPage::Relay => "cluster-refresh.svg",
+            SettingsPage::SharedPath => "share-file.svg",
+            SettingsPage::Cache => "share-sync.svg",
+            SettingsPage::Archive => "agent-menu-archive.svg",
+            SettingsPage::VirtualMachine => "device-pc.svg",
+        }
+    }
+
+    fn search_haystack(self) -> String {
+        let (eyebrow, sub) = self.eyebrow();
+        let mut haystack = format!("{} {} {} {}", self.group(), self.title(), eyebrow, sub);
+        if self == SettingsPage::Email {
+            haystack.push_str(" email gmail outlook");
+        }
+        haystack
+    }
+
+    fn matches_query(self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        self.search_haystack().to_lowercase().contains(&q)
+    }
+}
+
+/// Ordered unique group labels for the settings sidebar.
+fn settings_nav_groups() -> &'static [&'static str] {
+    &["常规", "集群", "数据", "存储", "系统"]
+}
+
+fn settings_pages_in_group(group: &str) -> Vec<SettingsPage> {
+    SettingsPage::all()
+        .iter()
+        .copied()
+        .filter(|page| page.group() == group)
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum SettingsEvent {
     AccountChanged { authenticated: bool },
@@ -47,7 +153,10 @@ pub enum SettingsAction {
     BrowseMigrate,
     SaveMigration,
     FocusPath,
+    FocusSearch,
     TextFieldEdit(TextFieldEditAction),
+    SearchFieldEdit(TextFieldEditAction),
+    SelectPage(SettingsPage),
     Refresh,
     Login,
     Logout,
@@ -73,6 +182,10 @@ pub enum SettingsAction {
 pub struct SettingsView {
     core: CoreHandle,
     font: FamilyId,
+    selected_page: SettingsPage,
+    search_query: String,
+    search_field: TextFieldState,
+    search_focused: bool,
     storage: Option<SharedStorageInfoDto>,
     storage_draft: String,
     storage_field: TextFieldState,
@@ -125,6 +238,10 @@ impl SettingsView {
         let mut view = Self {
             core,
             font,
+            selected_page: SettingsPage::Account,
+            search_query: String::new(),
+            search_field: TextFieldState::new(),
+            search_focused: false,
             storage: None,
             storage_draft: String::new(),
             storage_field: TextFieldState::new(),
@@ -168,38 +285,6 @@ impl SettingsView {
         view
     }
 
-    fn refresh_email_connectors(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.auth_user_id.is_none() {
-            self.email_connectors.clear();
-            self.email_message = "登录 Wormhole 后可连接邮箱。".into();
-            self.email_tone = StatusTone::Placeholder;
-            return;
-        }
-        self.email_busy = true;
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                email_connector_list(&state).await
-            },
-            |view, output, ctx| {
-                view.email_busy = false;
-                match output {
-                    Ok(result) => {
-                        view.email_connectors = result.items;
-                        view.email_message.clear();
-                        view.email_tone = StatusTone::Success;
-                    }
-                    Err(error) => {
-                        view.email_message = format!("读取邮箱连接器失败: {error}");
-                        view.email_tone = StatusTone::Danger;
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
     pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
         self.auth_busy = true;
         ctx.notify();
@@ -229,6 +314,38 @@ impl SettingsView {
                     Err(err) => {
                         view.auth_status = format!("读取登录状态失败: {err}");
                         view.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_email_connectors(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.auth_user_id.is_none() {
+            self.email_connectors.clear();
+            self.email_message = "登录 Wormhole 后可连接邮箱。".into();
+            self.email_tone = StatusTone::Placeholder;
+            return;
+        }
+        self.email_busy = true;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                email_connector_list(&state).await
+            },
+            |view, output, ctx| {
+                view.email_busy = false;
+                match output {
+                    Ok(result) => {
+                        view.email_connectors = result.items;
+                        view.email_message.clear();
+                        view.email_tone = StatusTone::Success;
+                    }
+                    Err(error) => {
+                        view.email_message = format!("读取邮箱连接器失败: {error}");
+                        view.email_tone = StatusTone::Danger;
                     }
                 }
                 ctx.notify();
@@ -391,10 +508,216 @@ impl SettingsView {
 
     fn flat_section(&self, body: Box<dyn Element>) -> Box<dyn Element> {
         Container::new(body)
-            .with_padding_top(16.0)
-            .with_padding_bottom(16.0)
-            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .with_padding_top(4.0)
+            .with_padding_bottom(8.0)
             .finish()
+    }
+
+    fn page_header(&self, page: SettingsPage) -> Box<dyn Element> {
+        let (eyebrow, sub) = page.eyebrow();
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(
+            warpui::elements::Text::new(page.title().to_string(), self.font, SETTINGS_PANE_TITLE_SIZE)
+                .with_color(theme::text())
+                .finish(),
+        );
+        col.add_child(
+            Container::new(
+                ui_text::mono(format!("{eyebrow} {sub}"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(6.0)
+            .with_margin_bottom(20.0)
+            .finish(),
+        );
+        col.finish()
+    }
+
+    fn search_box(&self) -> Box<dyn Element> {
+        let draft = self.search_query.clone();
+        let marked = self.search_field.marked_text.clone();
+        let placeholder = "搜索设置...";
+        let field = TextFieldInput::builder(
+            EventHandler::new(
+                Container::new(render_field_with_caret(
+                    &draft,
+                    &marked,
+                    placeholder,
+                    self.font,
+                    self.search_focused,
+                    false,
+                    true,
+                    self.search_field.cursor,
+                ))
+                .with_uniform_padding(9.0)
+                .with_horizontal_padding(12.0)
+                .with_background(theme::bg())
+                .with_border(Border::all(1.0).with_border_fill(if self.search_focused {
+                    theme::accent_cool()
+                } else {
+                    theme::border()
+                }))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(SettingsAction::FocusSearch);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+            |ctx, action| {
+                ctx.dispatch_typed_action(SettingsAction::SearchFieldEdit(action));
+            },
+        )
+        .focused(self.search_focused)
+        .disabled(false)
+        .ime_preedit(!marked.is_empty())
+        .finish();
+        field
+    }
+
+    fn nav_item(&self, page: SettingsPage) -> Box<dyn Element> {
+        let selected = self.selected_page == page;
+        let mouse_state: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
+        let label = page.title().to_string();
+        let icon_path = page.icon_path();
+        let font = self.font;
+        Hoverable::new(mouse_state, move |state| {
+            let hovered = state.is_hovered();
+            let fg = if selected || hovered {
+                theme::text()
+            } else {
+                theme::muted()
+            };
+            let border = if selected {
+                theme::text()
+            } else {
+                ColorU::transparent_black()
+            };
+            let bg = if selected {
+                theme::panel_elevated()
+            } else if hovered {
+                theme::accent_cool_bg(10)
+            } else {
+                ColorU::transparent_black()
+            };
+            let mut row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Max);
+            row.add_child(icons::icon(icon_path, 16.0, fg));
+            row.add_child(
+                Container::new(
+                    ui_text::body(label.clone(), font)
+                        .with_color(fg)
+                        .finish(),
+                )
+                .with_margin_left(10.0)
+                .finish(),
+            );
+            Container::new(row.finish())
+                .with_uniform_padding(8.0)
+                .with_horizontal_padding(10.0)
+                .with_background(bg)
+                .with_border(Border::all(1.0).with_border_fill(border))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                .finish()
+        })
+        .on_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(SettingsAction::SelectPage(page));
+        })
+        .finish()
+    }
+
+    fn sidebar(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(self.search_box());
+
+        let mut visible_total = 0usize;
+        for group in settings_nav_groups() {
+            let pages: Vec<SettingsPage> = settings_pages_in_group(group)
+                .into_iter()
+                .filter(|page| page.matches_query(&self.search_query))
+                .collect();
+            if pages.is_empty() {
+                continue;
+            }
+            visible_total += pages.len();
+            col.add_child(
+                Container::new(
+                    ui_text::mono(group.to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_padding_top(12.0)
+                .with_padding_bottom(4.0)
+                .with_horizontal_padding(10.0)
+                .finish(),
+            );
+            for page in pages {
+                col.add_child(
+                    Container::new(self.nav_item(page))
+                        .with_margin_bottom(2.0)
+                        .finish(),
+                );
+            }
+        }
+        if visible_total == 0 {
+            col.add_child(
+                Container::new(
+                    ui_text::mono("无匹配的设置项", self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_uniform_padding(12.0)
+                .finish(),
+            );
+        }
+
+        ConstrainedBox::new(
+            Container::new(col.finish())
+                .with_uniform_padding(12.0)
+                .with_padding_top(16.0)
+                .with_background(theme::bg())
+                .with_border(Border::right(1.0).with_border_fill(theme::border()))
+                .finish(),
+        )
+        .with_width(SETTINGS_SIDEBAR_WIDTH)
+        .finish()
+    }
+
+    fn page_body(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(self.page_header(self.selected_page));
+        match self.selected_page {
+            SettingsPage::Account => col.add_child(self.account_block()),
+            SettingsPage::Email => col.add_child(self.email_connectors_block()),
+            SettingsPage::Cluster => col.add_child(self.cluster_block()),
+            SettingsPage::Relay => col.add_child(self.relay_block()),
+            SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
+            SettingsPage::Cache => col.add_child(self.cache_block()),
+            SettingsPage::Archive => col.add_child(self.archive_block()),
+            SettingsPage::VirtualMachine => col.add_child(self.vm_placeholder_block()),
+        }
+        col.add_child(
+            Container::new(
+                ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
+                    .with_color(theme::placeholder())
+                    .finish(),
+            )
+            .with_margin_top(24.0)
+            .finish(),
+        );
+        col.finish()
+    }
+
+    fn vm_placeholder_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            "远程工作区虚拟机在终端 / 远程工作区流程中创建与管理。设置页暂不提供 Hyper-V 管理面板。",
+            self.font,
+        ));
+        self.flat_section(col.finish())
     }
 
     /// Inline action buttons (`.settings-auth-actions` / `.settings-action-row` in HTML).
@@ -670,7 +993,6 @@ impl SettingsView {
     fn relay_block(&self) -> Box<dyn Element> {
         let summary = relay_mode_label(&self.relay_mode);
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("P2P · Relay", self.font));
         col.add_child(self.collapsible_row(
             "网络穿透",
             summary,
@@ -689,7 +1011,6 @@ impl SettingsView {
 
     fn shared_path_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("DATA · 共享文件存放位置", self.font));
         col.add_child(section_hint(
             "终端共享文件夹的本地副本写入此目录。点击「浏览…」选择新位置并迁移数据。",
             self.font,
@@ -814,7 +1135,6 @@ impl SettingsView {
 
     fn account_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("ACCOUNT · 账号", self.font));
         col.add_child(section_hint(
             "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一设备。",
             self.font,
@@ -846,28 +1166,21 @@ impl SettingsView {
                 if self.auth_busy {
                     "正在读取账号…"
                 } else {
-                    "登录 Wormhole"
+                    "登录"
                 },
                 SettingsAction::Login,
                 self.auth_busy,
                 true,
             ));
-        } else {
-            auth_actions.push(self.stateful_action_button(
-                if self.auth_busy {
-                    "正在退出…"
-                } else {
-                    "退出登录"
-                },
-                SettingsAction::Logout,
-                self.auth_busy,
-                false,
-            ));
         }
         auth_actions.push(self.stateful_action_button(
-            "刷新账号状态",
-            SettingsAction::RefreshAccount,
-            self.auth_busy,
+            if self.auth_busy && self.auth_user_id.is_some() {
+                "正在退出…"
+            } else {
+                "退出登录"
+            },
+            SettingsAction::Logout,
+            self.auth_busy || self.auth_user_id.is_none(),
             false,
         ));
         col.add_child(
@@ -940,7 +1253,6 @@ impl SettingsView {
 
     fn email_connectors_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("CONNECTORS · 邮箱", self.font));
         col.add_child(section_hint(
             "通过官方 OAuth 连接 Gmail 或 Outlook。Wormhole 不保存邮箱密码；发送和修改邮件需要明确确认。",
             self.font,
@@ -982,7 +1294,6 @@ impl SettingsView {
             .or(self.cluster_id.as_deref())
             .unwrap_or("未加入集群");
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("CLUSTER · 集群", self.font));
         col.add_child(self.collapsible_row(
             "活动集群",
             summary,
@@ -1087,7 +1398,6 @@ impl SettingsView {
     fn cache_block(&self) -> Box<dyn Element> {
         let summary = cache_summary_label(self.cache_status.as_ref());
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("CACHE · 本地缓存", self.font));
         col.add_child(self.collapsible_row(
             "缓存详情",
             &summary,
@@ -1172,7 +1482,6 @@ impl SettingsView {
         let count_label = count.to_string();
 
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("ARCHIVE · 历史对话归档", self.font));
         col.add_child(section_hint(
             "从智能体归档的对话会显示在这里，可恢复至项目或独立对话，或永久删除。",
             self.font,
@@ -1292,39 +1601,31 @@ impl View for SettingsView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("设置", self.font));
-        col.add_child(self.account_block());
-        col.add_child(self.email_connectors_block());
-        col.add_child(self.shared_path_block());
-        col.add_child(self.cluster_block());
-        col.add_child(self.relay_block());
-        col.add_child(self.cache_block());
-        col.add_child(self.archive_block());
-        col.add_child(
-            ui_text::body(crate::ui::fonts::UI_FONT_ATTRIBUTION, self.font)
-                .with_color(theme::placeholder())
-                .finish(),
-        );
-
-        let body = Container::new(col.finish())
-            .with_uniform_padding(20.0)
-            .finish();
-        tab_content_fill(
-            Container::new(
-                ClippedScrollable::vertical(
-                    self.scroll.clone(),
-                    body,
-                    ScrollbarWidth::Auto,
-                    Fill::None,
-                    Fill::None,
-                    Fill::None,
-                )
-                .finish(),
+        let pane = Container::new(
+            ClippedScrollable::vertical(
+                self.scroll.clone(),
+                Container::new(self.page_body())
+                    .with_padding_top(28.0)
+                    .with_padding_bottom(40.0)
+                    .with_horizontal_padding(32.0)
+                    .finish(),
+                ScrollbarWidth::Auto,
+                Fill::None,
+                Fill::None,
+                Fill::None,
             )
-            .with_background(theme::panel())
             .finish(),
         )
+        .with_background(theme::panel())
+        .finish();
+
+        let mut shell = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Max);
+        shell.add_child(self.sidebar());
+        shell.add_child(Expanded::new(1.0, pane).finish());
+
+        tab_content_fill(shell.finish())
     }
 }
 
@@ -1333,6 +1634,28 @@ impl TypedActionView for SettingsView {
 
     fn handle_action(&mut self, action: &SettingsAction, ctx: &mut ViewContext<Self>) {
         match action {
+            SettingsAction::SelectPage(page) => {
+                self.selected_page = *page;
+                self.search_focused = false;
+                self.storage_focused = false;
+                match page {
+                    SettingsPage::Cluster => self.cluster_expanded = true,
+                    SettingsPage::Relay => self.relay_expanded = true,
+                    SettingsPage::Cache => self.cache_expanded = true,
+                    SettingsPage::Archive => self.archive_expanded = true,
+                    _ => {}
+                }
+                ctx.notify();
+            }
+            SettingsAction::FocusSearch => {
+                self.search_focused = true;
+                self.storage_focused = false;
+                ctx.notify();
+            }
+            SettingsAction::SearchFieldEdit(action) => {
+                self.search_field.apply(&mut self.search_query, action);
+                ctx.notify();
+            }
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::RefreshEmailConnectors => self.refresh_email_connectors(ctx),
@@ -1619,6 +1942,7 @@ impl TypedActionView for SettingsView {
             SettingsAction::FocusPath => {
                 if !self.busy {
                     self.storage_focused = true;
+                    self.search_focused = false;
                     ctx.notify();
                 }
             }
@@ -1714,9 +2038,12 @@ fn open_external_url(url: &str) -> Result<(), String> {
         .ok_or_else(|| "系统浏览器启动失败".into())
 }
 
+const SETTINGS_SIDEBAR_WIDTH: f32 = 240.0;
 const SETTINGS_FOLD_TOGGLE_MAX_WIDTH: f32 = 420.0;
 const SETTINGS_FORM_MAX_WIDTH: f32 = 560.0;
 const SETTINGS_FOLD_CHEVRON_SIZE: f32 = 14.0;
+/// Matches `.settings-pane-title` in `desktop-current.html`.
+const SETTINGS_PANE_TITLE_SIZE: f32 = 28.0;
 
 fn settings_fold_chevron_path(expanded: bool) -> &'static str {
     if expanded {
@@ -1767,15 +2094,34 @@ fn format_cache_size(bytes: u64) -> String {
 mod tests {
     use super::{
         cache_summary_label, email_provider_label, format_cache_size, is_relay_mode,
-        relay_mode_label, settings_fold_chevron_path, storage_paths_differ,
+        relay_mode_label, settings_fold_chevron_path, settings_pages_in_group, storage_paths_differ,
+        SettingsPage,
     };
+    use wormhole_desktop_core::settings_cache_commands::SettingsCacheStatusDto;
+
+    #[test]
+    fn settings_page_defaults_to_account_and_filters_search() {
+        assert_eq!(SettingsPage::Account.title(), "账号");
+        assert!(SettingsPage::Account.matches_query(""));
+        assert!(SettingsPage::Account.matches_query("账号"));
+        assert!(SettingsPage::Relay.matches_query("p2p"));
+        assert!(SettingsPage::Email.matches_query("gmail"));
+        assert!(!SettingsPage::Cache.matches_query("虚拟机"));
+        assert_eq!(
+            settings_pages_in_group("常规"),
+            vec![SettingsPage::Account, SettingsPage::Email]
+        );
+        assert_eq!(
+            settings_pages_in_group("集群"),
+            vec![SettingsPage::Cluster, SettingsPage::Relay]
+        );
+    }
 
     #[test]
     fn email_provider_labels_are_stable() {
         assert_eq!(email_provider_label("gmail"), "Gmail");
         assert_eq!(email_provider_label("outlook"), "Microsoft Outlook");
     }
-    use wormhole_desktop_core::settings_cache_commands::SettingsCacheStatusDto;
 
     #[test]
     fn storage_dirty_state_ignores_outer_whitespace_only() {

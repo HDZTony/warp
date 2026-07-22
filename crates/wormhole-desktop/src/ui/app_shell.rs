@@ -1327,18 +1327,8 @@ impl AppShellView {
 
         Hoverable::new(mouse_state, move |state| {
             let hovered = state.is_hovered();
-            let text_color = if selected || hovered {
-                theme::accent_cool()
-            } else {
-                theme::muted()
-            };
-            let bg = if selected {
-                theme::accent_cool_bg_default()
-            } else if hovered {
-                theme::accent_cool_bg(10)
-            } else {
-                ColorU::new(0, 0, 0, 0)
-            };
+            let pressed = state.is_clicked();
+            let (bg, text_color) = tab_button_colors(selected, hovered, pressed);
 
             let bottom_accent = if selected {
                 theme::accent_cool()
@@ -1897,6 +1887,31 @@ impl TypedActionView for AppShellView {
     }
 }
 
+/// Top-bar tab colors aligned with Warp icon-button press feedback.
+/// Priority: pressed > selected > hovered > idle (instant style swap, no scale/ripple).
+fn tab_button_colors(selected: bool, hovered: bool, pressed: bool) -> (ColorU, ColorU) {
+    let text_color = if pressed || selected || hovered {
+        theme::accent_cool()
+    } else {
+        theme::muted()
+    };
+    let bg = if pressed {
+        // Deeper than hover(10); selected+pressed deeper than accent_cool_bg_default(=20).
+        if selected {
+            theme::accent_cool_bg(32)
+        } else {
+            theme::accent_cool_bg(20)
+        }
+    } else if selected {
+        theme::accent_cool_bg_default()
+    } else if hovered {
+        theme::accent_cool_bg(10)
+    } else {
+        ColorU::new(0, 0, 0, 0)
+    };
+    (bg, text_color)
+}
+
 fn open_external_url(url: &str) -> Result<(), String> {
     let url = url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -1932,14 +1947,43 @@ fn open_external_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppShellView, AppTab};
+    use super::{tab_button_colors, AppShellView, AppTab};
+    use pathfinder_color::ColorU;
     use warpui_core::keymap::Keystroke;
+
+    use crate::ui::theme;
 
     fn key(key: &str) -> Keystroke {
         Keystroke {
             key: key.to_owned(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tab_button_colors_pressed_beats_hover() {
+        let (bg_hover, _) = tab_button_colors(false, true, false);
+        let (bg_press, fg) = tab_button_colors(false, true, true);
+        assert_eq!(bg_hover, theme::accent_cool_bg(10));
+        assert_eq!(bg_press, theme::accent_cool_bg(20));
+        assert_ne!(bg_press, bg_hover);
+        assert_eq!(fg, theme::accent_cool());
+    }
+
+    #[test]
+    fn tab_button_colors_selected_pressed_deeper_than_selected() {
+        let (bg_selected, _) = tab_button_colors(true, false, false);
+        let (bg_press, _) = tab_button_colors(true, true, true);
+        assert_eq!(bg_selected, theme::accent_cool_bg_default());
+        assert_eq!(bg_press, theme::accent_cool_bg(32));
+        assert_ne!(bg_press, bg_selected);
+    }
+
+    #[test]
+    fn tab_button_colors_idle_is_transparent() {
+        let (bg, fg) = tab_button_colors(false, false, false);
+        assert_eq!(bg, ColorU::new(0, 0, 0, 0));
+        assert_eq!(fg, theme::muted());
     }
 
     #[test]

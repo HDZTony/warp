@@ -143,6 +143,8 @@ pub enum AgentPanelAction {
     CloseSessionContextMenu,
     CopyUserPrompt(String),
     CopyAssistantText(String),
+    /// Fork conversation from an assistant transcript line into a new sidebar session.
+    ForkFromLine { line_index: usize },
     CopySelection,
     ClearAndUnfocus,
     ToggleComposerFocus,
@@ -539,11 +541,7 @@ impl AgentPanelView {
                         for event in page.events {
                             Self::push_line(
                                 &mut panel,
-                                TranscriptLine {
-                                    channel: event.channel,
-                                    text: event.text,
-                                    level: event.level,
-                                },
+                                TranscriptLine::new(event.channel, event.text, event.level),
                             );
                         }
                         panel.active_session_id = Some(session_id_for_poll.clone());
@@ -682,11 +680,7 @@ impl AgentPanelView {
                         for event in page.events {
                             Self::push_line(
                                 &mut panel,
-                                TranscriptLine {
-                                    channel: event.channel,
-                                    text: event.text,
-                                    level: event.level,
-                                },
+                                TranscriptLine::new(event.channel, event.text, event.level),
                             );
                         }
                         panel.event_cursor = page.next_cursor;
@@ -775,7 +769,10 @@ impl AgentPanelView {
         );
     }
 
-    fn push_line(state: &mut PanelState, line: TranscriptLine) {
+    fn push_line(state: &mut PanelState, mut line: TranscriptLine) {
+        if line.created_at_secs.is_none() {
+            line.created_at_secs = Some(Self::unix_now_secs());
+        }
         let lines = Arc::make_mut(&mut state.lines);
         lines.push(line);
     }
@@ -790,22 +787,18 @@ impl AgentPanelView {
         }
         Self::push_line(
             panel,
-            TranscriptLine {
-                channel: "assistant".into(),
-                text: content.to_string(),
-                level: "info".into(),
-            },
+            TranscriptLine::new("assistant", content.to_string(), "info"),
         );
     }
 
     fn push_cursor_fallback_status(panel: &mut PanelState, codex_error: &str) {
         Self::push_line(
             panel,
-            TranscriptLine {
-                channel: "status".into(),
-                text: format!("Codex 不可用，已改用 Cursor（后备）: {codex_error}"),
-                level: "warning".into(),
-            },
+            TranscriptLine::new(
+                "status",
+                format!("Codex 不可用，已改用 Cursor（后备）: {codex_error}"),
+                "warning",
+            ),
         );
     }
 
@@ -1724,6 +1717,79 @@ impl AgentPanelView {
         ctx.notify();
     }
 
+    /// Truncate active transcript at `line_index`, open a new sidebar session with that history,
+    /// and clear Codex `resume_id` so the next send starts a fresh thread with full prompt history.
+    fn fork_from_line(&mut self, line_index: usize, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            if line_index >= panel.lines.len() {
+                panel.status = "无法在此处分叉".into();
+                ctx.notify();
+                return;
+            }
+            let truncated: Vec<TranscriptLine> = panel.lines[..=line_index].to_vec();
+            let chat_messages = Self::chat_messages_from_lines(&truncated);
+            let label = truncated
+                .iter()
+                .rev()
+                .find(|l| l.channel == "user")
+                .map(|l| {
+                    Self::session_label_from_dto(&AgentSessionDto {
+                        id: String::new(),
+                        status: String::new(),
+                        prompt: Some(l.text.clone()),
+                        cwd: None,
+                        started_at: Self::unix_now_secs(),
+                        ended_at: None,
+                        log_path: None,
+                    })
+                })
+                .unwrap_or_else(|| "新会话".into());
+            let project_id = panel
+                .sidebar_sessions
+                .iter()
+                .find(|s| s.id == panel.active_sidebar_session_id)
+                .and_then(|s| s.project_id.clone())
+                .or_else(|| {
+                    if panel.active_project_id.is_empty() {
+                        None
+                    } else {
+                        Some(panel.active_project_id.clone())
+                    }
+                });
+            let session_id = Self::insert_new_session(&mut panel, project_id);
+            panel.lines = Arc::new(truncated);
+            panel.chat_messages = chat_messages;
+            panel.resume_id = None;
+            panel.active_session_id = None;
+            panel.event_cursor = 0;
+            panel.polling_session = false;
+            panel.busy = false;
+            panel.run_started_at = None;
+            panel.thread_title = label.clone();
+            if let Some(session) = panel
+                .sidebar_sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+            {
+                session.label = label;
+            }
+            panel.status = "已在新会话中继续".into();
+        }
+        self.bump();
+        ctx.notify();
+    }
+
+    fn chat_messages_from_lines(lines: &[TranscriptLine]) -> Vec<AgentLlmChatMessage> {
+        lines
+            .iter()
+            .filter(|l| l.channel == "user" || l.channel == "assistant")
+            .map(|l| AgentLlmChatMessage {
+                role: l.channel.clone(),
+                content: l.text.clone(),
+            })
+            .collect()
+    }
+
     fn copy_selection(&mut self, ctx: &mut ViewContext<Self>) {
         let selected = self
             .selected_text
@@ -1768,11 +1834,7 @@ impl AgentPanelView {
             }
             Self::push_line(
                 &mut panel,
-                TranscriptLine {
-                    channel: "status".into(),
-                    text: CODEX_TURN_CANCELLED.into(),
-                    level: "info".into(),
-                },
+                TranscriptLine::new("status", CODEX_TURN_CANCELLED, "info"),
             );
             panel.status = CODEX_TURN_CANCELLED.into();
         }
@@ -2109,11 +2171,7 @@ impl AgentPanelView {
             }
             Self::push_line(
                 &mut state,
-                TranscriptLine {
-                    channel: "user".into(),
-                    text: text.clone(),
-                    level: "info".into(),
-                },
+                TranscriptLine::new("user", text.clone(), "info"),
             );
             state.chat_messages.push(AgentLlmChatMessage {
                 role: "user".into(),
@@ -2208,11 +2266,7 @@ impl AgentPanelView {
                     if let Ok(mut panel) = stream_shared.lock() {
                         Self::push_line(
                             &mut panel,
-                            TranscriptLine {
-                                channel: event.channel,
-                                text: event.text,
-                                level,
-                            },
+                            TranscriptLine::new(event.channel, event.text, level),
                         );
                     }
                     let _ = stream_notify.try_send(());
@@ -2256,11 +2310,7 @@ impl AgentPanelView {
                         if err != CODEX_TURN_CANCELLED {
                             Self::push_line(
                                 &mut panel,
-                                TranscriptLine {
-                                    channel: "stderr".into(),
-                                    text: err.clone(),
-                                    level: "error".into(),
-                                },
+                                TranscriptLine::new("stderr", err.clone(), "error"),
                             );
                             panel.status = err;
                         }
@@ -2346,11 +2396,11 @@ impl AgentPanelView {
                         let session = result.session;
                         Self::push_line(
                             &mut panel,
-                            TranscriptLine {
-                                channel: "status".into(),
-                                text: format!("任务已启动 · session {}", session.id),
-                                level: "info".into(),
-                            },
+                            TranscriptLine::new(
+                                "status",
+                                format!("任务已启动 · session {}", session.id),
+                                "info",
+                            ),
                         );
                         panel.active_session_id = Some(session.id.clone());
                         panel.active_sidebar_session_id = session.id.clone();
@@ -2370,11 +2420,7 @@ impl AgentPanelView {
                     Err(err) => {
                         Self::push_line(
                             &mut panel,
-                            TranscriptLine {
-                                channel: "stderr".into(),
-                                text: err.clone(),
-                                level: "error".into(),
-                            },
+                            TranscriptLine::new("stderr", err.clone(), "error"),
                         );
                         panel.status = err;
                         panel.busy = false;
@@ -3585,6 +3631,7 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::CloseSessionContextMenu => self.close_session_context_menu(ctx),
             AgentPanelAction::CopyUserPrompt(text) => self.copy_user_prompt(text, ctx),
             AgentPanelAction::CopyAssistantText(text) => self.copy_assistant_text(text, ctx),
+            AgentPanelAction::ForkFromLine { line_index } => self.fork_from_line(*line_index, ctx),
             AgentPanelAction::CopySelection => self.copy_selection(ctx),
             AgentPanelAction::ClearAndUnfocus => {
                 if let Ok(mut panel) = self.state.lock() {
@@ -3776,6 +3823,9 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::CopyAssistantText(_) => {
                 AccessibilityContent::new_without_help("复制回复", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::ForkFromLine { .. } => {
+                AccessibilityContent::new_without_help("在新会话中继续", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::CopySelection => {
                 AccessibilityContent::new_without_help("复制选中文本", WarpA11yRole::ButtonRole)
@@ -4058,19 +4108,11 @@ mod tests {
         let mut panel = sample_panel(vec![], "");
         AgentPanelView::push_line(
             &mut panel,
-            TranscriptLine {
-                channel: "assistant".into(),
-                text: "已打开 Chrome 并搜索了鸡哥。".into(),
-                level: "info".into(),
-            },
+            TranscriptLine::new("assistant", "已打开 Chrome 并搜索了鸡哥。", "info"),
         );
         AgentPanelView::push_line(
             &mut panel,
-            TranscriptLine {
-                channel: "status".into(),
-                text: "turn completed".into(),
-                level: "info".into(),
-            },
+            TranscriptLine::new("status", "turn completed", "info"),
         );
         let before = panel.lines.len();
         AgentPanelView::append_chat_completion_transcript(
@@ -4104,5 +4146,77 @@ mod tests {
             composer_model_chip_label(AgentModelRate::X01),
             "GPT-5.5 ×0.1"
         );
+    }
+
+    #[test]
+    fn push_line_stamps_created_at() {
+        let mut panel = sample_panel(vec![], "");
+        AgentPanelView::push_line(
+            &mut panel,
+            TranscriptLine::new("assistant", "hello", "info"),
+        );
+        assert!(panel.lines[0].created_at_secs.is_some());
+    }
+
+    #[test]
+    fn chat_messages_from_lines_keeps_user_and_assistant_only() {
+        let lines = vec![
+            TranscriptLine::new("user", "hi", "info"),
+            TranscriptLine::new("command_execution", "$ ls", "info"),
+            TranscriptLine::new("assistant", "done", "info"),
+            TranscriptLine::new("status", "ok", "info"),
+        ];
+        let msgs = AgentPanelView::chat_messages_from_lines(&lines);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].content, "hi");
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].content, "done");
+    }
+
+    #[test]
+    fn fork_truncates_and_clears_resume_id() {
+        let mut panel = sample_panel(vec![], "");
+        panel.resume_id = Some("thread-old".into());
+        panel.active_sidebar_session_id = "session-src".into();
+        panel.sidebar_sessions.push(sidebar::AgentSession {
+            id: "session-src".into(),
+            label: "源".into(),
+            project_id: Some("p1".into()),
+            time: "刚刚".into(),
+            running: false,
+            prompt: "hi".into(),
+        });
+        AgentPanelView::push_line(&mut panel, TranscriptLine::new("user", "hi", "info"));
+        AgentPanelView::push_line(
+            &mut panel,
+            TranscriptLine::new("assistant", "hello there", "info"),
+        );
+        AgentPanelView::push_line(
+            &mut panel,
+            TranscriptLine::new("user", "second", "info"),
+        );
+        AgentPanelView::push_line(
+            &mut panel,
+            TranscriptLine::new("assistant", "later", "info"),
+        );
+        // Simulate fork at first assistant (index 1).
+        let line_index = 1usize;
+        let truncated: Vec<_> = panel.lines[..=line_index].to_vec();
+        let chat_messages = AgentPanelView::chat_messages_from_lines(&truncated);
+        let project_id = panel
+            .sidebar_sessions
+            .iter()
+            .find(|s| s.id == panel.active_sidebar_session_id)
+            .and_then(|s| s.project_id.clone());
+        let session_id = AgentPanelView::insert_new_session(&mut panel, project_id);
+        panel.lines = Arc::new(truncated);
+        panel.chat_messages = chat_messages;
+        panel.resume_id = None;
+        assert_eq!(panel.lines.len(), 2);
+        assert_eq!(panel.chat_messages.len(), 2);
+        assert!(panel.resume_id.is_none());
+        assert_eq!(panel.active_sidebar_session_id, session_id);
+        assert_ne!(session_id, "session-src");
     }
 }
