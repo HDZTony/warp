@@ -40,7 +40,6 @@ use crate::ui::text_field_input::{
     sync_caret_blink, CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldState,
 };
 use crate::ui::theme;
-use crate::ui::toolbox_view::ToolboxView;
 use crate::ui::w_drive_view::SharedVaultView;
 use crate::ui::window_chrome::{
     self, TrafficLightActions, TrafficLightMouseStates, CHROME_ROW_HEIGHT,
@@ -60,7 +59,6 @@ pub enum AppTab {
     Display,
     Chat,
     Warp,
-    Toolbox,
     Settings,
 }
 
@@ -73,7 +71,6 @@ impl AppTab {
             AppTab::Display => "display",
             AppTab::Chat => "chat",
             AppTab::Warp => "warp",
-            AppTab::Toolbox => "toolbox",
             AppTab::Settings => "settings",
         }
     }
@@ -84,8 +81,8 @@ impl AppTab {
             "display" => Some(AppTab::Devices),
             "chat" => Some(AppTab::Chat),
             "warp" | "agent" => Some(AppTab::Warp),
-            "toolbox" => Some(AppTab::Toolbox),
-            "settings" => Some(AppTab::Settings),
+            // Former top-level toolbox tab now lives under Settings → 虚拟机.
+            "toolbox" | "settings" => Some(AppTab::Settings),
             _ => None,
         }
     }
@@ -118,7 +115,6 @@ struct TabHoverMouseStates {
     devices: MouseStateHandle,
     chat: MouseStateHandle,
     warp: MouseStateHandle,
-    toolbox: MouseStateHandle,
     settings: MouseStateHandle,
 }
 
@@ -130,7 +126,6 @@ impl TabHoverMouseStates {
             }
             AppTab::Chat => self.chat.clone(),
             AppTab::Warp => self.warp.clone(),
-            AppTab::Toolbox => self.toolbox.clone(),
             AppTab::Settings => self.settings.clone(),
         }
     }
@@ -174,7 +169,6 @@ pub struct AppShellView {
     display: ViewHandle<DisplayView>,
     chat: ViewHandle<ChatShellView>,
     warp: ViewHandle<AgentPanelView>,
-    toolbox: ViewHandle<ToolboxView>,
     settings: ViewHandle<SettingsView>,
     login_modal: ViewHandle<LoginModalView>,
     login_modal_open: bool,
@@ -278,8 +272,6 @@ impl AppShellView {
             }
         });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
-        let toolbox = ctx
-            .add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone(), coordinator.clone()));
         let settings = ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone()));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
@@ -357,6 +349,7 @@ impl AppShellView {
             ctx.notify();
         });
         let prefs = desktop_prefs::load(&core.data_dir());
+        let open_vm_from_toolbox = prefs.last_tab.as_deref() == Some("toolbox");
         let mut tab = prefs
             .last_tab
             .as_deref()
@@ -384,7 +377,6 @@ impl AppShellView {
             display,
             chat,
             warp,
-            toolbox,
             settings,
             login_modal,
             login_modal_open: false,
@@ -435,6 +427,12 @@ impl AppShellView {
         view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
         window_chrome::sync_window_button_visibility(ctx);
+        if open_vm_from_toolbox {
+            let settings_handle = view.settings.clone();
+            ctx.update_view(&settings_handle, |settings, ctx| {
+                settings.select_virtual_machine(ctx);
+            });
+        }
         view
     }
 
@@ -698,22 +696,20 @@ impl AppShellView {
             AppTab::Display => "显示器",
             AppTab::Chat => "聊天",
             AppTab::Warp => "AI",
-            AppTab::Toolbox => "工具箱",
             AppTab::Settings => "设置",
         }
     }
 
-    fn visible_tabs() -> [AppTab; 5] {
+    fn visible_tabs() -> [AppTab; 4] {
         [
+            AppTab::Warp,
             AppTab::Devices,
             AppTab::Chat,
-            AppTab::Warp,
-            AppTab::Toolbox,
             AppTab::Settings,
         ]
     }
 
-    fn tabs() -> [AppTab; 8] {
+    fn tabs() -> [AppTab; 7] {
         [
             AppTab::WDrive,
             AppTab::Sync,
@@ -721,7 +717,6 @@ impl AppShellView {
             AppTab::Display,
             AppTab::Chat,
             AppTab::Warp,
-            AppTab::Toolbox,
             AppTab::Settings,
         ]
     }
@@ -742,7 +737,7 @@ impl AppShellView {
             "left" => Some(Self::adjacent_tab(current, -1)),
             "right" => Some(Self::adjacent_tab(current, 1)),
             "home" => Some(Self::visible_tabs()[0]),
-            "end" => Some(Self::visible_tabs()[4]),
+            "end" => Some(*Self::visible_tabs().last().unwrap()),
             _ => None,
         }
     }
@@ -752,11 +747,10 @@ impl AppShellView {
             return None;
         }
         match keystroke.key.as_str() {
-            "1" => Some(AppTab::Devices),
-            "2" => Some(AppTab::Chat),
-            "3" => Some(AppTab::Warp),
-            "4" => Some(AppTab::Toolbox),
-            "5" => Some(AppTab::Settings),
+            "1" => Some(AppTab::Warp),
+            "2" => Some(AppTab::Devices),
+            "3" => Some(AppTab::Chat),
+            "4" => Some(AppTab::Settings),
             _ => None,
         }
     }
@@ -1550,7 +1544,6 @@ impl AppShellView {
             AppTab::Display => ChildView::new(&self.display).finish(),
             AppTab::Chat => ChildView::new(&self.chat).finish(),
             AppTab::Warp => ChildView::new(&self.warp).finish(),
-            AppTab::Toolbox => ChildView::new(&self.toolbox).finish(),
             AppTab::Settings => ChildView::new(&self.settings).finish(),
         };
         let mut column = Flex::column()
@@ -1992,7 +1985,6 @@ mod tests {
             AppTab::Devices,
             AppTab::Chat,
             AppTab::Warp,
-            AppTab::Toolbox,
             AppTab::Settings,
         ];
         for tab in tabs {
@@ -2002,6 +1994,7 @@ mod tests {
         assert_eq!(AppTab::from_persist_id("terminals"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("w_drive"), Some(AppTab::Devices));
         assert_eq!(AppTab::from_persist_id("agent"), Some(AppTab::Warp));
+        assert_eq!(AppTab::from_persist_id("toolbox"), Some(AppTab::Settings));
     }
 
     #[test]
@@ -2009,22 +2002,22 @@ mod tests {
         assert!(AppShellView::tab_requires_login_prompt(AppTab::Devices));
         assert!(AppShellView::tab_requires_login_prompt(AppTab::Chat));
         assert!(!AppShellView::tab_requires_login_prompt(AppTab::Settings));
-        assert!(!AppShellView::tab_requires_login_prompt(AppTab::Toolbox));
+        assert!(!AppShellView::tab_requires_login_prompt(AppTab::Warp));
     }
 
     #[test]
     fn tab_from_arrow_cycles_visible_tabs() {
         assert_eq!(
-            AppShellView::tab_from_arrow(&key("right"), AppTab::Devices),
-            Some(AppTab::Chat)
+            AppShellView::tab_from_arrow(&key("right"), AppTab::Warp),
+            Some(AppTab::Devices)
         );
         assert_eq!(
-            AppShellView::tab_from_arrow(&key("left"), AppTab::Devices),
+            AppShellView::tab_from_arrow(&key("left"), AppTab::Warp),
             Some(AppTab::Settings)
         );
         assert_eq!(
             AppShellView::tab_from_arrow(&key("home"), AppTab::Chat),
-            Some(AppTab::Devices)
+            Some(AppTab::Warp)
         );
         assert_eq!(
             AppShellView::tab_from_arrow(&key("end"), AppTab::Chat),

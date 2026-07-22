@@ -74,7 +74,6 @@ pub fn tab_icon(tab: AppTab, color: ColorU) -> Box<dyn Element> {
         AppTab::Devices | AppTab::WDrive | AppTab::Sync | AppTab::Display => "tab-devices.svg",
         AppTab::Chat => "tab-chat.svg",
         AppTab::Warp => "tab-agent.svg",
-        AppTab::Toolbox => "tab-toolbox.svg",
         AppTab::Settings => "tab-settings.svg",
     };
     icon(path, TAB_ICON_SIZE, color)

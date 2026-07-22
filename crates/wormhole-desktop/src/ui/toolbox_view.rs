@@ -1,6 +1,6 @@
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Radius,
+    Empty, EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -12,7 +12,7 @@ use wormhole_desktop_core::toolbox_ui::{
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    section_hint, section_title, status_line, view_panel, StatusTone, HUD_RADIUS, SECTION_GAP,
+    section_hint, status_line, StatusTone, HUD_RADIUS, SECTION_GAP,
 };
 use crate::ui::text_field_input::{
     render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
@@ -34,8 +34,6 @@ pub enum ToolboxAction {
 
 pub struct ToolboxView {
     core: CoreHandle,
-    #[allow(dead_code)]
-    coordinator: std::sync::Arc<std::sync::Mutex<crate::coordinator::CoordinatorState>>,
     font: FamilyId,
     mono: FamilyId,
     tools: Vec<ToolSummary>,
@@ -51,16 +49,11 @@ pub struct ToolboxView {
 }
 
 impl ToolboxView {
-    pub fn new(
-        ctx: &mut ViewContext<Self>,
-        core: CoreHandle,
-        coordinator: std::sync::Arc<std::sync::Mutex<crate::coordinator::CoordinatorState>>,
-    ) -> Self {
+    pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let mut view = Self {
             core,
-            coordinator,
             font,
             mono,
             tools: Vec::new(),
@@ -681,11 +674,14 @@ impl View for ToolboxView {
             }
         }
 
-        let mut heading = Flex::row()
+        // Embedded under Settings → 虚拟机: page header is owned by SettingsView.
+        let mut refresh_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(Expanded::new(1.0, section_title("工具箱", self.font)).finish());
-        heading.add_child(self.action_button(
+            .with_main_axis_size(MainAxisSize::Max);
+        refresh_row.add_child(
+            Expanded::new(1.0, Container::new(Empty::new().finish()).finish()).finish(),
+        );
+        refresh_row.add_child(self.action_button(
             if self.loading {
                 "刷新中".into()
             } else {
@@ -697,7 +693,7 @@ impl View for ToolboxView {
         ));
 
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(heading.finish());
+        col.add_child(refresh_row.finish());
         col.add_child(
             Container::new(section_hint(
                 "软件包按需下载并验签，在来源电脑的 Ubuntu 隔离运行器中使用；文件不上传云端。",
@@ -728,7 +724,7 @@ impl View for ToolboxView {
             );
         }
         col.add_child(list.finish());
-        view_panel(col.finish())
+        col.finish()
     }
 }
 

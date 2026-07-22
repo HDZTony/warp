@@ -2,12 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex, Hoverable,
-    MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, ScrollbarWidth,
+    Border, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
+    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
+    Hoverable, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::core_handle::CoreHandle;
@@ -17,6 +17,7 @@ use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
+use crate::ui::toolbox_view::ToolboxView;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
 use wormhole_desktop_core::email_connector_commands::{
@@ -113,6 +114,9 @@ impl SettingsPage {
         let mut haystack = format!("{} {} {} {}", self.group(), self.title(), eyebrow, sub);
         if self == SettingsPage::Email {
             haystack.push_str(" email gmail outlook");
+        }
+        if self == SettingsPage::VirtualMachine {
+            haystack.push_str(" 工具箱 toolbox runner");
         }
         haystack
     }
@@ -219,6 +223,7 @@ pub struct SettingsView {
     cache_tone: StatusTone,
     cache_busy: bool,
     scroll: ClippedScrollStateHandle,
+    toolbox: ViewHandle<ToolboxView>,
 }
 
 impl SettingsView {
@@ -235,6 +240,8 @@ impl SettingsView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let archive_expanded = Self::load_archive_expanded(&core);
+        let toolbox =
+            ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -275,6 +282,7 @@ impl SettingsView {
             cache_tone: StatusTone::Placeholder,
             cache_busy: false,
             scroll: ClippedScrollStateHandle::new(),
+            toolbox,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
@@ -283,6 +291,14 @@ impl SettingsView {
         view.refresh_relay(ctx);
         view.refresh_cache(ctx);
         view
+    }
+
+    /// Open the Virtual Machine settings page (embedded toolbox).
+    pub fn select_virtual_machine(&mut self, ctx: &mut ViewContext<Self>) {
+        self.selected_page = SettingsPage::VirtualMachine;
+        self.search_focused = false;
+        self.storage_focused = false;
+        ctx.notify();
     }
 
     pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
@@ -697,7 +713,7 @@ impl SettingsView {
             SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
             SettingsPage::Cache => col.add_child(self.cache_block()),
             SettingsPage::Archive => col.add_child(self.archive_block()),
-            SettingsPage::VirtualMachine => col.add_child(self.vm_placeholder_block()),
+            SettingsPage::VirtualMachine => col.add_child(ChildView::new(&self.toolbox).finish()),
         }
         col.add_child(
             Container::new(
@@ -709,15 +725,6 @@ impl SettingsView {
             .finish(),
         );
         col.finish()
-    }
-
-    fn vm_placeholder_block(&self) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_hint(
-            "远程工作区虚拟机在终端 / 远程工作区流程中创建与管理。设置页暂不提供 Hyper-V 管理面板。",
-            self.font,
-        ));
-        self.flat_section(col.finish())
     }
 
     /// Inline action buttons (`.settings-auth-actions` / `.settings-action-row` in HTML).
@@ -2107,6 +2114,8 @@ mod tests {
         assert!(SettingsPage::Account.matches_query("账号"));
         assert!(SettingsPage::Relay.matches_query("p2p"));
         assert!(SettingsPage::Email.matches_query("gmail"));
+        assert!(SettingsPage::VirtualMachine.matches_query("工具箱"));
+        assert!(SettingsPage::VirtualMachine.matches_query("toolbox"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert_eq!(
             settings_pages_in_group("常规"),
