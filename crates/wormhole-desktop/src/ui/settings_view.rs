@@ -2024,8 +2024,9 @@ fn open_external_url(url: &str) -> Result<(), String> {
         return Err("拒绝打开非 HTTPS 授权地址".into());
     }
     #[cfg(windows)]
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
+    let status = std::process::Command::new("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(url)
         .status();
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(url).status();
