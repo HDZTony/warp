@@ -4,12 +4,23 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use wormhole_desktop_core::agent_bb_browser_commands::{
+    self, AgentBbBrowserStatusDto, ConfigureAgentBbBrowserParams,
+};
+use wormhole_desktop_core::agent_codex_presets::{self, CodexProviderPreset};
+use wormhole_desktop_core::agent_llm_commands::{
+    self, ConfigureAgentLlmParams, TestAgentLlmConnectionParams,
+};
 use wormhole_desktop_core::agent_provider_commands;
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
     section_hint, section_title, status_line, truncate_middle, StatusTone,
+};
+use crate::ui::text_field_input::{
+    render_field_with_caret, wrap_text_field_focus_on_click, TextFieldEditAction, TextFieldInput,
+    TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
@@ -20,6 +31,17 @@ pub enum AgentProvidersAction {
     Activate(String),
     Delete(String),
     QueryUsage(String),
+    CycleByokPreset,
+    CycleByokModel,
+    FocusApiKey,
+    ApiKeyEdit(TextFieldEditAction),
+    SaveByok,
+    TestByok,
+    ToggleBbBrowser,
+    ToggleBbBrowserAutoStart,
+    EnsureBbBrowser,
+    CreateBbBrowserShortcut,
+    SetBbBrowserDefault,
 }
 
 pub struct AgentProvidersView {
@@ -28,24 +50,263 @@ pub struct AgentProvidersView {
     providers: Vec<AgentProviderSummaryDto>,
     active_provider_id: Option<String>,
     llm_summary: String,
+    bb_browser: Option<AgentBbBrowserStatusDto>,
     status: String,
     busy: bool,
+    byok_presets: Vec<CodexProviderPreset>,
+    byok_preset_index: usize,
+    byok_model_index: usize,
+    api_key_draft: String,
+    api_key_field: TextFieldState,
+    api_key_focused: bool,
+}
+
+fn byok_presets() -> Vec<CodexProviderPreset> {
+    agent_codex_presets::list_presets()
+        .into_iter()
+        .filter(|p| p.id != "control_plane")
+        .collect()
 }
 
 impl AgentProvidersView {
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
+        let presets = byok_presets();
         let mut view = Self {
             core,
             font,
             providers: Vec::new(),
             active_provider_id: None,
             llm_summary: "加载 Codex 上游…".into(),
+            bb_browser: None,
             status: String::new(),
             busy: false,
+            byok_presets: presets,
+            byok_preset_index: 0,
+            byok_model_index: 0,
+            api_key_draft: String::new(),
+            api_key_field: TextFieldState::new(),
+            api_key_focused: false,
         };
         view.refresh(ctx);
         view
+    }
+
+    fn current_byok_preset(&self) -> Option<&CodexProviderPreset> {
+        self.byok_presets.get(self.byok_preset_index)
+    }
+
+    fn current_byok_model_id(&self) -> String {
+        let Some(preset) = self.current_byok_preset() else {
+            return String::new();
+        };
+        preset
+            .models
+            .get(self.byok_model_index)
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| preset.default_model.clone())
+    }
+
+    fn cycle_byok_preset(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.byok_presets.is_empty() {
+            return;
+        }
+        self.byok_preset_index = (self.byok_preset_index + 1) % self.byok_presets.len();
+        self.byok_model_index = 0;
+        self.api_key_draft.clear();
+        self.api_key_field = TextFieldState::new();
+        if let Some(preset) = self.current_byok_preset() {
+            if let Some(existing) = self.providers.iter().find(|p| p.id == preset.id) {
+                // Keep draft empty; hint shown via list. User re-enters to rotate key.
+                let _ = existing;
+            }
+        }
+        ctx.notify();
+    }
+
+    fn cycle_byok_model(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_byok_preset() else {
+            return;
+        };
+        if preset.models.is_empty() {
+            return;
+        }
+        self.byok_model_index = (self.byok_model_index + 1) % preset.models.len();
+        ctx.notify();
+    }
+
+    fn save_byok(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_byok_preset().cloned() else {
+            self.status = "没有可用的上游预设".into();
+            ctx.notify();
+            return;
+        };
+        let api_key = self.api_key_draft.trim().to_string();
+        if api_key.is_empty() {
+            self.status = "请填写 API Key".into();
+            ctx.notify();
+            return;
+        }
+        let model = self.current_byok_model_id();
+        self.busy = true;
+        self.status = format!("正在保存 {}…", preset.name);
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_llm_commands::configure_agent_llm(
+                    &state,
+                    ConfigureAgentLlmParams {
+                        provider: Some(preset.id),
+                        api_key: Some(api_key),
+                        model: Some(model),
+                        base_url: Some(preset.default_base_url),
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(cfg) => {
+                        view.status = format!(
+                            "已保存自备 Key：{} · {}（可在 Agent 模型菜单切换）",
+                            cfg.provider, cfg.model
+                        );
+                        view.api_key_draft.clear();
+                        view.api_key_field = TextFieldState::new();
+                        view.api_key_focused = false;
+                    }
+                    Err(err) => {
+                        view.status = err;
+                    }
+                }
+                view.refresh(ctx);
+            },
+        );
+    }
+
+    fn test_byok(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_byok_preset().cloned() else {
+            self.status = "没有可用的上游预设".into();
+            ctx.notify();
+            return;
+        };
+        let api_key = self.api_key_draft.trim().to_string();
+        self.busy = true;
+        self.status = format!("正在测试 {}…", preset.name);
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_llm_commands::test_agent_llm_connection(
+                    &state,
+                    Some(TestAgentLlmConnectionParams {
+                        provider: Some(preset.id),
+                        api_key: if api_key.is_empty() {
+                            None
+                        } else {
+                            Some(api_key)
+                        },
+                        base_url: Some(preset.default_base_url),
+                    }),
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                view.status = match output {
+                    Ok(result) => result.message,
+                    Err(err) => err,
+                };
+                ctx.notify();
+            },
+        );
+    }
+
+    fn byok_api_key_field(&self) -> Box<dyn Element> {
+        let field = render_field_with_caret(
+            &self.api_key_draft,
+            &self.api_key_field.marked_text,
+            "粘贴 API Key（sk-…）",
+            self.font,
+            self.api_key_focused,
+            false,
+            true,
+            self.api_key_field.cursor,
+        );
+        let input = TextFieldInput::builder(field, |ctx, action| {
+            ctx.dispatch_typed_action(AgentProvidersAction::ApiKeyEdit(action));
+        })
+        .focused(self.api_key_focused)
+        .ime_preedit(!self.api_key_field.marked_text.is_empty())
+        .finish();
+        let input = wrap_text_field_focus_on_click(input, |ctx| {
+            ctx.dispatch_typed_action(AgentProvidersAction::FocusApiKey);
+        });
+        Container::new(input)
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(6.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(if self.api_key_focused {
+                theme::accent_cool()
+            } else {
+                theme::border()
+            }))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish()
+    }
+
+    fn byok_form_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("自备 API Key", self.font));
+        col.add_child(section_hint(
+            "默认使用 Key Pool（含 GPT）。填写自备 Key 后，对应模型会出现在 Agent 面板的模型菜单中。",
+            self.font,
+        ));
+
+        let preset_label = self
+            .current_byok_preset()
+            .map(|p| format!("{} · {}", p.name, p.default_base_url))
+            .unwrap_or_else(|| "无预设".into());
+        let model_label = self
+            .current_byok_preset()
+            .and_then(|p| p.models.get(self.byok_model_index))
+            .map(|m| m.label.clone())
+            .unwrap_or_else(|| self.current_byok_model_id());
+
+        col.add_child(status_line(
+            format!("上游：{preset_label}"),
+            self.font,
+            StatusTone::Muted,
+        ));
+        col.add_child(status_line(
+            format!("模型：{model_label}"),
+            self.font,
+            StatusTone::Muted,
+        ));
+
+        let mut cycle_row = Flex::row();
+        cycle_row.add_child(self.action_button("切换上游", AgentProvidersAction::CycleByokPreset));
+        cycle_row.add_child(
+            Container::new(self.action_button("切换模型", AgentProvidersAction::CycleByokModel))
+                .with_margin_left(8.0)
+                .finish(),
+        );
+        col.add_child(cycle_row.finish());
+        col.add_child(self.byok_api_key_field());
+
+        let mut save_row = Flex::row();
+        save_row.add_child(self.action_button("保存 Key", AgentProvidersAction::SaveByok));
+        save_row.add_child(
+            Container::new(self.action_button("测试连接", AgentProvidersAction::TestByok))
+                .with_margin_left(8.0)
+                .finish(),
+        );
+        col.add_child(save_row.finish());
+        col.finish()
     }
 
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
@@ -58,10 +319,11 @@ impl AgentProvidersView {
                 let state = core.runtime().state.clone();
                 let providers = agent_provider_commands::agent_providers_list(&state).await;
                 let llm = wormhole_desktop_core::agent_llm_commands::agent_llm_config(&state).await;
-                (providers, llm)
+                let bb = agent_bb_browser_commands::agent_bb_browser_status(&state).await;
+                (providers, llm, bb)
             },
             |view, output, ctx| {
-                let (providers, llm) = output;
+                let (providers, llm, bb) = output;
                 match providers {
                     Ok(list) => {
                         view.active_provider_id = list.active_provider_id.clone();
@@ -79,6 +341,7 @@ impl AgentProvidersView {
                     ),
                     Err(err) => format!("LLM 配置错误: {err}"),
                 };
+                view.bb_browser = bb.ok();
                 view.busy = false;
                 ctx.notify();
             },
@@ -148,6 +411,140 @@ impl AgentProvidersView {
         );
     }
 
+    fn configure_bb_browser(
+        &mut self,
+        enabled: Option<bool>,
+        auto_start_browser: Option<bool>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.busy = true;
+        self.status = if enabled == Some(true) {
+            "正在检查并安装前置依赖（Node / bb-browser）…".into()
+        } else {
+            "正在更新 bb-browser…".into()
+        };
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_bb_browser_commands::agent_bb_browser_configure(
+                    ConfigureAgentBbBrowserParams {
+                        enabled,
+                        auto_start_browser,
+                    },
+                    &state,
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(status) => {
+                        view.status = if status.config.enabled {
+                            let base = if status.ready {
+                                "bb-browser 已启用且就绪"
+                            } else {
+                                "bb-browser 已启用（见下方提示）"
+                            };
+                            match status.setup_message.as_deref() {
+                                Some(setup) if !setup.is_empty() => {
+                                    truncate_middle(&format!("{base}。{setup}"), 160)
+                                }
+                                _ => base.into(),
+                            }
+                        } else {
+                            "bb-browser 已关闭".into()
+                        };
+                        view.bb_browser = Some(status);
+                    }
+                    Err(err) => {
+                        view.status = err;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn ensure_bb_browser(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在启动托管浏览器…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_bb_browser_commands::agent_bb_browser_ensure_browser(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(action) => {
+                        view.status = action.message;
+                        view.bb_browser = Some(action.status);
+                    }
+                    Err(err) => {
+                        view.status = err;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn create_bb_browser_shortcut(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在创建桌面快捷方式…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_bb_browser_commands::agent_bb_browser_create_shortcut(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(action) => {
+                        view.status = action.message;
+                        view.bb_browser = Some(action.status);
+                    }
+                    Err(err) => {
+                        view.status = err;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn set_bb_browser_default(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在注册系统默认浏览器…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_bb_browser_commands::agent_bb_browser_set_default_browser(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(action) => {
+                        view.status = action.message;
+                        view.bb_browser = Some(action.status);
+                    }
+                    Err(err) => {
+                        view.status = err;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
         let disabled = self.busy;
@@ -172,6 +569,133 @@ impl AgentProvidersView {
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
     }
+
+    fn bb_browser_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("AGENT · bb-browser", self.font));
+        col.add_child(section_hint(
+            "托管 Chromium（免扩展）。启用时自动检查浏览器并安装本地 Node / bb-browser。用桌面「Wormhole浏览器」登录；也可设为系统默认浏览器。公开网页用 bb-browser，桌面 GUI 用 Computer Use。",
+            self.font,
+        ));
+
+        let Some(status) = &self.bb_browser else {
+            col.add_child(status_line(
+                "正在加载 bb-browser 状态…",
+                self.font,
+                StatusTone::Muted,
+            ));
+            return col.finish();
+        };
+
+        let enabled_label = if status.config.enabled {
+            "已启用"
+        } else {
+            "已关闭"
+        };
+        let launch = status
+            .launch_command
+            .as_deref()
+            .unwrap_or("未检测到 bb-browser / npx");
+        let cdp = if status.cdp_healthy {
+            format!("CDP 就绪 {}:{}", status.cdp_host, status.cdp_port)
+        } else {
+            format!("CDP 未就绪 {}:{}", status.cdp_host, status.cdp_port)
+        };
+        let browser = if status.browser_available {
+            "浏览器已找到"
+        } else {
+            "未找到 Chrome/Edge"
+        };
+        let summary = format!(
+            "{enabled_label} · {} · MCP={} · {browser} · {cdp}",
+            status.launch_kind.as_deref().unwrap_or("无启动器"),
+            if status.mcp_section_written {
+                "是"
+            } else {
+                "否"
+            },
+        );
+        col.add_child(status_line(
+            summary,
+            self.font,
+            if status.ready {
+                StatusTone::Success
+            } else if status.config.enabled {
+                StatusTone::Neutral
+            } else {
+                StatusTone::Muted
+            },
+        ));
+        col.add_child(status_line(
+            truncate_middle(launch, 96),
+            self.font,
+            StatusTone::Muted,
+        ));
+        col.add_child(status_line(
+            truncate_middle(&format!("profile: {}", status.profile_dir), 110),
+            self.font,
+            StatusTone::Muted,
+        ));
+
+        let mut toolbar = Flex::row();
+        toolbar.add_child(self.action_button(
+            if status.config.enabled {
+                "关闭 bb-browser"
+            } else {
+                "启用 bb-browser"
+            },
+            AgentProvidersAction::ToggleBbBrowser,
+        ));
+        if status.config.enabled {
+            toolbar.add_child(
+                Container::new(self.action_button(
+                    if status.config.auto_start_browser {
+                        "自动启浏览器：开"
+                    } else {
+                        "自动启浏览器：关"
+                    },
+                    AgentProvidersAction::ToggleBbBrowserAutoStart,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            toolbar.add_child(
+                Container::new(self.action_button(
+                    "启动浏览器",
+                    AgentProvidersAction::EnsureBbBrowser,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            toolbar.add_child(
+                Container::new(self.action_button(
+                    "Wormhole 设为系统默认浏览器",
+                    AgentProvidersAction::SetBbBrowserDefault,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+            toolbar.add_child(
+                Container::new(self.action_button(
+                    "创建桌面快捷方式",
+                    AgentProvidersAction::CreateBbBrowserShortcut,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+        }
+        col.add_child(Container::new(toolbar.finish()).with_margin_top(8.0).finish());
+
+        for note in &status.notes {
+            col.add_child(
+                Container::new(status_line(note.clone(), self.font, StatusTone::Muted))
+                    .with_margin_top(4.0)
+                    .finish(),
+            );
+        }
+
+        col.finish()
+    }
 }
 
 impl Entity for AgentProvidersView {
@@ -187,7 +711,7 @@ impl View for AgentProvidersView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("AGENT · Codex 供应商", self.font));
         col.add_child(section_hint(
-            "登录后使用 control plane Key Pool（control_plane）。不拦截 ccswitch://；CC Switch 桌面程序可独立使用。",
+            "默认使用 control plane Key Pool（含 GPT）。自备 Key 后可在 Agent 模型菜单切换；不拦截 ccswitch://。",
             self.font,
         ));
         col.add_child(status_line(
@@ -205,10 +729,17 @@ impl View for AgentProvidersView {
             col.add_child(status_line(self.status.clone(), self.font, tone));
         }
 
+        col.add_child(
+            Container::new(self.byok_form_block())
+                .with_margin_top(12.0)
+                .with_margin_bottom(12.0)
+                .finish(),
+        );
+
         col.add_child(section_title("供应商列表", self.font));
         if self.providers.is_empty() {
             col.add_child(status_line(
-                "暂无供应商记录。登录后将自动启用远端 Key Pool。",
+                "暂无供应商记录。登录后自动启用 Key Pool；也可上方填写自备 Key。",
                 self.font,
                 StatusTone::Placeholder,
             ));
@@ -262,6 +793,12 @@ impl View for AgentProvidersView {
             }
         }
 
+        col.add_child(
+            Container::new(self.bb_browser_block())
+                .with_margin_top(20.0)
+                .finish(),
+        );
+
         col.finish()
     }
 }
@@ -269,7 +806,7 @@ impl View for AgentProvidersView {
 fn provider_status_tone(status: &str) -> StatusTone {
     if status.contains("错误") || status.contains("失败") || status.contains("未找到") {
         StatusTone::Danger
-    } else if status.contains("已") || status.contains("成功") {
+    } else if status.contains("已") || status.contains("成功") || status.contains("就绪") {
         StatusTone::Success
     } else {
         StatusTone::Neutral
@@ -339,6 +876,37 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::Activate(id) => self.activate(id.clone(), ctx),
             AgentProvidersAction::Delete(id) => self.delete(id.clone(), ctx),
             AgentProvidersAction::QueryUsage(id) => self.query_usage(id.clone(), ctx),
+            AgentProvidersAction::CycleByokPreset => self.cycle_byok_preset(ctx),
+            AgentProvidersAction::CycleByokModel => self.cycle_byok_model(ctx),
+            AgentProvidersAction::FocusApiKey => {
+                self.api_key_focused = true;
+                ctx.notify();
+            }
+            AgentProvidersAction::ApiKeyEdit(edit) => {
+                self.api_key_field.apply(&mut self.api_key_draft, edit);
+                ctx.notify();
+            }
+            AgentProvidersAction::SaveByok => self.save_byok(ctx),
+            AgentProvidersAction::TestByok => self.test_byok(ctx),
+            AgentProvidersAction::ToggleBbBrowser => {
+                let enabled = self
+                    .bb_browser
+                    .as_ref()
+                    .map(|s| !s.config.enabled)
+                    .unwrap_or(true);
+                self.configure_bb_browser(Some(enabled), None, ctx);
+            }
+            AgentProvidersAction::ToggleBbBrowserAutoStart => {
+                let auto = self
+                    .bb_browser
+                    .as_ref()
+                    .map(|s| !s.config.auto_start_browser)
+                    .unwrap_or(true);
+                self.configure_bb_browser(None, Some(auto), ctx);
+            }
+            AgentProvidersAction::EnsureBbBrowser => self.ensure_bb_browser(ctx),
+            AgentProvidersAction::CreateBbBrowserShortcut => self.create_bb_browser_shortcut(ctx),
+            AgentProvidersAction::SetBbBrowserDefault => self.set_bb_browser_default(ctx),
         }
     }
 }

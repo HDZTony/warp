@@ -1,4 +1,5 @@
 use pathfinder_color::ColorU;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
@@ -13,6 +14,7 @@ use crate::ui::theme;
 use crate::ui_text;
 
 const USER_BUBBLE_MAX_WIDTH: f32 = 520.0;
+const TOOL_SUMMARY_MAX_CHARS: usize = 72;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptLine {
@@ -49,11 +51,51 @@ pub fn format_local_hhmm(unix_secs: u64) -> String {
     }
 }
 
+/// One-line summary for collapsed tool/command rows. Keeps a short status suffix when present.
+pub fn tool_line_summary(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let suffix = tool_status_suffix(text).unwrap_or("");
+    let body_end = text.len().saturating_sub(suffix.len());
+    let body = &text[..body_end];
+    let suffix_chars = suffix.chars().count();
+    let budget = max_chars.saturating_sub(suffix_chars.saturating_add(1));
+    if budget < 8 {
+        let head: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+        return format!("{head}…");
+    }
+    let head: String = body.chars().take(budget).collect();
+    format!("{head}…{suffix}")
+}
+
+fn tool_status_suffix(text: &str) -> Option<&str> {
+    let idx = text.rfind("  (")?;
+    let suf = &text[idx..];
+    if suf.ends_with(')') && suf.chars().count() <= 40 {
+        Some(suf)
+    } else {
+        None
+    }
+}
+
+fn is_mono_tool_channel(channel: &str) -> bool {
+    matches!(
+        channel,
+        "stdout" | "stderr" | "command_execution" | "mcp_tool_call" | "file_change" | "web_search"
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TranscriptViewModel {
     pub lines: Vec<TranscriptLine>,
     pub thinking: bool,
     pub elapsed_seconds: Option<u64>,
+    pub expanded_tool_lines: HashSet<usize>,
 }
 
 pub fn channel_color(channel: &str, level: &str) -> ColorU {
@@ -127,6 +169,29 @@ fn fork_icon_button(line_index: usize) -> Box<dyn Element> {
     .finish()
 }
 
+fn tool_expand_chevron(expanded: bool, line_index: usize) -> Box<dyn Element> {
+    let icon = if expanded {
+        "agent-chevron-down.svg"
+    } else {
+        "agent-chevron.svg"
+    };
+    Container::new(
+        EventHandler::new(
+            ConstrainedBox::new(icons::agent_icon(icon, theme::muted()))
+                .with_width(12.0)
+                .with_height(12.0)
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(super::AgentPanelAction::ToggleToolLineExpand { line_index });
+            DispatchEventResult::StopPropagation
+        })
+        .finish(),
+    )
+    .with_uniform_padding(4.0)
+    .finish()
+}
+
 /// Codex-style footer under assistant body: copy · fork · local `HH:MM`.
 fn render_assistant_footer(
     font: FamilyId,
@@ -155,6 +220,77 @@ fn render_assistant_footer(
         );
     }
     Container::new(row.finish()).with_margin_top(6.0).finish()
+}
+
+fn render_tool_line(
+    font: FamilyId,
+    mono: FamilyId,
+    line: &TranscriptLine,
+    line_index: usize,
+    expanded: bool,
+) -> Box<dyn Element> {
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_main_axis_size(MainAxisSize::Min);
+    if line.level == "error" {
+        col.add_child(
+            ui_text::hud_title("ERROR", font)
+                .with_color(theme::danger())
+                .finish(),
+        );
+    }
+
+    let color = channel_color(&line.channel, &line.level);
+    let copy_text = line.text.clone();
+
+    if expanded {
+        let header = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_child(tool_expand_chevron(true, line_index))
+            .with_child(copy_icon_button(copy_text, true))
+            .finish();
+        col.add_child(header);
+        col.add_child(
+            Container::new(
+                ui_text::mono(line.text.clone(), mono)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_margin_top(4.0)
+            .finish(),
+        );
+    } else {
+        let summary = tool_line_summary(&line.text, TOOL_SUMMARY_MAX_CHARS);
+        let summary_row = EventHandler::new(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(tool_expand_chevron(false, line_index))
+                .with_child(
+                    Container::new(
+                        ui_text::mono(summary, mono)
+                            .with_color(color)
+                            .finish(),
+                    )
+                    .with_margin_left(2.0)
+                    .finish(),
+                )
+                .with_child(
+                    Container::new(copy_icon_button(copy_text, true))
+                        .with_margin_left(4.0)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(super::AgentPanelAction::ToggleToolLineExpand { line_index });
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+        col.add_child(summary_row);
+    }
+    col.finish()
 }
 
 fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
@@ -224,7 +360,6 @@ fn render_divider() -> Box<dyn Element> {
 
 fn render_assistant_body(
     font: FamilyId,
-    mono: FamilyId,
     line: &TranscriptLine,
     line_index: usize,
 ) -> Box<dyn Element> {
@@ -238,35 +373,17 @@ fn render_assistant_body(
                 .finish(),
         );
     }
-    let use_mono = matches!(
-        line.channel.as_str(),
-        "stdout" | "stderr" | "command_execution" | "mcp_tool_call" | "file_change" | "web_search"
+    col.add_child(
+        ui_text::body(line.text.clone(), font)
+            .with_color(theme::text())
+            .finish(),
     );
-    if use_mono {
-        col.add_child(
-            ui_text::mono(line.text.clone(), mono)
-                .with_color(channel_color(&line.channel, &line.level))
-                .finish(),
-        );
-        // Tool / command lines: mono body only — no fork footer.
-        col.add_child(
-            Container::new(copy_icon_button(line.text.clone(), true))
-                .with_margin_top(6.0)
-                .finish(),
-        );
-    } else {
-        col.add_child(
-            ui_text::body(line.text.clone(), font)
-                .with_color(theme::text())
-                .finish(),
-        );
-        col.add_child(render_assistant_footer(
-            font,
-            line.text.clone(),
-            line_index,
-            line.created_at_secs,
-        ));
-    }
+    col.add_child(render_assistant_footer(
+        font,
+        line.text.clone(),
+        line_index,
+        line.created_at_secs,
+    ));
     col.finish()
 }
 
@@ -307,12 +424,15 @@ fn render_live_line(
     line_index: usize,
     font: FamilyId,
     mono: FamilyId,
+    expanded_tool: bool,
 ) -> Box<dyn Element> {
     match line.channel.as_str() {
         "user" => render_user_message(font, &line.text),
         "status" => render_status_line(font, &line.text),
-        "assistant" | "stdout" | "stderr" | "command_execution" | "mcp_tool_call"
-        | "file_change" | "web_search" => render_assistant_body(font, mono, line, line_index),
+        "assistant" => render_assistant_body(font, line, line_index),
+        ch if is_mono_tool_channel(ch) => {
+            render_tool_line(font, mono, line, line_index, expanded_tool)
+        }
         _ => Container::new(
             ui_text::mono(
                 format!("[{}] {}", line.channel.to_uppercase(), line.text),
@@ -352,7 +472,8 @@ pub fn render_transcript(
             if line.channel == "status" && model.elapsed_seconds.is_some() {
                 continue;
             }
-            let bubble = render_live_line(line, line_index, font, mono);
+            let expanded_tool = model.expanded_tool_lines.contains(&line_index);
+            let bubble = render_live_line(line, line_index, font, mono, expanded_tool);
             let margin = if line.channel == "user" { 14.0 } else { 6.0 };
             column.add_child(Container::new(bubble).with_vertical_margin(margin).finish());
         }
@@ -382,7 +503,10 @@ pub fn render_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_color, format_local_hhmm, TranscriptLine, TranscriptViewModel};
+    use super::{
+        channel_color, format_local_hhmm, tool_line_summary, TranscriptLine, TranscriptViewModel,
+    };
+    use std::collections::HashSet;
 
     #[test]
     fn stderr_uses_danger_color() {
@@ -398,6 +522,7 @@ mod tests {
             lines: vec![TranscriptLine::new("user", "hello", "info")],
             thinking: false,
             elapsed_seconds: None,
+            expanded_tool_lines: HashSet::new(),
         };
         assert_eq!(model.lines.len(), 1);
         assert!(!model.thinking);
@@ -409,6 +534,7 @@ mod tests {
             lines: Vec::new(),
             thinking: true,
             elapsed_seconds: Some(3),
+            expanded_tool_lines: HashSet::new(),
         };
         assert!(model.thinking);
     }
@@ -426,5 +552,39 @@ mod tests {
         let s = format_local_hhmm(1_700_000_000);
         assert_eq!(s.len(), 5);
         assert_eq!(&s[2..3], ":");
+    }
+
+    #[test]
+    fn tool_line_summary_keeps_exit_suffix() {
+        let long = format!(
+            "$ \"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command '{}'",
+            "x".repeat(120)
+        );
+        let with_exit = format!("{long}  (exit 0)");
+        let summary = tool_line_summary(&with_exit, 72);
+        assert!(summary.ends_with("  (exit 0)"), "{summary}");
+        assert!(summary.contains('…'), "{summary}");
+        assert!(summary.chars().count() <= 73, "{summary}");
+    }
+
+    #[test]
+    fn tool_line_summary_short_unchanged() {
+        let short = "$ Get-Process Outlook  (exit 0)";
+        assert_eq!(tool_line_summary(short, 72), short);
+    }
+
+    #[test]
+    fn tool_lines_default_collapsed() {
+        let model = TranscriptViewModel {
+            lines: vec![TranscriptLine::new(
+                "command_execution",
+                "$ long command",
+                "info",
+            )],
+            thinking: false,
+            elapsed_seconds: None,
+            expanded_tool_lines: HashSet::new(),
+        };
+        assert!(!model.expanded_tool_lines.contains(&0));
     }
 }

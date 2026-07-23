@@ -30,6 +30,9 @@ use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmChatParams};
+use wormhole_desktop_core::agent_provider_commands::{
+    self, AgentModelChoiceDto, SelectAgentModelParams,
+};
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use wormhole_desktop_core::warp_embed_prefs::{
     self, AgentAccessMode, AgentModelRate, PreferredAgent,
@@ -75,6 +78,10 @@ pub enum AgentPanelAction {
     SelectAccessMode(AgentAccessMode),
     ToggleAccessMenu,
     SelectModelRate(AgentModelRate),
+    SelectAgentModel {
+        provider_id: String,
+        model: String,
+    },
     ToggleModelMenu,
     ToggleAddMenu,
     OpenFilesModal,
@@ -145,6 +152,10 @@ pub enum AgentPanelAction {
     CopyAssistantText(String),
     /// Fork conversation from an assistant transcript line into a new sidebar session.
     ForkFromLine { line_index: usize },
+    /// Toggle expand/collapse for a mono tool/command transcript line.
+    ToggleToolLineExpand { line_index: usize },
+    /// Queue draft for send after the current turn finishes (Codex follow-up while busy).
+    QueueFollowUp,
     CopySelection,
     ClearAndUnfocus,
     ToggleComposerFocus,
@@ -178,6 +189,8 @@ struct PanelState {
     sidebar_search_focused: bool,
     archived_ids: HashSet<String>,
     expanded_project_ids: HashSet<String>,
+    /// Expanded mono tool/command lines (by transcript index); default collapsed.
+    expanded_tool_lines: HashSet<usize>,
     project_create: Option<ProjectCreateState>,
     /// Project-row ⋯ menu target id — HTML `#agent-projects-menu` (in-tree anchor).
     project_row_menu: Option<String>,
@@ -236,6 +249,7 @@ pub struct AgentPanelView {
     visible: bool,
     access_mode: AgentAccessMode,
     model_rate: AgentModelRate,
+    model_choices: Vec<AgentModelChoiceDto>,
     sidebar_scroll: ClippedScrollStateHandle,
     thread_scroll: ClippedScrollStateHandle,
     caret_blink: CaretBlink,
@@ -257,7 +271,7 @@ impl AgentPanelView {
         let data_dir = core.data_dir();
         let archived_ids = sidebar::load_archived_ids(&data_dir);
         let (projects, expanded_project_ids) = sidebar::load_projects_state(&data_dir);
-        Self {
+        let mut view = Self {
             core,
             font,
             mono,
@@ -285,6 +299,7 @@ impl AgentPanelView {
                 sidebar_search_focused: false,
                 archived_ids,
                 expanded_project_ids,
+                expanded_tool_lines: HashSet::new(),
                 project_create: None,
                 project_row_menu: None,
                 project_delete: None,
@@ -312,6 +327,7 @@ impl AgentPanelView {
             visible: false,
             access_mode,
             model_rate,
+            model_choices: Vec::new(),
             sidebar_scroll: ClippedScrollStateHandle::default(),
             thread_scroll: ClippedScrollStateHandle::default(),
             caret_blink: CaretBlink::new(),
@@ -320,7 +336,9 @@ impl AgentPanelView {
             generation_notify_rx,
             selection_handle: warpui::elements::SelectionHandle::default(),
             selected_text: Arc::new(Mutex::new(None)),
-        }
+        };
+        view.refresh_model_choices(ctx);
+        view
     }
 
     fn unix_now_secs() -> u64 {
@@ -451,6 +469,7 @@ impl AgentPanelView {
         panel.polling_session = false;
         panel.busy = false;
         panel.run_started_at = None;
+        panel.expanded_tool_lines.clear();
         panel.draft.clear();
         panel.field_state.cursor = 0;
         panel.field_state.clear_marked();
@@ -458,6 +477,16 @@ impl AgentPanelView {
         panel.input_focused = true;
         panel.sidebar_search_focused = false;
         session_id
+    }
+
+    /// Consume a queued follow-up only when the turn is idle (avoids clearing on stream ticks).
+    fn take_pending_send_if_idle(panel: &mut PanelState) -> bool {
+        if panel.pending_send && !panel.busy {
+            panel.pending_send = false;
+            true
+        } else {
+            false
+        }
     }
 
     fn ensure_sidebar_session_for_send(panel: &mut PanelState) {
@@ -537,6 +566,7 @@ impl AgentPanelView {
                     Ok(page) => {
                         let mut panel = shared.lock().expect("agent panel state");
                         panel.lines = Arc::new(Vec::new());
+                        panel.expanded_tool_lines.clear();
                         panel.event_cursor = page.next_cursor;
                         for event in page.events {
                             Self::push_line(
@@ -746,14 +776,7 @@ impl AgentPanelView {
                 if output.is_ok() {
                     let should_send = state_for_task
                         .lock()
-                        .map(|mut panel| {
-                            if panel.pending_send {
-                                panel.pending_send = false;
-                                true
-                            } else {
-                                false
-                            }
-                        })
+                        .map(|mut panel| Self::take_pending_send_if_idle(&mut panel))
                         .unwrap_or(false);
                     if should_send {
                         view.send_message(ctx);
@@ -782,24 +805,8 @@ impl AgentPanelView {
         backend: AgentTurnBackend,
         content: &str,
     ) {
-        if backend == AgentTurnBackend::Codex {
-            return;
-        }
-        Self::push_line(
-            panel,
-            TranscriptLine::new("assistant", content.to_string(), "info"),
-        );
-    }
-
-    fn push_cursor_fallback_status(panel: &mut PanelState, codex_error: &str) {
-        Self::push_line(
-            panel,
-            TranscriptLine::new(
-                "status",
-                format!("Codex 不可用，已改用 Cursor（后备）: {codex_error}"),
-                "warning",
-            ),
-        );
+        // Codex streams into the transcript already; nothing to append on completion.
+        let _ = (panel, backend, content);
     }
 
     fn keystroke_action(
@@ -909,10 +916,7 @@ impl AgentPanelView {
             let _ = notify_tx.try_send(());
             return true;
         }
-        if !panel.busy && !panel.input_focused {
-            return false;
-        }
-        if !panel.input_focused || panel.busy {
+        if !panel.input_focused {
             return false;
         }
         match keystroke.key.as_str() {
@@ -984,6 +988,7 @@ impl AgentPanelView {
             panel.polling_session = false;
             panel.busy = false;
             panel.run_started_at = None;
+            panel.expanded_tool_lines.clear();
             panel.chat_messages.clear();
             panel.resume_id = None;
             panel.active_session_id = None;
@@ -1765,6 +1770,7 @@ impl AgentPanelView {
             panel.polling_session = false;
             panel.busy = false;
             panel.run_started_at = None;
+            panel.expanded_tool_lines.clear();
             panel.thread_title = label.clone();
             if let Some(session) = panel
                 .sidebar_sessions
@@ -2021,7 +2027,10 @@ impl AgentPanelView {
     }
 
     fn toggle_model_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
+        let opening = {
+            let Ok(mut panel) = self.state.lock() else {
+                return;
+            };
             panel.project_row_menu = None;
             panel.chats_menu_open = false;
             panel.chats_flyout = None;
@@ -2029,8 +2038,61 @@ impl AgentPanelView {
             panel.access_menu_open = false;
             panel.add_menu_open = false;
             panel.model_menu_open = !panel.model_menu_open;
+            panel.model_menu_open
+        };
+        if opening {
+            self.refresh_model_choices(ctx);
         }
         ctx.notify();
+    }
+
+    fn refresh_model_choices(&mut self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_provider_commands::list_agent_model_choices(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(list) = output {
+                    view.model_choices = list.choices;
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn select_agent_model(
+        &mut self,
+        provider_id: String,
+        model: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.model_menu_open = false;
+            panel.access_menu_open = false;
+            panel.add_menu_open = false;
+        }
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_provider_commands::select_agent_model(
+                    &state,
+                    SelectAgentModelParams {
+                        provider_id,
+                        model: Some(model),
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                if let Ok(_) = output {
+                    view.refresh_model_choices(ctx);
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn select_access_mode(&mut self, mode: AgentAccessMode, ctx: &mut ViewContext<Self>) {
@@ -2193,7 +2255,6 @@ impl AgentPanelView {
         let core = self.core.clone();
         let shared_async = Arc::clone(&self.state);
         let shared_callback = Arc::clone(&self.state);
-        let generation_callback = Arc::clone(&self.generation);
         let active_run_id = Arc::clone(&self.active_run_id);
         let run_id = self.active_run_id.fetch_add(1, Ordering::SeqCst) + 1;
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -2284,11 +2345,6 @@ impl AgentPanelView {
                 let mut panel = shared_callback.lock().expect("agent panel state");
                 match output {
                     Ok(result) => {
-                        if result.backend == AgentTurnBackend::CursorFallback {
-                            if let Some(reason) = &result.codex_error {
-                                Self::push_cursor_fallback_status(&mut panel, reason);
-                            }
-                        }
                         Self::append_chat_completion_transcript(
                             &mut panel,
                             result.backend,
@@ -2299,12 +2355,7 @@ impl AgentPanelView {
                             content: result.reply.content,
                         });
                         panel.resume_id = result.reply.thread_id;
-                        panel.status = match result.backend {
-                            AgentTurnBackend::Codex => {
-                                format!("完成 · {}", result.reply.model)
-                            }
-                            AgentTurnBackend::CursorFallback => "完成 · Cursor（后备）".into(),
-                        };
+                        panel.status = format!("完成 · {}", result.reply.model);
                     }
                     Err(err) => {
                         if err != CODEX_TURN_CANCELLED {
@@ -2319,9 +2370,7 @@ impl AgentPanelView {
                 panel.busy = false;
                 panel.run_started_at = None;
                 drop(panel);
-                if let Ok(mut gen) = generation_callback.lock() {
-                    *gen = gen.saturating_add(1);
-                }
+                view.bump();
                 ctx.notify();
             },
         );
@@ -2331,7 +2380,6 @@ impl AgentPanelView {
         let core = self.core.clone();
         let shared = Arc::clone(&self.state);
         let shared_callback = Arc::clone(&self.state);
-        let generation = Arc::clone(&self.generation);
         let active_run_id = Arc::clone(&self.active_run_id);
         let run_id = self.active_run_id.fetch_add(1, Ordering::SeqCst) + 1;
         ctx.spawn(
@@ -2388,11 +2436,6 @@ impl AgentPanelView {
                 let mut started = false;
                 match output {
                     Ok(result) => {
-                        if result.backend == AgentTurnBackend::CursorFallback {
-                            if let Some(reason) = &result.codex_error {
-                                Self::push_cursor_fallback_status(&mut panel, reason);
-                            }
-                        }
                         let session = result.session;
                         Self::push_line(
                             &mut panel,
@@ -2432,9 +2475,7 @@ impl AgentPanelView {
                     panel.run_started_at = None;
                 }
                 drop(panel);
-                if let Ok(mut gen) = generation.lock() {
-                    *gen = gen.saturating_add(1);
-                }
+                view.bump();
                 ctx.notify();
                 if started {
                     view.start_session_poll(ctx);
@@ -2455,12 +2496,8 @@ impl AgentPanelView {
             move |_view, output, ctx| {
                 let mut state = shared.lock().expect("agent panel state");
                 match output {
-                    Ok(result) => {
-                        if result.backend == AgentTurnBackend::CursorFallback {
-                            let reason =
-                                result.codex_error.as_deref().unwrap_or("Codex 终端不可用");
-                            state.status = format!("已改用 Cursor 终端（后备）: {reason}");
-                        }
+                    Ok(_result) => {
+                        state.status = "已在系统终端启动 Codex".into();
                     }
                     Err(err) => {
                         state.status = format!("无法启动终端: {err}");
@@ -2482,12 +2519,10 @@ impl AgentPanelView {
         }
         {
             let mut state = self.state.lock().expect("agent panel state");
-            if state.busy {
-                return;
-            }
             state.draft = text;
             let end = state.draft.chars().count();
             state.field_state.cursor = end;
+            state.input_focused = true;
         }
         self.bump();
         ctx.notify();
@@ -2691,7 +2726,7 @@ impl AgentPanelView {
             true,
         );
         let model_chip = self.composer_labeled_chip(
-            composer_model_chip_label(model_rate),
+            composer_model_chip_label(&self.model_choices, model_rate),
             Some(AgentPanelAction::ToggleModelMenu),
             None,
             true,
@@ -2732,7 +2767,7 @@ impl AgentPanelView {
             placeholder,
             self.font,
             input_focused,
-            busy,
+            false,
             caret_blink,
             cursor,
         );
@@ -2742,15 +2777,12 @@ impl AgentPanelView {
             ctx.dispatch_typed_action(AgentPanelAction::TextFieldEdit(action));
         })
         .focused(input_focused)
-        .disabled(busy)
+        .disabled(false)
         .ime_preedit(!marked.is_empty())
         .on_keydown({
             let busy = busy;
             let draft_empty = draft_empty;
             move |ctx, keystroke| {
-                if busy {
-                    return DispatchEventResult::PropagateToParent;
-                }
                 match keystroke.key.as_str() {
                     "enter" | "return" => {
                         if keystroke.shift {
@@ -2758,7 +2790,11 @@ impl AgentPanelView {
                                 TextFieldEditAction::InsertNewline,
                             ));
                         } else if !draft_empty {
-                            ctx.dispatch_typed_action(AgentPanelAction::Send);
+                            if busy {
+                                ctx.dispatch_typed_action(AgentPanelAction::QueueFollowUp);
+                            } else {
+                                ctx.dispatch_typed_action(AgentPanelAction::Send);
+                            }
                         }
                         DispatchEventResult::StopPropagation
                     }
@@ -2951,8 +2987,10 @@ impl AgentPanelView {
         if model_menu_open {
             stack.add_child(
                 Align::new(
-                    Container::new(composer_menus::render_model_rate_menu(
-                        self.font, model_rate,
+                    Container::new(composer_menus::render_model_menu(
+                        self.font,
+                        &self.model_choices,
+                        model_rate,
                     ))
                     .with_margin_bottom(bar_lift)
                     .finish(),
@@ -3126,6 +3164,7 @@ impl View for AgentPanelView {
         let project_delete = state.project_delete.clone();
         let sidebar_hover = state.sidebar_hover.clone();
         let project_head_hover = state.project_head_hover.clone();
+        let expanded_tool_lines = state.expanded_tool_lines.clone();
         drop(state);
 
         let input_border = if input_focused {
@@ -3134,9 +3173,7 @@ impl View for AgentPanelView {
             theme::border_bright()
         };
 
-        let placeholder = if busy {
-            "执行中…"
-        } else if Self::is_idle_composer_state(&active_sidebar_session_id) {
+        let placeholder = if Self::is_idle_composer_state(&active_sidebar_session_id) {
             "描述你想让 AI 执行的任务…"
         } else {
             "输入后续修改或追问…"
@@ -3148,6 +3185,7 @@ impl View for AgentPanelView {
             lines: lines.to_vec(),
             thinking,
             elapsed_seconds,
+            expanded_tool_lines: expanded_tool_lines.clone(),
         };
 
         let mut composer_col =
@@ -3485,6 +3523,10 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::SelectAccessMode(mode) => self.select_access_mode(*mode, ctx),
             AgentPanelAction::ToggleAccessMenu => self.toggle_access_menu(ctx),
             AgentPanelAction::SelectModelRate(rate) => self.select_model_rate(*rate, ctx),
+            AgentPanelAction::SelectAgentModel {
+                provider_id,
+                model,
+            } => self.select_agent_model(provider_id.clone(), model.clone(), ctx),
             AgentPanelAction::ToggleModelMenu => self.toggle_model_menu(ctx),
             AgentPanelAction::ToggleAddMenu => self.toggle_add_menu(ctx),
             AgentPanelAction::OpenFilesModal => self.open_files_modal(ctx),
@@ -3632,6 +3674,24 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::CopyUserPrompt(text) => self.copy_user_prompt(text, ctx),
             AgentPanelAction::CopyAssistantText(text) => self.copy_assistant_text(text, ctx),
             AgentPanelAction::ForkFromLine { line_index } => self.fork_from_line(*line_index, ctx),
+            AgentPanelAction::ToggleToolLineExpand { line_index } => {
+                if let Ok(mut panel) = self.state.lock() {
+                    if !panel.expanded_tool_lines.remove(line_index) {
+                        panel.expanded_tool_lines.insert(*line_index);
+                    }
+                }
+                self.bump();
+                ctx.notify();
+            }
+            AgentPanelAction::QueueFollowUp => {
+                if let Ok(mut panel) = self.state.lock() {
+                    if !panel.draft.trim().is_empty() {
+                        panel.pending_send = true;
+                        panel.status = "已排队，完成后发送".into();
+                    }
+                }
+                ctx.notify();
+            }
             AgentPanelAction::CopySelection => self.copy_selection(ctx),
             AgentPanelAction::ClearAndUnfocus => {
                 if let Ok(mut panel) = self.state.lock() {
@@ -3664,13 +3724,11 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::TextFieldEdit(edit) => {
                 if let Ok(mut panel) = self.state.lock() {
-                    if !panel.busy {
-                        let edit = edit.clone();
-                        let mut draft = std::mem::take(&mut panel.draft);
-                        panel.field_state.apply(&mut draft, &edit);
-                        panel.draft = draft;
-                        panel.input_focused = true;
-                    }
+                    let edit = edit.clone();
+                    let mut draft = std::mem::take(&mut panel.draft);
+                    panel.field_state.apply(&mut draft, &edit);
+                    panel.draft = draft;
+                    panel.input_focused = true;
                 }
                 sync_caret_blink(self, ctx);
                 self.bump();
@@ -3734,8 +3792,11 @@ impl TypedActionView for AgentPanelView {
                 rate.chip_label(),
                 WarpA11yRole::MenuItemRole,
             ),
+            AgentPanelAction::SelectAgentModel { .. } => {
+                AccessibilityContent::new_without_help("选择模型", WarpA11yRole::MenuItemRole)
+            }
             AgentPanelAction::ToggleModelMenu => {
-                AccessibilityContent::new_without_help("模型倍率菜单", WarpA11yRole::ButtonRole)
+                AccessibilityContent::new_without_help("模型菜单", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::DismissComposerMenus => {
                 return ActionAccessibilityContent::Empty;
@@ -3827,6 +3888,12 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::ForkFromLine { .. } => {
                 AccessibilityContent::new_without_help("在新会话中继续", WarpA11yRole::ButtonRole)
             }
+            AgentPanelAction::ToggleToolLineExpand { .. } => {
+                AccessibilityContent::new_without_help("展开或折叠命令", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::QueueFollowUp => {
+                AccessibilityContent::new_without_help("排队追问", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::CopySelection => {
                 AccessibilityContent::new_without_help("复制选中文本", WarpA11yRole::ButtonRole)
             }
@@ -3861,7 +3928,7 @@ impl CaretBlinkHost for AgentPanelView {
     fn caret_input_focused(&self) -> bool {
         self.state
             .lock()
-            .map(|panel| panel.input_focused && !panel.busy)
+            .map(|panel| panel.input_focused)
             .unwrap_or(false)
     }
 }
@@ -3905,6 +3972,7 @@ mod tests {
             sidebar_search_focused: false,
             archived_ids: HashSet::new(),
             expanded_project_ids: HashSet::new(),
+            expanded_tool_lines: HashSet::new(),
             project_create: None,
             project_row_menu: None,
             project_delete: None,
@@ -4124,26 +4192,13 @@ mod tests {
     }
 
     #[test]
-    fn cursor_fallback_completion_appends_assistant_line() {
-        let mut panel = sample_panel(vec![], "");
-        AgentPanelView::append_chat_completion_transcript(
-            &mut panel,
-            AgentTurnBackend::CursorFallback,
-            "任务完成。",
-        );
-        assert_eq!(panel.lines.len(), 1);
-        assert_eq!(panel.lines[0].channel, "assistant");
-        assert_eq!(panel.lines[0].text, "任务完成。");
-    }
-
-    #[test]
     fn composer_model_chip_label_includes_rate() {
         assert_eq!(
-            composer_model_chip_label(AgentModelRate::X03),
+            composer_model_chip_label(&[], AgentModelRate::X03),
             "GPT-5.5 ×0.3"
         );
         assert_eq!(
-            composer_model_chip_label(AgentModelRate::X01),
+            composer_model_chip_label(&[], AgentModelRate::X01),
             "GPT-5.5 ×0.1"
         );
     }
@@ -4218,5 +4273,55 @@ mod tests {
         assert!(panel.resume_id.is_none());
         assert_eq!(panel.active_sidebar_session_id, session_id);
         assert_ne!(session_id, "session-src");
+    }
+
+    #[test]
+    fn take_pending_send_only_when_idle() {
+        let mut panel = sample_panel(vec![], "");
+        panel.busy = true;
+        panel.pending_send = true;
+        assert!(!AgentPanelView::take_pending_send_if_idle(&mut panel));
+        assert!(panel.pending_send);
+        panel.busy = false;
+        assert!(AgentPanelView::take_pending_send_if_idle(&mut panel));
+        assert!(!panel.pending_send);
+        assert!(!AgentPanelView::take_pending_send_if_idle(&mut panel));
+    }
+
+    #[test]
+    fn text_field_edit_applies_while_busy() {
+        let mut panel = sample_panel(vec![], "");
+        panel.busy = true;
+        panel.draft.clear();
+        panel.field_state.cursor = 0;
+        let mut draft = std::mem::take(&mut panel.draft);
+        panel.field_state.apply(
+            &mut draft,
+            &TextFieldEditAction::TypedCharacters("追问".into()),
+        );
+        panel.draft = draft;
+        assert_eq!(panel.draft, "追问");
+        assert!(panel.busy);
+    }
+
+    #[test]
+    fn queue_follow_up_sets_pending_while_busy() {
+        let mut panel = sample_panel(vec![], "");
+        panel.busy = true;
+        panel.draft = "下一轮".into();
+        panel.pending_send = true;
+        assert!(panel.pending_send);
+        assert!(panel.busy);
+        assert!(!AgentPanelView::take_pending_send_if_idle(&mut panel));
+    }
+
+    #[test]
+    fn toggle_tool_line_expand_roundtrip() {
+        let mut panel = sample_panel(vec![], "");
+        assert!(!panel.expanded_tool_lines.contains(&2));
+        panel.expanded_tool_lines.insert(2);
+        assert!(panel.expanded_tool_lines.contains(&2));
+        panel.expanded_tool_lines.remove(&2);
+        assert!(!panel.expanded_tool_lines.contains(&2));
     }
 }

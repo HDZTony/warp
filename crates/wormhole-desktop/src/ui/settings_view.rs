@@ -17,6 +17,7 @@ use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
+use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
@@ -39,6 +40,7 @@ use wormhole_desktop_core::{
 pub enum SettingsPage {
     Account,
     Email,
+    Agent,
     Cluster,
     Relay,
     SharedPath,
@@ -52,6 +54,7 @@ impl SettingsPage {
         &[
             SettingsPage::Account,
             SettingsPage::Email,
+            SettingsPage::Agent,
             SettingsPage::Cluster,
             SettingsPage::Relay,
             SettingsPage::SharedPath,
@@ -65,6 +68,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Account => "账号",
             SettingsPage::Email => "邮箱",
+            SettingsPage::Agent => "Agent",
             SettingsPage::Cluster => "设置集群",
             SettingsPage::Relay => "P2P Relay",
             SettingsPage::SharedPath => "共享文件",
@@ -78,6 +82,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Account => ("ACCOUNT", "账号"),
             SettingsPage::Email => ("CONNECTORS", "邮箱"),
+            SettingsPage::Agent => ("AGENT", "Codex / bb-browser"),
             SettingsPage::Cluster => ("CLUSTER", "设置集群"),
             SettingsPage::Relay => ("P2P", "Relay"),
             SettingsPage::SharedPath => ("DATA", "共享文件存放位置"),
@@ -89,7 +94,7 @@ impl SettingsPage {
 
     fn group(self) -> &'static str {
         match self {
-            SettingsPage::Account | SettingsPage::Email => "常规",
+            SettingsPage::Account | SettingsPage::Email | SettingsPage::Agent => "常规",
             SettingsPage::Cluster | SettingsPage::Relay => "集群",
             SettingsPage::SharedPath => "数据",
             SettingsPage::Cache | SettingsPage::Archive => "存储",
@@ -100,6 +105,7 @@ impl SettingsPage {
     fn icon_path(self) -> &'static str {
         match self {
             SettingsPage::Account | SettingsPage::Email => "agent-user.svg",
+            SettingsPage::Agent => "tab-agent.svg",
             SettingsPage::Cluster => "tab-devices.svg",
             SettingsPage::Relay => "cluster-refresh.svg",
             SettingsPage::SharedPath => "share-file.svg",
@@ -114,6 +120,9 @@ impl SettingsPage {
         let mut haystack = format!("{} {} {} {}", self.group(), self.title(), eyebrow, sub);
         if self == SettingsPage::Email {
             haystack.push_str(" email gmail outlook");
+        }
+        if self == SettingsPage::Agent {
+            haystack.push_str(" codex cursor bb-browser mcp computer use llm api key");
         }
         if self == SettingsPage::VirtualMachine {
             haystack.push_str(" 工具箱 toolbox runner");
@@ -224,6 +233,7 @@ pub struct SettingsView {
     cache_busy: bool,
     scroll: ClippedScrollStateHandle,
     toolbox: ViewHandle<ToolboxView>,
+    agent_providers: ViewHandle<AgentProvidersView>,
 }
 
 impl SettingsView {
@@ -242,6 +252,8 @@ impl SettingsView {
         let archive_expanded = Self::load_archive_expanded(&core);
         let toolbox =
             ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone()));
+        let agent_providers =
+            ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -283,6 +295,7 @@ impl SettingsView {
             cache_busy: false,
             scroll: ClippedScrollStateHandle::new(),
             toolbox,
+            agent_providers,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
@@ -708,6 +721,9 @@ impl SettingsView {
         match self.selected_page {
             SettingsPage::Account => col.add_child(self.account_block()),
             SettingsPage::Email => col.add_child(self.email_connectors_block()),
+            SettingsPage::Agent => {
+                col.add_child(ChildView::new(&self.agent_providers).finish())
+            }
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
             SettingsPage::Relay => col.add_child(self.relay_block()),
             SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
@@ -2114,12 +2130,18 @@ mod tests {
         assert!(SettingsPage::Account.matches_query("账号"));
         assert!(SettingsPage::Relay.matches_query("p2p"));
         assert!(SettingsPage::Email.matches_query("gmail"));
+        assert!(SettingsPage::Agent.matches_query("bb-browser"));
+        assert!(SettingsPage::Agent.matches_query("codex"));
         assert!(SettingsPage::VirtualMachine.matches_query("工具箱"));
         assert!(SettingsPage::VirtualMachine.matches_query("toolbox"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert_eq!(
             settings_pages_in_group("常规"),
-            vec![SettingsPage::Account, SettingsPage::Email]
+            vec![
+                SettingsPage::Account,
+                SettingsPage::Email,
+                SettingsPage::Agent
+            ]
         );
         assert_eq!(
             settings_pages_in_group("集群"),

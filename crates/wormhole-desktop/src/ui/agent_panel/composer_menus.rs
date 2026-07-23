@@ -1,4 +1,4 @@
-//! Composer access / model-rate popovers — floating HUD menus above the composer bar.
+//! Composer access / model popovers — floating HUD menus above the composer bar.
 
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
@@ -6,16 +6,17 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
+use wormhole_desktop_core::agent_provider_commands::AgentModelChoiceDto;
+use wormhole_desktop_core::warp_embed_prefs::{AgentAccessMode, AgentModelRate};
 
 use super::AgentPanelAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{popover_menu_header, popover_shell_with_radius, section_hint};
 use crate::ui::theme;
 use crate::ui_text;
-use wormhole_desktop_core::warp_embed_prefs::{AgentAccessMode, AgentModelRate};
 
 pub const ACCESS_POPOVER_WIDTH: f32 = 300.0;
-pub const MODEL_RATE_POPOVER_WIDTH: f32 = 280.0;
+pub const MODEL_RATE_POPOVER_WIDTH: f32 = 320.0;
 
 pub fn access_label(mode: AgentAccessMode) -> &'static str {
     match mode {
@@ -24,8 +25,17 @@ pub fn access_label(mode: AgentAccessMode) -> &'static str {
     }
 }
 
-pub fn composer_model_chip_label(rate: AgentModelRate) -> &'static str {
-    rate.chip_label()
+pub fn composer_model_chip_label(
+    choices: &[AgentModelChoiceDto],
+    fallback_rate: AgentModelRate,
+) -> String {
+    if let Some(active) = choices.iter().find(|c| c.is_active) {
+        return active.label.clone();
+    }
+    if let Some(first) = choices.first() {
+        return first.label.clone();
+    }
+    fallback_rate.chip_label().to_string()
 }
 
 fn access_option(
@@ -162,32 +172,74 @@ fn model_radio(selected: bool) -> Box<dyn Element> {
     .finish()
 }
 
-fn model_rate_option(font: FamilyId, rate: AgentModelRate, selected: bool) -> Box<dyn Element> {
-    let speed_color = if selected {
-        theme::accent()
+fn model_choice_option(font: FamilyId, choice: &AgentModelChoiceDto) -> Box<dyn Element> {
+    let provider_id = choice.provider_id.clone();
+    let model = choice.model.clone();
+    let selected = choice.is_active;
+    let source_hint = if choice.source == "key_pool" {
+        "Key Pool（平台默认）"
     } else {
-        theme::muted()
+        "自备 API Key"
     };
-    // Same shape as access_option: single Min column, no Stretch/Max/Expanded.
-    // Nested row + Stretch column under Align popover measure → infinite width panic.
     let mut title_row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
     title_row.add_child(model_radio(selected));
     title_row.add_child(
         Container::new(
-            ui_text::body("GPT-5.5", font)
+            ui_text::body(choice.label.clone(), font)
                 .with_color(theme::text())
                 .finish(),
         )
         .with_padding_left(10.0)
         .finish(),
     );
+    let body = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_child(title_row.finish())
+        .with_child(
+            Container::new(section_hint(source_hint, font))
+                .with_padding_top(4.0)
+                .finish(),
+        )
+        .finish();
+
+    Container::new(
+        EventHandler::new(body)
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::SelectAgentModel {
+                    provider_id: provider_id.clone(),
+                    model: model.clone(),
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+    )
+    .with_padding_left(14.0)
+    .with_padding_right(14.0)
+    .with_padding_top(10.0)
+    .with_padding_bottom(10.0)
+    .with_background(if selected {
+        theme::accent_cool_bg(26)
+    } else {
+        pathfinder_color::ColorU::transparent_black()
+    })
+    .finish()
+}
+
+fn model_rate_option(font: FamilyId, rate: AgentModelRate, selected: bool) -> Box<dyn Element> {
+    let speed_color = if selected {
+        theme::accent()
+    } else {
+        theme::muted()
+    };
+    let mut title_row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+    title_row.add_child(model_radio(selected));
     title_row.add_child(
         Container::new(
             ui_text::body(rate.rate_label(), font)
                 .with_color(theme::accent_cool())
                 .finish(),
         )
-        .with_padding_left(6.0)
+        .with_padding_left(10.0)
         .finish(),
     );
     title_row.add_child(
@@ -229,44 +281,41 @@ fn model_rate_option(font: FamilyId, rate: AgentModelRate, selected: bool) -> Bo
     .finish()
 }
 
-fn model_rate_footnote(font: FamilyId, rate: AgentModelRate) -> Box<dyn Element> {
-    let prefix = format!("{} {}", rate.rate_label(), rate.speed_label());
-    let mut line = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
-    line.add_child(
-        ui_text::body(prefix, font)
-            .with_color(theme::accent_cool())
-            .finish(),
-    );
-    line.add_child(
-        Container::new(
-            ui_text::body(format!(" — {}", rate.footnote_detail()), font)
-                .with_color(theme::muted())
-                .finish(),
-        )
-        .with_padding_left(2.0)
-        .finish(),
-    );
-    Container::new(line.finish())
-        .with_margin_left(10.0)
-        .with_margin_right(10.0)
-        .with_margin_top(4.0)
-        .with_margin_bottom(6.0)
-        .with_padding_left(10.0)
-        .with_padding_right(10.0)
-        .with_padding_top(8.0)
-        .with_padding_bottom(8.0)
-        .with_background(theme::canvas())
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-        .finish()
-}
-
-pub fn render_model_rate_menu(font: FamilyId, rate: AgentModelRate) -> Box<dyn Element> {
+/// Model picker: Key Pool + BYOK choices; Key Pool also keeps rate tiers.
+pub fn render_model_menu(
+    font: FamilyId,
+    choices: &[AgentModelChoiceDto],
+    rate: AgentModelRate,
+) -> Box<dyn Element> {
     let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
-    col.add_child(popover_menu_header(font, "模型倍率"));
-    for option in AgentModelRate::all() {
-        col.add_child(model_rate_option(font, option, option == rate));
+    col.add_child(popover_menu_header(font, "模型"));
+    if choices.is_empty() {
+        col.add_child(
+            Container::new(section_hint(
+                "登录后使用 Key Pool，或在设置 → Agent 填写自备 API Key。",
+                font,
+            ))
+            .with_padding_left(14.0)
+            .with_padding_right(14.0)
+            .with_padding_bottom(10.0)
+            .finish(),
+        );
+    } else {
+        for choice in choices {
+            col.add_child(model_choice_option(font, choice));
+        }
     }
-    col.add_child(model_rate_footnote(font, rate));
+
+    let key_pool_active = choices
+        .iter()
+        .any(|c| c.is_active && c.source == "key_pool");
+    if key_pool_active || choices.is_empty() {
+        col.add_child(popover_menu_header(font, "Key Pool 倍率"));
+        for option in AgentModelRate::all() {
+            col.add_child(model_rate_option(font, option, option == rate));
+        }
+    }
+
     popover_shell_with_radius(MODEL_RATE_POPOVER_WIDTH, 14.0, col.finish())
 }
 
@@ -275,18 +324,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn composer_model_chip_label_matches_rate() {
+    fn composer_model_chip_falls_back_to_rate_label() {
         assert_eq!(
-            composer_model_chip_label(AgentModelRate::X03),
+            composer_model_chip_label(&[], AgentModelRate::X03),
             "GPT-5.5 ×0.3"
         );
+    }
+
+    #[test]
+    fn composer_model_chip_prefers_active_choice() {
+        let choices = vec![AgentModelChoiceDto {
+            id: "deepseek:deepseek-v4-pro".into(),
+            provider_id: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+            label: "DeepSeek · DeepSeek V4 Pro".into(),
+            source: "byok".into(),
+            is_active: true,
+        }];
         assert_eq!(
-            composer_model_chip_label(AgentModelRate::X01),
-            "GPT-5.5 ×0.1"
-        );
-        assert_eq!(
-            composer_model_chip_label(AgentModelRate::X05),
-            "GPT-5.5 ×0.5"
+            composer_model_chip_label(&choices, AgentModelRate::X03),
+            "DeepSeek · DeepSeek V4 Pro"
         );
     }
 }
