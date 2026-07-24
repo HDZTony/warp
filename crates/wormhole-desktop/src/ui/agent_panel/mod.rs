@@ -1,6 +1,7 @@
 mod capability_marquee;
 mod composer_add;
 mod composer_menus;
+mod ff_onboarding;
 mod project_create_modal;
 mod project_delete_modal;
 pub mod sidebar;
@@ -17,6 +18,7 @@ use composer_add::{
     DEMO_MEDIA,
 };
 use composer_menus::{access_label, composer_model_chip_label};
+use ff_onboarding::FfOnboardingGroup;
 use pathfinder_color::ColorU;
 use project_create_modal::{ProjectCreateState, ProjectCreateStep};
 use project_delete_modal::ProjectDeleteState;
@@ -35,6 +37,7 @@ use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmCha
 use wormhole_desktop_core::agent_provider_commands::{
     self, AgentModelChoiceDto, SelectAgentModelParams,
 };
+use wormhole_desktop_core::ff_onboarding_prefs::{self, FfOnboardingSelections};
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use wormhole_desktop_core::warp_embed_prefs::{
     self, AgentAccessMode, AgentModelRate, PreferredAgent, WarpEmbedPrefs,
@@ -42,7 +45,8 @@ use wormhole_desktop_core::warp_embed_prefs::{
 use wormhole_desktop_core::{
     agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback, agent_list_sessions,
     agent_read_local_session_events, agent_start_session_with_codex_fallback, agent_status,
-    agent_stop_session, AgentSessionDto, AgentStartRequest, AgentTurnBackend, CODEX_TURN_CANCELLED,
+    agent_stop_session, cloud_auth_status, AgentSessionDto, AgentStartRequest, AgentTurnBackend,
+    CODEX_TURN_CANCELLED,
 };
 
 use crate::ui::clipboard::write_clipboard_text;
@@ -107,6 +111,13 @@ pub enum AgentPanelAction {
     ApplyCapabilityPrompt(String),
     /// Persistently hide the idle capability marquee.
     DismissCapabilityMarquee,
+    /// Toggle a chip on the FF first-run preference page.
+    ToggleFfOnboardingOption {
+        group: FfOnboardingGroup,
+        id: String,
+    },
+    SkipFfOnboarding,
+    SubmitFfOnboarding,
     FocusInput,
     NewConversation,
     LaunchTerminal,
@@ -283,6 +294,11 @@ pub struct AgentPanelView {
     marquee_chip_hovers: Arc<capability_marquee::ChipHoverBank>,
     /// When true, idle capability marquee is not shown (`warp-embed.json`).
     hide_capability_marquee: bool,
+    /// FF first-run preference overlay (`.ff-onboarding`).
+    ff_onboarding_visible: bool,
+    ff_onboarding_account: String,
+    ff_onboarding_draft: FfOnboardingSelections,
+    ff_onboarding_scroll: ClippedScrollStateHandle,
 }
 
 impl AgentPanelView {
@@ -295,6 +311,9 @@ impl AgentPanelView {
         let hide_capability_marquee = prefs.hide_capability_marquee;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         let data_dir = core.data_dir();
+        let ff_account = Self::resolve_ff_onboarding_account(&core);
+        let ff_onboarding_visible =
+            !ff_onboarding_prefs::is_completed(&data_dir, &ff_account);
         let archived_ids = sidebar::load_archived_ids(&data_dir);
         let (projects, expanded_project_ids) = sidebar::load_projects_state(&data_dir);
         let mut view = Self {
@@ -366,9 +385,80 @@ impl AgentPanelView {
             marquee_hover: Arc::new(Mutex::new(MouseState::default())),
             marquee_chip_hovers: capability_marquee::ChipHoverBank::new(),
             hide_capability_marquee,
+            ff_onboarding_visible,
+            ff_onboarding_account: ff_account,
+            ff_onboarding_draft: FfOnboardingSelections::empty(),
+            ff_onboarding_scroll: ClippedScrollStateHandle::default(),
         };
         view.refresh_model_choices(ctx);
         view
+    }
+
+    fn resolve_ff_onboarding_account(core: &CoreHandle) -> String {
+        let user_id = core.block_on(async {
+            cloud_auth_status(core.app_state())
+                .await
+                .ok()
+                .and_then(|s| s.user_id)
+        });
+        ff_onboarding_prefs::normalize_account_id(user_id.as_deref())
+    }
+
+    fn sync_ff_onboarding_account(&mut self) {
+        let account = Self::resolve_ff_onboarding_account(&self.core);
+        if account == self.ff_onboarding_account {
+            return;
+        }
+        self.ff_onboarding_account = account.clone();
+        self.ff_onboarding_draft = FfOnboardingSelections::empty();
+        self.ff_onboarding_visible =
+            !ff_onboarding_prefs::is_completed(&self.core.data_dir(), &account);
+    }
+
+    fn toggle_ff_onboarding_option(&mut self, group: FfOnboardingGroup, id: &str) {
+        let list = match group {
+            FfOnboardingGroup::Career => &mut self.ff_onboarding_draft.career,
+            FfOnboardingGroup::Interests => &mut self.ff_onboarding_draft.interests,
+            FfOnboardingGroup::Daily => &mut self.ff_onboarding_draft.daily,
+        };
+        if let Some(pos) = list.iter().position(|x| x == id) {
+            list.remove(pos);
+        } else {
+            list.push(id.to_string());
+        }
+    }
+
+    fn skip_ff_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
+        let data_dir = self.core.data_dir();
+        if let Err(err) = ff_onboarding_prefs::complete_onboarding(
+            &data_dir,
+            &self.ff_onboarding_account,
+            true,
+            FfOnboardingSelections::empty(),
+        ) {
+            tracing::warn!("failed to persist FF onboarding skip: {err}");
+        }
+        self.ff_onboarding_visible = false;
+        self.ff_onboarding_draft = FfOnboardingSelections::empty();
+        ctx.notify();
+    }
+
+    fn submit_ff_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.ff_onboarding_draft.all_groups_complete() {
+            return;
+        }
+        let data_dir = self.core.data_dir();
+        let selections = self.ff_onboarding_draft.clone();
+        if let Err(err) = ff_onboarding_prefs::complete_onboarding(
+            &data_dir,
+            &self.ff_onboarding_account,
+            false,
+            selections,
+        ) {
+            tracing::warn!("failed to persist FF onboarding: {err}");
+        }
+        self.ff_onboarding_visible = false;
+        ctx.notify();
     }
 
     fn unix_now_secs() -> u64 {
@@ -647,6 +737,7 @@ impl AgentPanelView {
         }
         self.visible = visible;
         if visible {
+            self.sync_ff_onboarding_account();
             if let Ok(mut panel) = self.state.lock() {
                 panel.input_focused = true;
                 panel.sidebar_search_focused = false;
@@ -3504,6 +3595,14 @@ impl View for AgentPanelView {
                 sidebar_hover.as_deref(),
             ));
         }
+        if self.ff_onboarding_visible {
+            root_stack.add_child(ff_onboarding::render(
+                self.font,
+                self.mono,
+                &self.ff_onboarding_draft,
+                self.ff_onboarding_scroll.clone(),
+            ));
+        }
 
         tab_content_fill(
             EventHandler::new(root_stack.finish())
@@ -3633,6 +3732,12 @@ impl TypedActionView for AgentPanelView {
                 self.apply_capability_prompt(prompt.clone(), ctx)
             }
             AgentPanelAction::DismissCapabilityMarquee => self.dismiss_capability_marquee(ctx),
+            AgentPanelAction::ToggleFfOnboardingOption { group, id } => {
+                self.toggle_ff_onboarding_option(*group, id);
+                ctx.notify();
+            }
+            AgentPanelAction::SkipFfOnboarding => self.skip_ff_onboarding(ctx),
+            AgentPanelAction::SubmitFfOnboarding => self.submit_ff_onboarding(ctx),
             AgentPanelAction::FocusInput => {
                 if let Ok(mut panel) = self.state.lock() {
                     if !panel.busy {
@@ -3898,6 +4003,15 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DismissCapabilityMarquee => {
                 AccessibilityContent::new_without_help("以后不再显示", WarpA11yRole::ButtonRole)
             }
+            AgentPanelAction::ToggleFfOnboardingOption { .. } => {
+                AccessibilityContent::new_without_help("切换偏好选项", WarpA11yRole::CheckboxRole)
+            }
+            AgentPanelAction::SkipFfOnboarding => {
+                AccessibilityContent::new_without_help("暂时跳过首次设置", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::SubmitFfOnboarding => {
+                AccessibilityContent::new_without_help("保存并进入 FF", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::SelectProject(_) | AgentPanelAction::SelectSession(_) => {
                 AccessibilityContent::new_without_help("选择侧栏项", WarpA11yRole::MenuItemRole)
             }
@@ -4119,6 +4233,17 @@ mod tests {
         assert!(AgentPanelView::is_idle_composer_state(""));
         // Idle + hide flag means render path must omit marquee (see render idle_stack).
         assert!(AgentPanelView::is_idle_composer_state("") && hidden.hide_capability_marquee);
+    }
+
+    #[test]
+    fn ff_onboarding_submit_requires_all_groups() {
+        let mut draft = FfOnboardingSelections::empty();
+        assert!(!draft.all_groups_complete());
+        draft.career.push("student".into());
+        draft.interests.push("gaming".into());
+        assert!(!draft.all_groups_complete());
+        draft.daily.push("learning".into());
+        assert!(draft.all_groups_complete());
     }
 
     #[test]

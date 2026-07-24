@@ -1177,6 +1177,17 @@ impl EventLoop {
                     })),
                 }
             }
+            // Cursor left the OS window: synthesize an off-window MouseMoved so
+            // Hoverable elements clear hover (e.g. capability marquee unpauses when
+            // the pointer exits via the right edge without crossing other UI).
+            WindowEvent::CursorLeft { .. } => Some(ConvertedEvent::Event(
+                crate::event::Event::MouseMoved {
+                    position: vec2f(-1.0, -1.0),
+                    cmd: window_state.modifiers.super_key(),
+                    shift: window_state.modifiers.shift_key(),
+                    is_synthetic: false,
+                },
+            )),
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
                     let click_count =
