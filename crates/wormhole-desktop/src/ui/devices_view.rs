@@ -130,6 +130,10 @@ pub struct DevicesView {
     workspace_status: String,
     workspace_loading: bool,
     workspace_selected_app: String,
+    workspace_app_picker_open: bool,
+    workspace_app_search: String,
+    workspace_app_search_field: TextFieldState,
+    workspace_app_search_focused: bool,
     workspace_dismissed_approval: Option<String>,
     workspace_auto_opened_job: Option<String>,
     bootstrap_busy: bool,
@@ -219,9 +223,13 @@ impl DevicesView {
             workspace_vm_candidates: Vec::new(),
             workspace_jobs: Vec::new(),
             workspace_remote_job: None,
-            workspace_status: "选择远端文件以检测来源电脑运行器".into(),
+            workspace_status: "选择远端文件以检测远程虚拟机运行器".into(),
             workspace_loading: false,
             workspace_selected_app: "default".into(),
+            workspace_app_picker_open: false,
+            workspace_app_search: String::new(),
+            workspace_app_search_field: TextFieldState::new(),
+            workspace_app_search_focused: false,
             workspace_dismissed_approval: None,
             workspace_auto_opened_job: None,
             bootstrap_busy: false,
@@ -729,6 +737,12 @@ impl DevicesView {
         let preference_file = entry.name.clone();
         let entry_id = entry.entry_id.clone();
         self.selected_share_file = Some(entry_name);
+        if self.workspace_app_picker_open {
+            self.workspace_app_picker_open = false;
+            self.workspace_app_search_focused = false;
+            self.workspace_app_search.clear();
+            self.workspace_app_search_field = TextFieldState::new();
+        }
         self.workspace_selected_app = recommended_workspace_app(&preference_file).to_string();
         if self
             .workspace_remote_job
@@ -840,16 +854,17 @@ impl DevicesView {
 
     fn update_workspace_status_from_selection(&mut self) {
         let Some(entry) = self.selected_share_entry() else {
-            self.workspace_status = "选择远端文件以检测来源电脑运行器".into();
+            self.workspace_status = "选择远端文件以检测远程虚拟机运行器".into();
             return;
         };
         let Some(author) = entry.version_author.as_deref() else {
             self.workspace_status =
-                "文件缺少 SyncIndex 来源节点，请在来源电脑重新扫描后刷新".into();
+                "文件缺少 SyncIndex 来源节点，暂时无法定位远程虚拟机。请在来源电脑重新扫描后刷新"
+                    .into();
             return;
         };
         let Some(worker) = self.workspace_worker_for_author(author) else {
-            self.workspace_status = "来源电脑尚未准备 Ubuntu 工具运行器".into();
+            self.workspace_status = "远程虚拟机尚未准备 Ubuntu 工具运行器".into();
             return;
         };
         if workspace_worker_supports_app(worker, &self.workspace_selected_app) {
@@ -879,7 +894,7 @@ impl DevicesView {
         params.requested_app = Some(self.workspace_selected_app.clone());
         let entry_name = entry.name.clone();
         self.share_file_busy = true;
-        self.workspace_status = format!("正在来源电脑的隔离运行器中打开 {entry_name}…");
+        self.workspace_status = format!("正在远程虚拟机的隔离运行器中打开 {entry_name}…");
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -893,7 +908,7 @@ impl DevicesView {
                         "会话 {} 已提交，正在等待 Ubuntu 运行器就绪",
                         session.session_id
                     ),
-                    Err(error) => format!("来源电脑运行器打开失败: {error}"),
+                    Err(error) => format!("远程虚拟机打开失败: {error}"),
                 };
                 ctx.notify();
             },
@@ -1011,33 +1026,161 @@ impl DevicesView {
         ctx.notify();
     }
 
-    fn workspace_next_app(&mut self, ctx: &mut ViewContext<Self>) {
+    fn open_workspace_app_picker(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(entry) = self.selected_share_entry() else {
             return;
         };
         let file_name = entry.name.clone();
-        let apps = workspace_apps_for_file(&file_name);
-        let current = apps
+        let installed = self.workspace_installed_apps_for_file(&file_name);
+        if !installed
             .iter()
-            .position(|app| *app == self.workspace_selected_app)
-            .unwrap_or(0);
-        self.workspace_selected_app = apps[(current + 1) % apps.len()].to_string();
+            .any(|app| *app == self.workspace_selected_app.as_str())
+        {
+            self.workspace_selected_app = installed
+                .first()
+                .copied()
+                .unwrap_or_else(|| recommended_workspace_app(&file_name))
+                .to_string();
+        }
+        self.workspace_app_search.clear();
+        self.workspace_app_search_field = TextFieldState::new();
+        self.workspace_app_search_focused = false;
+        self.workspace_app_picker_open = true;
+        self.close_share_context_menu(ctx);
+        ctx.notify();
+    }
+
+    fn close_workspace_app_picker(&mut self, ctx: &mut ViewContext<Self>) {
+        self.workspace_app_picker_open = false;
+        self.workspace_app_search_focused = false;
+        self.workspace_app_search.clear();
+        self.workspace_app_search_field = TextFieldState::new();
+        ctx.notify();
+    }
+
+    fn select_workspace_app(&mut self, app: String, ctx: &mut ViewContext<Self>) {
+        if workspace_app_catalog_entry(&app).is_none() {
+            self.workspace_status = "此远程虚拟机不支持该文件的打开方式".into();
+            ctx.notify();
+            return;
+        }
+        self.workspace_selected_app = app;
+        self.update_workspace_status_from_selection();
+        ctx.notify();
+    }
+
+    fn edit_workspace_app_search(
+        &mut self,
+        edit: &TextFieldEditAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.workspace_app_search_field
+            .apply(&mut self.workspace_app_search, edit);
+        self.workspace_app_search_focused = true;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn confirm_workspace_app_open(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(entry) = self.selected_share_entry() else {
+            self.close_workspace_app_picker(ctx);
+            return;
+        };
+        let file_name = entry.name.clone();
+        let version_author = entry.version_author.clone();
         let app = self.workspace_selected_app.clone();
+        if !self
+            .workspace_installed_apps_for_file(&file_name)
+            .contains(&app.as_str())
+        {
+            return;
+        }
         let core = self.core.clone();
+        let preference_app = app.clone();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                workspace_save_app_preference(&state, &file_name, &app).await
+                workspace_save_app_preference(&state, &file_name, &preference_app).await
             },
             |view, result, ctx| {
                 if let Err(error) = result {
                     view.workspace_status = format!("保存打开方式失败: {error}");
+                    ctx.notify();
                 }
-                ctx.notify();
             },
         );
+        self.close_workspace_app_picker(ctx);
+        let can_open = version_author.as_deref().is_some_and(|author| {
+            self.workspace_worker_for_author(author)
+                .is_some_and(|worker| {
+                    worker.available
+                        && worker.vm_ready
+                        && workspace_worker_supports_app(worker, &app)
+                })
+        });
+        if can_open {
+            self.workspace_open_selected(ctx);
+        } else {
+            self.workspace_request_provision(ctx);
+        }
+    }
+
+    fn workspace_install_and_open(&mut self, app: String, ctx: &mut ViewContext<Self>) {
+        if workspace_app_catalog_entry(&app).is_none() {
+            return;
+        }
+        self.workspace_selected_app = app;
         self.update_workspace_status_from_selection();
-        ctx.notify();
+        let Some(entry) = self.selected_share_entry() else {
+            self.close_workspace_app_picker(ctx);
+            return;
+        };
+        let file_name = entry.name.clone();
+        let preference_app = self.workspace_selected_app.clone();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                workspace_save_app_preference(&state, &file_name, &preference_app).await
+            },
+            |view, result, ctx| {
+                if let Err(error) = result {
+                    view.workspace_status = format!("保存打开方式失败: {error}");
+                    ctx.notify();
+                }
+            },
+        );
+        self.close_workspace_app_picker(ctx);
+        if self.workspace_remote_job.as_ref().is_some_and(|job| {
+            job.stage == WorkspaceProvisionStage::Failed
+        }) {
+            self.workspace_retry_provision(ctx);
+        } else {
+            self.workspace_request_provision(ctx);
+        }
+    }
+
+    fn workspace_installed_apps_for_file(&self, file_name: &str) -> Vec<&'static str> {
+        let for_file = workspace_apps_for_file(file_name);
+        let Some(author) = self
+            .selected_share_entry()
+            .and_then(|entry| entry.version_author.as_deref())
+        else {
+            return for_file.to_vec();
+        };
+        let Some(worker) = self.workspace_worker_for_author(author) else {
+            return for_file.to_vec();
+        };
+        let supported: Vec<&'static str> = for_file
+            .iter()
+            .copied()
+            .filter(|app| workspace_worker_supports_app(worker, app))
+            .collect();
+        if supported.is_empty() {
+            for_file.to_vec()
+        } else {
+            supported
+        }
     }
 
     pub fn open_node_from_chat(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
@@ -4075,9 +4218,9 @@ impl DevicesView {
         let mut panel = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Max);
-        panel.add_child(section_title("在来源电脑打开", self.font));
+        panel.add_child(section_title("远程虚拟机打开", self.font));
         panel.add_child(section_hint(
-            "应用在来源电脑的隔离运行器中执行，不控制来源桌面。",
+            "应用在远程虚拟机的隔离运行器中执行，不控制任何电脑桌面。",
             self.font,
         ));
 
@@ -4109,12 +4252,12 @@ impl DevicesView {
                 .with_color(theme::muted())
                 .finish(),
         );
-        panel.add_child(section_title("来源电脑 Ubuntu 工具运行器", self.font));
+        panel.add_child(section_title("远程 Ubuntu 工具运行器", self.font));
         panel.add_child(section_hint(
-            "文件不上传云端；客户端仅接收隔离运行器的画面和输入。",
+            "文件通过现有同步索引打开；客户端仅接收隔离运行器的画面和输入。",
             self.font,
         ));
-        panel.add_child(section_title("来源", self.font));
+        panel.add_child(section_title("同步来源", self.font));
         let source = entry
             .version_author
             .as_deref()
@@ -4125,22 +4268,14 @@ impl DevicesView {
                 .with_color(theme::muted())
                 .finish(),
         );
-        panel.add_child(section_title("打开方式", self.font));
-        if self.workspace_selected_app == "onlyoffice" {
-            panel.add_child(status_line(
-                workspace_app_label(&self.workspace_selected_app),
-                self.font,
-                StatusTone::Neutral,
-            ));
-        } else {
-            panel.add_child(self.toolbar_button(
-                workspace_app_label(&self.workspace_selected_app),
-                DevicesAction::WorkspaceNextApp,
-                false,
-                156.0,
-                true,
-            ));
-        }
+        panel.add_child(section_title("虚拟机应用", self.font));
+        panel.add_child(self.toolbar_button(
+            workspace_app_label(&self.workspace_selected_app),
+            DevicesAction::OpenWorkspaceAppPicker,
+            false,
+            220.0,
+            !self.share_file_busy,
+        ));
 
         let tone = match self.workspace_remote_job.as_ref().map(|job| &job.stage) {
             Some(WorkspaceProvisionStage::Failed) => StatusTone::Danger,
@@ -4184,12 +4319,8 @@ impl DevicesView {
         );
         if can_open {
             panel.add_child(self.toolbar_button(
-                if self.workspace_selected_app == "onlyoffice" {
-                    "用 ONLYOFFICE 打开"
-                } else {
-                    "在来源电脑打开"
-                },
-                DevicesAction::WorkspaceOpenSelected,
+                "在远程虚拟机中打开",
+                DevicesAction::OpenWorkspaceAppPicker,
                 false,
                 180.0,
                 !self.share_file_busy,
@@ -4208,8 +4339,8 @@ impl DevicesView {
             ));
         } else if self.workspace_remote_job.is_none() {
             panel.add_child(self.toolbar_button(
-                "请求来源电脑安装",
-                DevicesAction::WorkspaceRequestProvision,
+                "请求准备远程虚拟机",
+                DevicesAction::OpenWorkspaceAppPicker,
                 false,
                 180.0,
                 entry.entry_id.is_some()
@@ -4555,7 +4686,13 @@ impl DevicesView {
             needs_sync,
         ));
         menu.add_child(self.share_context_item(
-            "在 Windows 打开…",
+            "远程打开",
+            Some(DevicesAction::ShareRemoteOpenOnHost(name.clone())),
+            false,
+            can_remote,
+        ));
+        menu.add_child(self.share_context_item(
+            "远程虚拟机打开",
             Some(DevicesAction::ShareRemoteOpenFile(name.clone())),
             false,
             can_remote,
@@ -5059,6 +5196,360 @@ impl DevicesView {
         })
     }
 
+    fn workspace_app_picker_modal(&self) -> Box<dyn Element> {
+        let file_name = self
+            .selected_share_entry()
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| "此文件".into());
+        let installed = self.workspace_installed_apps_for_file(&file_name);
+        let query = self.workspace_app_search.trim().to_ascii_lowercase();
+
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title("远程虚拟机打开", self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body("选择用于打开此文件的程序。", self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::mono(file_name.clone(), self.mono)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_margin_top(14.0)
+            .with_margin_bottom(4.0)
+            .with_uniform_padding(10.0)
+            .with_horizontal_padding(12.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .finish(),
+        );
+
+        let mut section_head = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_main_axis_size(MainAxisSize::Max);
+        section_head.add_child(
+            ui_text::cluster_ctrl("已安装应用", self.mono)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        section_head.add_child(
+            ui_text::cluster_ctrl(format!("{} 个", installed.len()), self.mono)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(section_head.finish())
+                .with_margin_top(14.0)
+                .with_margin_bottom(8.0)
+                .finish(),
+        );
+
+        let mut app_list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if installed.is_empty() {
+            app_list.add_child(
+                ui_text::body("当前文件暂无已就绪的虚拟机程序。", self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            );
+        } else {
+            for app in &installed {
+                app_list.add_child(
+                    Container::new(self.workspace_app_option_row(
+                        app,
+                        *app == self.workspace_selected_app.as_str(),
+                    ))
+                    .with_margin_bottom(8.0)
+                    .finish(),
+                );
+            }
+        }
+        dialog.add_child(app_list.finish());
+
+        dialog.add_child(
+            Container::new(
+                ui_text::cluster_ctrl("搜索虚拟机支持的程序", self.mono)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(16.0)
+            .finish(),
+        );
+
+        let marked = self.workspace_app_search_field.marked_text.clone();
+        let search_field = render_field_with_caret(
+            &self.workspace_app_search,
+            &marked,
+            "输入程序名称，例如 Neovim",
+            self.font,
+            self.workspace_app_search_focused,
+            false,
+            self.caret_blink.visible,
+            self.workspace_app_search_field.cursor,
+        );
+        let search_input = wrap_text_field_focus_on_click(
+            TextFieldInput::builder(search_field, |ctx, action| {
+                ctx.dispatch_typed_action(DevicesAction::WorkspaceAppSearchEdit(action));
+            })
+            .focused(self.workspace_app_search_focused)
+            .ime_preedit(!marked.is_empty())
+            .on_keydown(|ctx, keystroke| match keystroke.key.as_str() {
+                "escape" => {
+                    ctx.dispatch_typed_action(DevicesAction::CloseWorkspaceAppPicker);
+                    DispatchEventResult::StopPropagation
+                }
+                _ => DispatchEventResult::PropagateToParent,
+            })
+            .finish(),
+            |ctx| ctx.dispatch_typed_action(DevicesAction::FocusWorkspaceAppSearch),
+        );
+        dialog.add_child(
+            Container::new(search_input)
+                .with_margin_top(8.0)
+                .with_background(theme::canvas())
+                .with_border(Border::all(1.0).with_border_fill(if self.workspace_app_search_focused {
+                    theme::accent_cool()
+                } else {
+                    theme::border()
+                }))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+                .with_uniform_padding(8.0)
+                .with_horizontal_padding(11.0)
+                .finish(),
+        );
+
+        let mut search_results =
+            Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if query.is_empty() {
+            search_results.add_child(
+                Container::new(
+                    ui_text::body(
+                        "输入程序名称，搜索虚拟机支持并可安装的程序。",
+                        self.font,
+                    )
+                    .with_color(theme::muted())
+                    .finish(),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        } else {
+            let matches: Vec<&'static str> = WORKSPACE_APP_CATALOG
+                .iter()
+                .filter(|entry| {
+                    let haystack = format!("{} {}", entry.name, entry.desc).to_ascii_lowercase();
+                    haystack.contains(&query)
+                })
+                .map(|entry| entry.id)
+                .collect();
+            if matches.is_empty() {
+                search_results.add_child(
+                    Container::new(
+                        ui_text::body("没有找到虚拟机支持的程序。", self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(8.0)
+                    .finish(),
+                );
+            } else {
+                for app_id in matches {
+                    let is_installed = installed.contains(&app_id);
+                    search_results.add_child(
+                        Container::new(self.workspace_app_search_row(app_id, is_installed))
+                            .with_margin_top(6.0)
+                            .finish(),
+                    );
+                }
+            }
+        }
+        dialog.add_child(
+            Container::new(
+                ConstrainedBox::new(search_results.finish())
+                    .with_max_height(170.0)
+                    .finish(),
+            )
+            .finish(),
+        );
+
+        let can_confirm = installed
+            .iter()
+            .any(|app| *app == self.workspace_selected_app.as_str());
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            "取消",
+            DevicesAction::CloseWorkspaceAppPicker,
+            false,
+            72.0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        actions.add_child(self.toolbar_button(
+            "打开",
+            DevicesAction::ConfirmWorkspaceAppOpen,
+            true,
+            72.0,
+            can_confirm && !self.share_file_busy && !self.workspace_loading,
+        ));
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(480.0)
+                    .with_max_height(720.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel_elevated())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        let scrim = EventHandler::new(
+            Container::new(Align::new(panel).finish())
+                .with_uniform_padding(24.0)
+                .with_background(ColorU::new(8, 7, 11, 190))
+                .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(DevicesAction::CloseWorkspaceAppPicker);
+            DispatchEventResult::StopPropagation
+        })
+        .on_keydown(|ctx, _, keystroke| {
+            if keystroke.key.as_str() == "escape" {
+                ctx.dispatch_typed_action(DevicesAction::CloseWorkspaceAppPicker);
+                DispatchEventResult::StopPropagation
+            } else {
+                DispatchEventResult::PropagateToParent
+            }
+        })
+        .finish();
+        scrim
+    }
+
+    fn workspace_app_option_row(&self, app: &str, selected: bool) -> Box<dyn Element> {
+        let entry = workspace_app_catalog_entry(app);
+        let name = entry.map(|e| e.name).unwrap_or_else(|| workspace_app_label(app));
+        let desc = entry.map(|e| e.desc).unwrap_or("");
+        let mut copy = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        copy.add_child(
+            ui_text::body(name.to_string(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        copy.add_child(
+            Container::new(
+                    ui_text::chat_sidebar_time(desc.to_string(), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(3.0)
+            .finish(),
+        );
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, copy.finish()).finish());
+        row.add_child(
+            ui_text::cluster_ctrl(if selected { "已选" } else { "" }, self.mono)
+                .with_color(theme::accent_cool())
+                .finish(),
+        );
+        let border = if selected {
+            theme::accent_cool()
+        } else {
+            theme::border()
+        };
+        let bg = if selected {
+            theme::accent_cool_bg(28)
+        } else {
+            theme::panel()
+        };
+        let app_id = app.to_string();
+        EventHandler::new(
+            Container::new(row.finish())
+                .with_uniform_padding(11.0)
+                .with_horizontal_padding(12.0)
+                .with_background(bg)
+                .with_border(Border::all(1.0).with_border_fill(border))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+                .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            ctx.dispatch_typed_action(DevicesAction::SelectWorkspaceApp(app_id.clone()));
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+    }
+
+    fn workspace_app_search_row(&self, app: &str, installed: bool) -> Box<dyn Element> {
+        let entry = workspace_app_catalog_entry(app);
+        let name = entry.map(|e| e.name).unwrap_or_else(|| workspace_app_label(app));
+        let desc = entry.map(|e| e.desc).unwrap_or("");
+        let mut copy = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        copy.add_child(
+            ui_text::body(name.to_string(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        copy.add_child(
+            Container::new(
+                ui_text::chat_sidebar_time(desc.to_string(), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(3.0)
+            .finish(),
+        );
+        let action_label = if installed { "选择" } else { "安装并打开" };
+        let action = if installed {
+            DevicesAction::SelectWorkspaceApp(app.to_string())
+        } else {
+            DevicesAction::WorkspaceInstallAndOpen(app.to_string())
+        };
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, copy.finish()).finish());
+        row.add_child(
+            Container::new(self.toolbar_button(action_label, action, false, 88.0, true))
+                .with_margin_left(10.0)
+                .finish(),
+        );
+        Container::new(row.finish())
+            .with_uniform_padding(9.0)
+            .with_horizontal_padding(10.0)
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .finish()
+    }
+
     fn workspace_approval_modal(&self, job: &WorkspaceProvisionJob) -> Box<dyn Element> {
         let requester = job
             .request
@@ -5298,16 +5789,61 @@ fn recommended_workspace_app(name: &str) -> &'static str {
     workspace_apps_for_file(name)[0]
 }
 
+#[derive(Clone, Copy)]
+struct WorkspaceAppCatalogEntry {
+    id: &'static str,
+    name: &'static str,
+    desc: &'static str,
+}
+
+const WORKSPACE_APP_CATALOG: &[WorkspaceAppCatalogEntry] = &[
+    WorkspaceAppCatalogEntry {
+        id: "paint",
+        name: "Paint",
+        desc: "在隔离运行器中编辑位图",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "onlyoffice",
+        name: "ONLYOFFICE Desktop Editors",
+        desc: "离线处理文档、表格与演示",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "notepad",
+        name: "Notepad",
+        desc: "编辑纯文本",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "word",
+        name: "Microsoft Word",
+        desc: "编辑 Word 文档",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "excel",
+        name: "Microsoft Excel",
+        desc: "编辑电子表格",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "powerpoint",
+        name: "Microsoft PowerPoint",
+        desc: "编辑演示文稿",
+    },
+    WorkspaceAppCatalogEntry {
+        id: "default",
+        name: "虚拟机默认应用",
+        desc: "使用镜像默认程序打开",
+    },
+];
+
+fn workspace_app_catalog_entry(app: &str) -> Option<&'static WorkspaceAppCatalogEntry> {
+    WORKSPACE_APP_CATALOG
+        .iter()
+        .find(|entry| entry.id.eq_ignore_ascii_case(app))
+}
+
 fn workspace_app_label(app: &str) -> &'static str {
-    match app {
-        "paint" => "Paint",
-        "word" => "Microsoft Word",
-        "excel" => "Microsoft Excel",
-        "powerpoint" => "Microsoft PowerPoint",
-        "notepad" => "Notepad",
-        "onlyoffice" => "ONLYOFFICE Desktop Editors",
-        _ => "虚拟机默认应用",
-    }
+    workspace_app_catalog_entry(app)
+        .map(|entry| entry.name)
+        .unwrap_or("虚拟机默认应用")
 }
 
 fn workspace_worker_supports_app(worker: &WorkspaceWorker, app: &str) -> bool {
@@ -5360,7 +5896,9 @@ impl CaretBlinkHost for DevicesView {
     }
 
     fn caret_input_focused(&self) -> bool {
-        self.create_cluster_modal_open && self.create_cluster_name_focused
+        (self.create_cluster_modal_open && self.create_cluster_name_focused)
+            || (self.share_rename_modal_open && self.share_rename_focused)
+            || (self.workspace_app_picker_open && self.workspace_app_search_focused)
     }
 }
 
@@ -5382,6 +5920,11 @@ impl View for DevicesView {
             let mut stack = Stack::new();
             stack.add_child(body);
             stack.add_child(self.workspace_approval_modal(job));
+            tab_content_fill(stack.finish())
+        } else if self.workspace_app_picker_open {
+            let mut stack = Stack::new();
+            stack.add_child(body);
+            stack.add_child(self.workspace_app_picker_modal());
             tab_content_fill(stack.finish())
         } else {
             tab_content_fill(body)
@@ -5456,6 +5999,10 @@ impl TypedActionView for DevicesView {
             DevicesAction::ShareOpenFile(name) => self.open_share_file(name.clone(), ctx),
             DevicesAction::ShareSyncFile(name) => self.sync_share_file(name.clone(), ctx),
             DevicesAction::ShareRemoteOpenFile(name) => {
+                self.select_share_file(name.clone(), ctx);
+                self.open_workspace_app_picker(ctx);
+            }
+            DevicesAction::ShareRemoteOpenOnHost(name) => {
                 self.remote_open_share_file(name.clone(), ctx);
             }
             DevicesAction::ShareDeleteFile(name) => self.delete_share_file(name.clone(), ctx),
@@ -5484,7 +6031,23 @@ impl TypedActionView for DevicesView {
             DevicesAction::CloseShareContextMenu => self.close_share_context_menu(ctx),
             DevicesAction::ShareFileClick(name) => self.handle_share_file_click(name.clone(), ctx),
             DevicesAction::WorkspaceRefresh => self.refresh_workspace(ctx),
-            DevicesAction::WorkspaceNextApp => self.workspace_next_app(ctx),
+            DevicesAction::OpenWorkspaceAppPicker => self.open_workspace_app_picker(ctx),
+            DevicesAction::CloseWorkspaceAppPicker => self.close_workspace_app_picker(ctx),
+            DevicesAction::SelectWorkspaceApp(app) => {
+                self.select_workspace_app(app.clone(), ctx);
+            }
+            DevicesAction::WorkspaceAppSearchEdit(edit) => {
+                self.edit_workspace_app_search(edit, ctx);
+            }
+            DevicesAction::FocusWorkspaceAppSearch => {
+                self.workspace_app_search_focused = true;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            DevicesAction::ConfirmWorkspaceAppOpen => self.confirm_workspace_app_open(ctx),
+            DevicesAction::WorkspaceInstallAndOpen(app) => {
+                self.workspace_install_and_open(app.clone(), ctx);
+            }
             DevicesAction::WorkspaceOpenSelected => self.workspace_open_selected(ctx),
             DevicesAction::WorkspaceRequestProvision => self.workspace_request_provision(ctx),
             DevicesAction::WorkspaceRetryProvision => self.workspace_retry_provision(ctx),

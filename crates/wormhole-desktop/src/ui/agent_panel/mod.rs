@@ -1,3 +1,4 @@
+mod capability_marquee;
 mod composer_add;
 mod composer_menus;
 mod project_create_modal;
@@ -23,8 +24,9 @@ use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, ScrollbarWidth, Shrinkable, Stack,
+    CrossAxisAlignment, DispatchEventResult, Empty, EventDispatchMode, EventHandler, Expanded,
+    Fill, Flex, MainAxisSize, MouseState, MouseStateHandle, ParentElement, ScrollbarWidth,
+    Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -35,7 +37,7 @@ use wormhole_desktop_core::agent_provider_commands::{
 };
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use wormhole_desktop_core::warp_embed_prefs::{
-    self, AgentAccessMode, AgentModelRate, PreferredAgent,
+    self, AgentAccessMode, AgentModelRate, PreferredAgent, WarpEmbedPrefs,
 };
 use wormhole_desktop_core::{
     agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback, agent_list_sessions,
@@ -101,6 +103,10 @@ pub enum AgentPanelAction {
     SelectMode(InteractionMode),
     Send,
     PasteInput,
+    /// Idle marquee chip → fill composer draft (does not send).
+    ApplyCapabilityPrompt(String),
+    /// Persistently hide the idle capability marquee.
+    DismissCapabilityMarquee,
     FocusInput,
     NewConversation,
     LaunchTerminal,
@@ -233,6 +239,18 @@ impl PanelState {
         self.chats_sort = sort;
         self.close_chats_menu();
     }
+
+    /// Fill composer draft from an idle marquee chip (does not create a session).
+    fn apply_capability_prompt(&mut self, prompt: &str) {
+        let text = prompt.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.draft = text.to_string();
+        self.field_state.cursor = self.draft.chars().count();
+        self.input_focused = true;
+        self.sidebar_search_focused = false;
+    }
 }
 
 pub struct AgentPanelView {
@@ -258,6 +276,13 @@ pub struct AgentPanelView {
     generation_notify_rx: async_channel::Receiver<()>,
     selection_handle: warpui::elements::SelectionHandle,
     selected_text: Arc<Mutex<Option<String>>>,
+    /// Idle capability marquee clock (pause/resume survives Element rebuilds).
+    marquee_clock: Arc<capability_marquee::MarqueeAnimState>,
+    marquee_hover: MouseStateHandle,
+    /// Per-chip hover state so dismiss / underline survive View rebuilds.
+    marquee_chip_hovers: Arc<capability_marquee::ChipHoverBank>,
+    /// When true, idle capability marquee is not shown (`warp-embed.json`).
+    hide_capability_marquee: bool,
 }
 
 impl AgentPanelView {
@@ -267,6 +292,7 @@ impl AgentPanelView {
         let prefs = warp_embed_prefs::load_prefs(&core.data_dir());
         let access_mode = prefs.access_mode;
         let model_rate = prefs.model_rate;
+        let hide_capability_marquee = prefs.hide_capability_marquee;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         let data_dir = core.data_dir();
         let archived_ids = sidebar::load_archived_ids(&data_dir);
@@ -336,6 +362,10 @@ impl AgentPanelView {
             generation_notify_rx,
             selection_handle: warpui::elements::SelectionHandle::default(),
             selected_text: Arc::new(Mutex::new(None)),
+            marquee_clock: capability_marquee::MarqueeAnimState::new(),
+            marquee_hover: Arc::new(Mutex::new(MouseState::default())),
+            marquee_chip_hovers: capability_marquee::ChipHoverBank::new(),
+            hide_capability_marquee,
         };
         view.refresh_model_choices(ctx);
         view
@@ -2528,6 +2558,28 @@ impl AgentPanelView {
         ctx.notify();
     }
 
+    fn apply_capability_prompt(&mut self, prompt: String, ctx: &mut ViewContext<Self>) {
+        {
+            let mut state = self.state.lock().expect("agent panel state");
+            state.apply_capability_prompt(&prompt);
+        }
+        self.bump();
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn dismiss_capability_marquee(&mut self, ctx: &mut ViewContext<Self>) {
+        self.hide_capability_marquee = true;
+        let data_dir = self.core.data_dir();
+        if let Err(err) =
+            warp_embed_prefs::set_hide_capability_marquee_sync(&data_dir, true)
+        {
+            tracing::warn!("failed to persist hide_capability_marquee: {err}");
+        }
+        self.marquee_clock.set_paused(false);
+        ctx.notify();
+    }
+
     fn segmented(
         &self,
         labels: &[(&str, bool)],
@@ -2873,11 +2925,17 @@ impl AgentPanelView {
     }
 
     fn composer_center_layer(&self, inner: Box<dyn Element>) -> Box<dyn Element> {
-        let wrap = Container::new(center_composer_width(inner))
-            .with_padding_left(24.0)
-            .with_padding_right(24.0)
-            .finish();
-        Align::new(wrap).finish()
+        // HTML: `.agent-composer-wrap { pointer-events: none }` — only the card
+        // hits. Do **not** wrap the full-bleed `center_composer_width` Flex in a
+        // hit-recording Container; that blocked capability chips across the
+        // whole composer band.
+        Align::new(center_composer_width(
+            Container::new(inner)
+                .with_margin_left(24.0)
+                .with_margin_right(24.0)
+                .finish(),
+        ))
+        .finish()
     }
 
     /// Access / model popovers for the bottom composer (selected session).
@@ -3273,13 +3331,21 @@ impl View for AgentPanelView {
         let mut main_stack = Stack::new();
 
         if idle_composer {
+            let mut idle_stack = Stack::new().with_event_dispatch_mode(EventDispatchMode::Waterfall);
+            if !self.hide_capability_marquee {
+                idle_stack.add_child(capability_marquee::render(
+                    self.font,
+                    Arc::clone(&self.marquee_clock),
+                    Arc::clone(&self.marquee_hover),
+                    Arc::clone(&self.marquee_chip_hovers),
+                ));
+            }
+            idle_stack.add_child(self.composer_center_layer(composer_surface));
             let idle_body = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_child(self.agent_header(&thread_title))
-                .with_child(
-                    Expanded::new(1.0, self.composer_center_layer(composer_surface)).finish(),
-                )
+                .with_child(Expanded::new(1.0, idle_stack.finish()).finish())
                 .finish();
             main_stack.add_child(idle_body);
             if access_menu_open || model_menu_open || add_menu_open {
@@ -3563,6 +3629,10 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::SelectMode(mode) => self.select_mode(*mode, ctx),
             AgentPanelAction::Send => self.send_message(ctx),
             AgentPanelAction::PasteInput => self.paste_input(ctx),
+            AgentPanelAction::ApplyCapabilityPrompt(prompt) => {
+                self.apply_capability_prompt(prompt.clone(), ctx)
+            }
+            AgentPanelAction::DismissCapabilityMarquee => self.dismiss_capability_marquee(ctx),
             AgentPanelAction::FocusInput => {
                 if let Ok(mut panel) = self.state.lock() {
                     if !panel.busy {
@@ -3822,6 +3892,12 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::PasteInput => {
                 AccessibilityContent::new_without_help("粘贴到输入框", WarpA11yRole::ButtonRole)
             }
+            AgentPanelAction::ApplyCapabilityPrompt(_) => {
+                AccessibilityContent::new_without_help("填入能力提示", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::DismissCapabilityMarquee => {
+                AccessibilityContent::new_without_help("以后不再显示", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::SelectProject(_) | AgentPanelAction::SelectSession(_) => {
                 AccessibilityContent::new_without_help("选择侧栏项", WarpA11yRole::MenuItemRole)
             }
@@ -4008,6 +4084,41 @@ mod tests {
     fn is_idle_composer_state_when_no_session_selected() {
         assert!(AgentPanelView::is_idle_composer_state(""));
         assert!(!AgentPanelView::is_idle_composer_state("session-1"));
+    }
+
+    #[test]
+    fn apply_capability_prompt_fills_draft_without_creating_session() {
+        let mut panel = sample_panel(vec![], "");
+        assert!(AgentPanelView::is_idle_composer_state(
+            &panel.active_sidebar_session_id
+        ));
+        panel.apply_capability_prompt("分析代码并定位错误");
+        assert_eq!(panel.draft, "分析代码并定位错误");
+        assert_eq!(panel.field_state.cursor, "分析代码并定位错误".chars().count());
+        assert!(panel.input_focused);
+        assert!(panel.active_sidebar_session_id.is_empty());
+        assert!(panel.sidebar_sessions.is_empty());
+    }
+
+    #[test]
+    fn apply_capability_prompt_ignores_whitespace_only() {
+        let mut panel = sample_panel(vec![], "");
+        panel.draft = "keep".into();
+        panel.apply_capability_prompt("   ");
+        assert_eq!(panel.draft, "keep");
+    }
+
+    #[test]
+    fn hide_capability_marquee_pref_skips_idle_marquee() {
+        assert!(!WarpEmbedPrefs::default().hide_capability_marquee);
+        let hidden = WarpEmbedPrefs {
+            hide_capability_marquee: true,
+            ..WarpEmbedPrefs::default()
+        };
+        assert!(hidden.hide_capability_marquee);
+        assert!(AgentPanelView::is_idle_composer_state(""));
+        // Idle + hide flag means render path must omit marquee (see render idle_stack).
+        assert!(AgentPanelView::is_idle_composer_state("") && hidden.hide_capability_marquee);
     }
 
     #[test]
