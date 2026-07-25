@@ -563,7 +563,7 @@ pub fn render(
     col.add_child(
         Container::new(
             Text::new(
-                "选择你愿意分享的内容，可多选。FF 会据此调整任务推荐与回答侧重点，偏好仅保存在当前账号。"
+                "选择你愿意分享的内容，可多选。FF 会据此调整任务推荐与回答侧重点，偏好会同步保存到当前账号。"
                     .to_string(),
                 font,
                 14.0,
