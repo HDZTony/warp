@@ -4,9 +4,6 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
-use wormhole_desktop_core::agent_bb_browser_commands::{
-    self, AgentBbBrowserStatusDto, ConfigureAgentBbBrowserParams,
-};
 use wormhole_desktop_core::agent_codex_presets::{self, CodexProviderPreset};
 use wormhole_desktop_core::agent_llm_commands::{
     self, ConfigureAgentLlmParams, TestAgentLlmConnectionParams,
@@ -37,11 +34,6 @@ pub enum AgentProvidersAction {
     ApiKeyEdit(TextFieldEditAction),
     SaveByok,
     TestByok,
-    ToggleBbBrowser,
-    ToggleBbBrowserAutoStart,
-    EnsureBbBrowser,
-    CreateBbBrowserShortcut,
-    SetBbBrowserDefault,
 }
 
 pub struct AgentProvidersView {
@@ -50,7 +42,6 @@ pub struct AgentProvidersView {
     providers: Vec<AgentProviderSummaryDto>,
     active_provider_id: Option<String>,
     llm_summary: String,
-    bb_browser: Option<AgentBbBrowserStatusDto>,
     status: String,
     busy: bool,
     byok_presets: Vec<CodexProviderPreset>,
@@ -78,7 +69,6 @@ impl AgentProvidersView {
             providers: Vec::new(),
             active_provider_id: None,
             llm_summary: "加载 Codex 上游…".into(),
-            bb_browser: None,
             status: String::new(),
             busy: false,
             byok_presets: presets,
@@ -319,11 +309,10 @@ impl AgentProvidersView {
                 let state = core.runtime().state.clone();
                 let providers = agent_provider_commands::agent_providers_list(&state).await;
                 let llm = wormhole_desktop_core::agent_llm_commands::agent_llm_config(&state).await;
-                let bb = agent_bb_browser_commands::agent_bb_browser_status(&state).await;
-                (providers, llm, bb)
+                (providers, llm)
             },
             |view, output, ctx| {
-                let (providers, llm, bb) = output;
+                let (providers, llm) = output;
                 match providers {
                     Ok(list) => {
                         view.active_provider_id = list.active_provider_id.clone();
@@ -341,7 +330,6 @@ impl AgentProvidersView {
                     ),
                     Err(err) => format!("LLM 配置错误: {err}"),
                 };
-                view.bb_browser = bb.ok();
                 view.busy = false;
                 ctx.notify();
             },
@@ -411,140 +399,6 @@ impl AgentProvidersView {
         );
     }
 
-    fn configure_bb_browser(
-        &mut self,
-        enabled: Option<bool>,
-        auto_start_browser: Option<bool>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.busy = true;
-        self.status = if enabled == Some(true) {
-            "正在检查并安装前置依赖（Node / bb-browser）…".into()
-        } else {
-            "正在更新 bb-browser…".into()
-        };
-        ctx.notify();
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                agent_bb_browser_commands::agent_bb_browser_configure(
-                    ConfigureAgentBbBrowserParams {
-                        enabled,
-                        auto_start_browser,
-                    },
-                    &state,
-                )
-                .await
-            },
-            |view, output, ctx| {
-                view.busy = false;
-                match output {
-                    Ok(status) => {
-                        view.status = if status.config.enabled {
-                            let base = if status.ready {
-                                "bb-browser 已启用且就绪"
-                            } else {
-                                "bb-browser 已启用（见下方提示）"
-                            };
-                            match status.setup_message.as_deref() {
-                                Some(setup) if !setup.is_empty() => {
-                                    truncate_middle(&format!("{base}。{setup}"), 160)
-                                }
-                                _ => base.into(),
-                            }
-                        } else {
-                            "bb-browser 已关闭".into()
-                        };
-                        view.bb_browser = Some(status);
-                    }
-                    Err(err) => {
-                        view.status = err;
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
-    fn ensure_bb_browser(&mut self, ctx: &mut ViewContext<Self>) {
-        self.busy = true;
-        self.status = "正在启动托管浏览器…".into();
-        ctx.notify();
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                agent_bb_browser_commands::agent_bb_browser_ensure_browser(&state).await
-            },
-            |view, output, ctx| {
-                view.busy = false;
-                match output {
-                    Ok(action) => {
-                        view.status = action.message;
-                        view.bb_browser = Some(action.status);
-                    }
-                    Err(err) => {
-                        view.status = err;
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
-    fn create_bb_browser_shortcut(&mut self, ctx: &mut ViewContext<Self>) {
-        self.busy = true;
-        self.status = "正在创建桌面快捷方式…".into();
-        ctx.notify();
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                agent_bb_browser_commands::agent_bb_browser_create_shortcut(&state).await
-            },
-            |view, output, ctx| {
-                view.busy = false;
-                match output {
-                    Ok(action) => {
-                        view.status = action.message;
-                        view.bb_browser = Some(action.status);
-                    }
-                    Err(err) => {
-                        view.status = err;
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
-    fn set_bb_browser_default(&mut self, ctx: &mut ViewContext<Self>) {
-        self.busy = true;
-        self.status = "正在注册系统默认浏览器…".into();
-        ctx.notify();
-        let core = self.core.clone();
-        ctx.spawn(
-            async move {
-                let state = core.runtime().state.clone();
-                agent_bb_browser_commands::agent_bb_browser_set_default_browser(&state).await
-            },
-            |view, output, ctx| {
-                view.busy = false;
-                match output {
-                    Ok(action) => {
-                        view.status = action.message;
-                        view.bb_browser = Some(action.status);
-                    }
-                    Err(err) => {
-                        view.status = err;
-                    }
-                }
-                ctx.notify();
-            },
-        );
-    }
-
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
         let disabled = self.busy;
@@ -568,133 +422,6 @@ impl AgentProvidersView {
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
-    }
-
-    fn bb_browser_block(&self) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("AGENT · bb-browser", self.font));
-        col.add_child(section_hint(
-            "托管 Chromium（免扩展）。启用时自动检查浏览器并安装本地 Node / bb-browser。用桌面「Wormhole浏览器」登录；也可设为系统默认浏览器。公开网页用 bb-browser，桌面 GUI 用 Computer Use。",
-            self.font,
-        ));
-
-        let Some(status) = &self.bb_browser else {
-            col.add_child(status_line(
-                "正在加载 bb-browser 状态…",
-                self.font,
-                StatusTone::Muted,
-            ));
-            return col.finish();
-        };
-
-        let enabled_label = if status.config.enabled {
-            "已启用"
-        } else {
-            "已关闭"
-        };
-        let launch = status
-            .launch_command
-            .as_deref()
-            .unwrap_or("未检测到 bb-browser / npx");
-        let cdp = if status.cdp_healthy {
-            format!("CDP 就绪 {}:{}", status.cdp_host, status.cdp_port)
-        } else {
-            format!("CDP 未就绪 {}:{}", status.cdp_host, status.cdp_port)
-        };
-        let browser = if status.browser_available {
-            "浏览器已找到"
-        } else {
-            "未找到 Chrome/Edge"
-        };
-        let summary = format!(
-            "{enabled_label} · {} · MCP={} · {browser} · {cdp}",
-            status.launch_kind.as_deref().unwrap_or("无启动器"),
-            if status.mcp_section_written {
-                "是"
-            } else {
-                "否"
-            },
-        );
-        col.add_child(status_line(
-            summary,
-            self.font,
-            if status.ready {
-                StatusTone::Success
-            } else if status.config.enabled {
-                StatusTone::Neutral
-            } else {
-                StatusTone::Muted
-            },
-        ));
-        col.add_child(status_line(
-            truncate_middle(launch, 96),
-            self.font,
-            StatusTone::Muted,
-        ));
-        col.add_child(status_line(
-            truncate_middle(&format!("profile: {}", status.profile_dir), 110),
-            self.font,
-            StatusTone::Muted,
-        ));
-
-        let mut toolbar = Flex::row();
-        toolbar.add_child(self.action_button(
-            if status.config.enabled {
-                "关闭 bb-browser"
-            } else {
-                "启用 bb-browser"
-            },
-            AgentProvidersAction::ToggleBbBrowser,
-        ));
-        if status.config.enabled {
-            toolbar.add_child(
-                Container::new(self.action_button(
-                    if status.config.auto_start_browser {
-                        "自动启浏览器：开"
-                    } else {
-                        "自动启浏览器：关"
-                    },
-                    AgentProvidersAction::ToggleBbBrowserAutoStart,
-                ))
-                .with_margin_left(8.0)
-                .finish(),
-            );
-            toolbar.add_child(
-                Container::new(self.action_button(
-                    "启动浏览器",
-                    AgentProvidersAction::EnsureBbBrowser,
-                ))
-                .with_margin_left(8.0)
-                .finish(),
-            );
-            toolbar.add_child(
-                Container::new(self.action_button(
-                    "Wormhole 设为系统默认浏览器",
-                    AgentProvidersAction::SetBbBrowserDefault,
-                ))
-                .with_margin_left(8.0)
-                .finish(),
-            );
-            toolbar.add_child(
-                Container::new(self.action_button(
-                    "创建桌面快捷方式",
-                    AgentProvidersAction::CreateBbBrowserShortcut,
-                ))
-                .with_margin_left(8.0)
-                .finish(),
-            );
-        }
-        col.add_child(Container::new(toolbar.finish()).with_margin_top(8.0).finish());
-
-        for note in &status.notes {
-            col.add_child(
-                Container::new(status_line(note.clone(), self.font, StatusTone::Muted))
-                    .with_margin_top(4.0)
-                    .finish(),
-            );
-        }
-
-        col.finish()
     }
 }
 
@@ -793,12 +520,6 @@ impl View for AgentProvidersView {
             }
         }
 
-        col.add_child(
-            Container::new(self.bb_browser_block())
-                .with_margin_top(20.0)
-                .finish(),
-        );
-
         col.finish()
     }
 }
@@ -888,25 +609,6 @@ impl TypedActionView for AgentProvidersView {
             }
             AgentProvidersAction::SaveByok => self.save_byok(ctx),
             AgentProvidersAction::TestByok => self.test_byok(ctx),
-            AgentProvidersAction::ToggleBbBrowser => {
-                let enabled = self
-                    .bb_browser
-                    .as_ref()
-                    .map(|s| !s.config.enabled)
-                    .unwrap_or(true);
-                self.configure_bb_browser(Some(enabled), None, ctx);
-            }
-            AgentProvidersAction::ToggleBbBrowserAutoStart => {
-                let auto = self
-                    .bb_browser
-                    .as_ref()
-                    .map(|s| !s.config.auto_start_browser)
-                    .unwrap_or(true);
-                self.configure_bb_browser(None, Some(auto), ctx);
-            }
-            AgentProvidersAction::EnsureBbBrowser => self.ensure_bb_browser(ctx),
-            AgentProvidersAction::CreateBbBrowserShortcut => self.create_bb_browser_shortcut(ctx),
-            AgentProvidersAction::SetBbBrowserDefault => self.set_bb_browser_default(ctx),
         }
     }
 }

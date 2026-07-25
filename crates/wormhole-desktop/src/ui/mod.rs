@@ -18,6 +18,7 @@ pub mod icons;
 pub mod login_modal;
 pub mod multiline_input;
 pub mod panel_primitives;
+pub mod plugins_view;
 pub mod settings_view;
 pub mod spinning_icon;
 pub mod sync_views;
