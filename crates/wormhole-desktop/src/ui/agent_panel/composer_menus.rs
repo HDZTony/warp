@@ -97,7 +97,11 @@ fn access_option(
     .finish()
 }
 
-pub fn render_access_menu(font: FamilyId, mode: AgentAccessMode) -> Box<dyn Element> {
+pub fn render_access_menu(
+    font: FamilyId,
+    mode: AgentAccessMode,
+    agent_pet_enabled: bool,
+) -> Box<dyn Element> {
     let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     col.add_child(popover_menu_header(font, "访问权限"));
     col.add_child(access_option(
@@ -115,6 +119,19 @@ pub fn render_access_menu(font: FamilyId, mode: AgentAccessMode) -> Box<dyn Elem
         "agent-folder.svg",
         mode == AgentAccessMode::WorkspaceWrite,
         AgentPanelAction::SelectAccessMode(AgentAccessMode::WorkspaceWrite),
+    ));
+    col.add_child(popover_menu_header(font, "桌宠"));
+    col.add_child(access_option(
+        font,
+        "Agent 桌宠",
+        if agent_pet_enabled {
+            "已开启：2.5D 骨骼浮窗跟随任务状态（再点关闭）"
+        } else {
+            "关闭中：点击开启 Blender/glTF 骨骼桌宠（需 wormhole-agent-pet）"
+        },
+        "agent-folder.svg",
+        agent_pet_enabled,
+        AgentPanelAction::ToggleAgentPet,
     ));
     col.add_child(access_footnote(font, mode));
     popover_shell_with_radius(ACCESS_POPOVER_WIDTH, 14.0, col.finish())

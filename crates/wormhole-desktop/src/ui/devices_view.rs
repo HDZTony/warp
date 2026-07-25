@@ -808,7 +808,7 @@ impl DevicesView {
                     Ok(workers) => view.workspace_workers = workers,
                     Err(error) => {
                         view.workspace_workers.clear();
-                        view.workspace_status = format!("Workspace worker 检测失败: {error}");
+                        view.set_workspace_progress(format!("Workspace worker 检测失败: {error}"));
                     }
                 }
                 if let Ok(jobs) = jobs {
@@ -828,7 +828,18 @@ impl DevicesView {
                 if let Some(result) = remote {
                     match result {
                         Ok(job) => {
-                            view.workspace_status = job.detail.clone();
+                            let mut progress = job.detail.clone();
+                            if job.bytes_total > 0 && job.bytes_downloaded > 0 {
+                                let percent =
+                                    job.bytes_downloaded.saturating_mul(100) / job.bytes_total;
+                                progress = format!(
+                                    "{progress} · {}% · {} / {}",
+                                    percent,
+                                    format_size(job.bytes_downloaded),
+                                    format_size(job.bytes_total)
+                                );
+                            }
+                            view.set_workspace_progress(progress);
                             let should_open = job.stage == WorkspaceProvisionStage::Ready
                                 && view.workspace_auto_opened_job.as_deref()
                                     != Some(job.job_id.as_str());
@@ -841,7 +852,7 @@ impl DevicesView {
                             }
                         }
                         Err(error) => {
-                            view.workspace_status = format!("读取远端安装进度失败: {error}");
+                            view.set_workspace_progress(format!("读取远端安装进度失败: {error}"));
                         }
                     }
                 } else {
@@ -850,6 +861,12 @@ impl DevicesView {
                 ctx.notify();
             },
         );
+    }
+
+    fn set_workspace_progress(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.workspace_status = message.clone();
+        self.share_status = Some(message);
     }
 
     fn update_workspace_status_from_selection(&mut self) {
@@ -894,7 +911,9 @@ impl DevicesView {
         params.requested_app = Some(self.workspace_selected_app.clone());
         let entry_name = entry.name.clone();
         self.share_file_busy = true;
-        self.workspace_status = format!("正在远程虚拟机的隔离运行器中打开 {entry_name}…");
+        self.set_workspace_progress(format!(
+            "正在远程虚拟机的隔离运行器中打开 {entry_name}…"
+        ));
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -903,13 +922,13 @@ impl DevicesView {
             },
             move |view, result, ctx| {
                 view.share_file_busy = false;
-                view.workspace_status = match result {
+                view.set_workspace_progress(match result {
                     Ok(session) => format!(
                         "会话 {} 已提交，正在等待 Ubuntu 运行器就绪",
                         session.session_id
                     ),
                     Err(error) => format!("远程虚拟机打开失败: {error}"),
-                };
+                });
                 ctx.notify();
             },
         );
@@ -928,17 +947,17 @@ impl DevicesView {
             .as_ref()
             .and_then(|cluster| cluster.cluster_id.clone())
         else {
-            self.workspace_status = "当前共享浏览没有有效的 cluster_id".into();
+            self.set_workspace_progress("当前共享浏览没有有效的 cluster_id");
             ctx.notify();
             return;
         };
         let Some(source_node_id) = entry.version_author.clone() else {
-            self.workspace_status = "文件缺少 SyncIndex 来源节点，无法安装到正确电脑".into();
+            self.set_workspace_progress("文件缺少 SyncIndex 来源节点，无法安装到正确电脑");
             ctx.notify();
             return;
         };
         let Some(entry_id) = entry.entry_id.clone() else {
-            self.workspace_status = "文件缺少 SyncIndex entry_id，无法创建安装任务".into();
+            self.set_workspace_progress("文件缺少 SyncIndex entry_id，无法创建安装任务");
             ctx.notify();
             return;
         };
@@ -953,7 +972,7 @@ impl DevicesView {
             requested_by_node_id: None,
         };
         self.workspace_loading = true;
-        self.workspace_status = "正在向来源电脑请求准备 Ubuntu 工具运行器…".into();
+        self.set_workspace_progress("正在向来源电脑请求准备 Ubuntu 工具运行器…");
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -969,11 +988,11 @@ impl DevicesView {
                 view.workspace_loading = false;
                 match result {
                     Ok(job) => {
-                        view.workspace_status = job.detail.clone();
+                        view.set_workspace_progress(job.detail.clone());
                         view.workspace_remote_job = Some(job);
                     }
                     Err(error) => {
-                        view.workspace_status = format!("请求安装失败: {error}");
+                        view.set_workspace_progress(format!("请求安装失败: {error}"));
                     }
                 }
                 ctx.notify();
@@ -1012,11 +1031,11 @@ impl DevicesView {
                 view.workspace_loading = false;
                 match result {
                     Ok(job) => {
-                        view.workspace_status = job.detail;
+                        view.set_workspace_progress(job.detail);
                         view.workspace_dismissed_approval = None;
                     }
                     Err(error) => {
-                        view.workspace_status = format!("批准安装失败: {error}");
+                        view.set_workspace_progress(format!("批准安装失败: {error}"));
                     }
                 }
                 view.refresh_workspace(ctx);
@@ -1060,7 +1079,7 @@ impl DevicesView {
 
     fn select_workspace_app(&mut self, app: String, ctx: &mut ViewContext<Self>) {
         if workspace_app_catalog_entry(&app).is_none() {
-            self.workspace_status = "此远程虚拟机不支持该文件的打开方式".into();
+            self.set_workspace_progress("此远程虚拟机不支持该文件的打开方式");
             ctx.notify();
             return;
         }
@@ -1104,7 +1123,7 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Err(error) = result {
-                    view.workspace_status = format!("保存打开方式失败: {error}");
+                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
                     ctx.notify();
                 }
             },
@@ -1145,7 +1164,7 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Err(error) = result {
-                    view.workspace_status = format!("保存打开方式失败: {error}");
+                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
                     ctx.notify();
                 }
             },
@@ -1356,7 +1375,39 @@ impl DevicesView {
         })
     }
 
+    /// True when the browsed peer can accept live P2P share operations.
+    ///
+    /// Fully offline peers still allow browse/open of local ClusterShare replicas, but
+    /// mutations and sync/remote-open require a reachable endpoint.
+    fn browsing_peer_live(&self) -> bool {
+        if self.browsing_local() {
+            return true;
+        }
+        let Some(cluster) = self.cluster.as_ref() else {
+            return false;
+        };
+        let Some(node_id) = self.browsing_node_id.as_deref() else {
+            return false;
+        };
+        cluster.nodes.iter().any(|node| {
+            if node.node_id != node_id {
+                return false;
+            }
+            if node.online {
+                return true;
+            }
+            let has_endpoint = node
+                .chat_endpoint_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty());
+            node.presence_status == NODE_PRESENCE_SIGNED_IN && has_endpoint
+        })
+    }
+
     fn browsing_can_manage(&self) -> bool {
+        if !self.browsing_peer_live() {
+            return false;
+        }
         let Some(cluster) = self.cluster.as_ref() else {
             return false;
         };
@@ -3890,7 +3941,15 @@ impl DevicesView {
             "浏览共享文件夹",
             DevicesAction::OpenNode(node_id.clone()),
             ContextItemStyle::Normal,
-            true,
+            self.cluster.as_ref().is_some_and(|cluster| {
+                cluster
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == node_id)
+                    .is_some_and(|node| {
+                        crate::ui::cluster_topology_panel::node_share_browsable(node, is_local)
+                    })
+            }),
         ));
         let remote_available = self.cluster.as_ref().is_some_and(|cluster| {
             cluster
@@ -3990,6 +4049,9 @@ impl DevicesView {
         if let Some(err) = &self.share_error {
             return format!("VAULT · {err}");
         }
+        if !self.browsing_local() && !self.browsing_peer_live() {
+            return format!("VAULT · 对端离线，仅显示已下载的本地副本 · {count} 项");
+        }
         format!("VAULT · {count} 项")
     }
 
@@ -4025,7 +4087,7 @@ impl DevicesView {
         let mut name_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
-        if !is_folder && !entry.local {
+        if !is_folder && !entry.local && self.browsing_peer_live() {
             let sync_name = name.clone();
             name_row.add_child(
                 EventHandler::new(
@@ -4208,165 +4270,16 @@ impl DevicesView {
         } else if self.browsing_local() && self.share_path.is_empty() {
             "本机尚未添加共享文件夹。点击「增加共享文件夹」添加，或返回打开其它终端卡片浏览远端共享。"
         } else if !self.browsing_local() && self.share_path.is_empty() {
-            "此终端尚未发布共享文件夹，或名单未同步。请在对端添加共享后刷新。"
+            if self.browsing_peer_live() {
+                "此终端尚未发布共享文件夹，或名单未同步。请在对端添加共享后刷新。"
+            } else {
+                "对端离线。若曾同步过文件，进入共享根后仅显示已下载的本地副本。"
+            }
+        } else if !self.browsing_local() && !self.browsing_peer_live() {
+            "对端离线，此路径下没有已下载的本地副本。"
         } else {
             "此文件夹为空"
         }
-    }
-
-    fn workspace_panel(&self) -> Box<dyn Element> {
-        let mut panel = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Max);
-        panel.add_child(section_title("远程虚拟机打开", self.font));
-        panel.add_child(section_hint(
-            "应用在远程虚拟机的隔离运行器中执行，不控制任何电脑桌面。",
-            self.font,
-        ));
-
-        let Some(entry) = self.selected_share_entry() else {
-            panel.add_child(status_line(
-                "选择一个远端文件",
-                self.font,
-                StatusTone::Placeholder,
-            ));
-            return Container::new(
-                ConstrainedBox::new(panel.finish())
-                    .with_width(340.0)
-                    .with_min_width(300.0)
-                    .finish(),
-            )
-            .with_uniform_padding(14.0)
-            .with_background(theme::canvas())
-            .with_border(Border::all(1.0).with_border_fill(theme::border()))
-            .finish();
-        };
-
-        panel.add_child(
-            ui_text::body(entry.name.clone(), self.font)
-                .with_color(theme::text())
-                .finish(),
-        );
-        panel.add_child(
-            ui_text::mono(format_size(entry.size), self.mono)
-                .with_color(theme::muted())
-                .finish(),
-        );
-        panel.add_child(section_title("远程 Ubuntu 工具运行器", self.font));
-        panel.add_child(section_hint(
-            "文件通过现有同步索引打开；客户端仅接收隔离运行器的画面和输入。",
-            self.font,
-        ));
-        panel.add_child(section_title("同步来源", self.font));
-        let source = entry
-            .version_author
-            .as_deref()
-            .map(|author| truncate_middle(author, 34))
-            .unwrap_or_else(|| "未解析".into());
-        panel.add_child(
-            ui_text::mono(source, self.mono)
-                .with_color(theme::muted())
-                .finish(),
-        );
-        panel.add_child(section_title("虚拟机应用", self.font));
-        panel.add_child(self.toolbar_button(
-            workspace_app_label(&self.workspace_selected_app),
-            DevicesAction::OpenWorkspaceAppPicker,
-            false,
-            220.0,
-            !self.share_file_busy,
-        ));
-
-        let tone = match self.workspace_remote_job.as_ref().map(|job| &job.stage) {
-            Some(WorkspaceProvisionStage::Failed) => StatusTone::Danger,
-            Some(WorkspaceProvisionStage::RebootRequired) => StatusTone::Warn,
-            Some(WorkspaceProvisionStage::Ready) => StatusTone::Success,
-            _ => StatusTone::Neutral,
-        };
-        panel.add_child(section_title("环境", self.font));
-        panel.add_child(status_line(self.workspace_status.clone(), self.font, tone));
-        if let Some(job) = &self.workspace_remote_job {
-            if job.bytes_total > 0 && job.bytes_downloaded > 0 {
-                let percent = job.bytes_downloaded.saturating_mul(100) / job.bytes_total;
-                panel.add_child(
-                    ui_text::mono(
-                        format!(
-                            "{}% · {} / {}",
-                            percent,
-                            format_size(job.bytes_downloaded),
-                            format_size(job.bytes_total)
-                        ),
-                        self.mono,
-                    )
-                    .with_color(theme::accent_cool())
-                    .finish(),
-                );
-            }
-        }
-
-        let can_open = entry.version_author.as_deref().is_some_and(|author| {
-            self.workspace_worker_for_author(author)
-                .is_some_and(|worker| {
-                    worker.available
-                        && worker.vm_ready
-                        && workspace_worker_supports_app(worker, &self.workspace_selected_app)
-                })
-        });
-        panel.add_child(
-            Container::new(Flex::column().finish())
-                .with_vertical_margin(8.0)
-                .finish(),
-        );
-        if can_open {
-            panel.add_child(self.toolbar_button(
-                "在远程虚拟机中打开",
-                DevicesAction::OpenWorkspaceAppPicker,
-                false,
-                180.0,
-                !self.share_file_busy,
-            ));
-        } else if self
-            .workspace_remote_job
-            .as_ref()
-            .is_some_and(|job| job.stage == WorkspaceProvisionStage::Failed)
-        {
-            panel.add_child(self.toolbar_button(
-                "重新请求安装",
-                DevicesAction::WorkspaceRetryProvision,
-                false,
-                180.0,
-                !self.workspace_loading,
-            ));
-        } else if self.workspace_remote_job.is_none() {
-            panel.add_child(self.toolbar_button(
-                "请求准备远程虚拟机",
-                DevicesAction::OpenWorkspaceAppPicker,
-                false,
-                180.0,
-                entry.entry_id.is_some()
-                    && entry.version_author.is_some()
-                    && !self.workspace_loading,
-            ));
-        } else {
-            panel.add_child(self.toolbar_button(
-                "刷新安装状态",
-                DevicesAction::WorkspaceRefresh,
-                false,
-                180.0,
-                !self.workspace_loading,
-            ));
-        }
-
-        Container::new(
-            ConstrainedBox::new(panel.finish())
-                .with_width(340.0)
-                .with_min_width(300.0)
-                .finish(),
-        )
-        .with_uniform_padding(14.0)
-        .with_background(theme::canvas())
-        .with_border(Border::all(1.0).with_border_fill(theme::border()))
-        .finish()
     }
 
     fn files_view(&self) -> Box<dyn Element> {
@@ -4502,19 +4415,7 @@ impl DevicesView {
             .with_background(theme::panel())
             .with_uniform_padding(12.0)
             .finish();
-        if self.browsing_local() {
-            return file_list;
-        }
-        let mut split = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_main_axis_size(MainAxisSize::Max);
-        split.add_child(Expanded::new(1.0, file_list).finish());
-        split.add_child(
-            Container::new(self.workspace_panel())
-                .with_margin_left(8.0)
-                .finish(),
-        );
-        split.finish()
+        file_list
     }
 
     fn share_add_modal(&self) -> Box<dyn Element> {
@@ -4654,8 +4555,9 @@ impl DevicesView {
         let is_folder = entry
             .map(|entry| entry.kind.eq_ignore_ascii_case("folder"))
             .unwrap_or(false);
-        let needs_sync = !browsing_local && !is_folder && !has_local_replica;
-        let can_remote = !browsing_local && !is_folder;
+        let needs_sync =
+            !browsing_local && self.browsing_peer_live() && !is_folder && !has_local_replica;
+        let can_remote = !browsing_local && !is_folder && self.browsing_peer_live();
         let can_rename = can_manage;
         let can_delete = if can_manage {
             true
@@ -6271,6 +6173,7 @@ mod share_root_reload_tests {
                         name: (*name).into(),
                     })
                     .collect(),
+                has_local_share_replicas: false,
             }],
             storage_volumes: Vec::new(),
             normal_replica_target: 0,

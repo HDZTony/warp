@@ -328,8 +328,9 @@ fn device_delete_button(node_id: String, mono: FamilyId) -> Box<dyn Element> {
 
 /// Whether the terminal card「共享文件」button should accept clicks.
 ///
-/// P2P share browse needs a chat endpoint (`signed_in` from control-plane is enough);
-/// gossip `online` is not required. Remote desktop still requires `online`.
+/// Live P2P browse needs `online` or `signed_in` + chat endpoint. Fully offline peers
+/// remain browsable when the control-plane share roster is non-empty or this device
+/// still has ClusterShare replicas (offline list falls back to local copies).
 pub(crate) fn node_share_browsable(node: &ClusterNodeDto, is_local: bool) -> bool {
     if is_local || node.online {
         return true;
@@ -338,7 +339,10 @@ pub(crate) fn node_share_browsable(node: &ClusterNodeDto, is_local: bool) -> boo
         .chat_endpoint_id
         .as_deref()
         .is_some_and(|id| !id.trim().is_empty());
-    node.presence_status == NODE_PRESENCE_SIGNED_IN && has_endpoint
+    if node.presence_status == NODE_PRESENCE_SIGNED_IN && has_endpoint {
+        return true;
+    }
+    !node.share_volumes.is_empty() || node.has_local_share_replicas
 }
 
 pub(crate) fn node_remote_desktop_available(node: &ClusterNodeDto, is_local: bool) -> bool {
@@ -760,6 +764,7 @@ mod node_share_browsable_tests {
                     name: format!("share-{i}"),
                 })
                 .collect(),
+            has_local_share_replicas: false,
         }
     }
 
@@ -782,20 +787,33 @@ mod node_share_browsable_tests {
     }
 
     #[test]
-    fn signed_in_without_endpoint_not_browsable() {
-        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, None, 1);
+    fn offline_with_share_roster_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_OFFLINE, None, 1);
+        assert!(node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn offline_with_local_replicas_browsable() {
+        let mut node = sample_node(false, NODE_PRESENCE_OFFLINE, None, 0);
+        node.has_local_share_replicas = true;
+        assert!(node_share_browsable(&node, false));
+    }
+
+    #[test]
+    fn offline_without_roster_or_replicas_not_browsable() {
+        let node = sample_node(false, NODE_PRESENCE_OFFLINE, Some("endpoint-hex"), 0);
         assert!(!node_share_browsable(&node, false));
     }
 
     #[test]
-    fn signed_in_blank_endpoint_not_browsable() {
-        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, Some("  "), 1);
+    fn signed_in_without_endpoint_not_browsable_without_roster() {
+        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, None, 0);
         assert!(!node_share_browsable(&node, false));
     }
 
     #[test]
-    fn offline_without_signed_in_not_browsable() {
-        let node = sample_node(false, NODE_PRESENCE_OFFLINE, Some("endpoint-hex"), 1);
+    fn signed_in_blank_endpoint_not_browsable_without_roster() {
+        let node = sample_node(false, NODE_PRESENCE_SIGNED_IN, Some("  "), 0);
         assert!(!node_share_browsable(&node, false));
     }
 

@@ -37,7 +37,10 @@ use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmCha
 use wormhole_desktop_core::agent_provider_commands::{
     self, AgentModelChoiceDto, SelectAgentModelParams,
 };
-use wormhole_desktop_core::ff_onboarding_prefs::{self, FfOnboardingSelections};
+use wormhole_desktop_core::ff_onboarding_prefs::{
+    self, FfOnboardingSelections, LOCAL_GUEST_ACCOUNT_ID,
+};
+use wormhole_desktop_core::ff_onboarding_sync;
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use wormhole_desktop_core::warp_embed_prefs::{
     self, AgentAccessMode, AgentModelRate, PreferredAgent, WarpEmbedPrefs,
@@ -83,6 +86,8 @@ pub enum AgentPanelAction {
     SetVisible(bool),
     SelectAccessMode(AgentAccessMode),
     ToggleAccessMenu,
+    /// Toggle out-of-process Bevy Agent pet (`warp-embed.json` + spawn/stop).
+    ToggleAgentPet,
     SelectModelRate(AgentModelRate),
     SelectAgentModel {
         provider_id: String,
@@ -294,6 +299,8 @@ pub struct AgentPanelView {
     marquee_chip_hovers: Arc<capability_marquee::ChipHoverBank>,
     /// When true, idle capability marquee is not shown (`warp-embed.json`).
     hide_capability_marquee: bool,
+    /// Out-of-process Bevy 2D Agent pet (`warp-embed.json` `agent_pet_enabled`).
+    agent_pet_enabled: bool,
     /// FF first-run preference overlay (`.ff-onboarding`).
     ff_onboarding_visible: bool,
     ff_onboarding_account: String,
@@ -309,6 +316,7 @@ impl AgentPanelView {
         let access_mode = prefs.access_mode;
         let model_rate = prefs.model_rate;
         let hide_capability_marquee = prefs.hide_capability_marquee;
+        let agent_pet_enabled = prefs.agent_pet_enabled;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         let data_dir = core.data_dir();
         let ff_account = Self::resolve_ff_onboarding_account(&core);
@@ -385,12 +393,14 @@ impl AgentPanelView {
             marquee_hover: Arc::new(Mutex::new(MouseState::default())),
             marquee_chip_hovers: capability_marquee::ChipHoverBank::new(),
             hide_capability_marquee,
+            agent_pet_enabled,
             ff_onboarding_visible,
             ff_onboarding_account: ff_account,
             ff_onboarding_draft: FfOnboardingSelections::empty(),
             ff_onboarding_scroll: ClippedScrollStateHandle::default(),
         };
         view.refresh_model_choices(ctx);
+        view.schedule_ff_onboarding_sync(ctx);
         view
     }
 
@@ -404,15 +414,51 @@ impl AgentPanelView {
         ff_onboarding_prefs::normalize_account_id(user_id.as_deref())
     }
 
-    fn sync_ff_onboarding_account(&mut self) {
+    fn sync_ff_onboarding_account(&mut self, ctx: &mut ViewContext<Self>) {
         let account = Self::resolve_ff_onboarding_account(&self.core);
-        if account == self.ff_onboarding_account {
+        if account != self.ff_onboarding_account {
+            self.ff_onboarding_account = account.clone();
+            self.ff_onboarding_draft = FfOnboardingSelections::empty();
+            self.ff_onboarding_visible =
+                !ff_onboarding_prefs::is_completed(&self.core.data_dir(), &account);
+        }
+        self.schedule_ff_onboarding_sync(ctx);
+    }
+
+    /// Pull server prefs for signed-in accounts; hide overlay if already completed remotely.
+    fn schedule_ff_onboarding_sync(&self, ctx: &mut ViewContext<Self>) {
+        let account = self.ff_onboarding_account.clone();
+        if account == LOCAL_GUEST_ACCOUNT_ID {
             return;
         }
-        self.ff_onboarding_account = account.clone();
-        self.ff_onboarding_draft = FfOnboardingSelections::empty();
-        self.ff_onboarding_visible =
-            !ff_onboarding_prefs::is_completed(&self.core.data_dir(), &account);
+        let core = self.core.clone();
+        let account_for_check = account.clone();
+        ctx.spawn(
+            async move {
+                ff_onboarding_sync::sync_ff_onboarding(core.app_state(), &account).await
+            },
+            move |view, output, ctx| {
+                match output {
+                    Ok(record) => {
+                        if view.ff_onboarding_account != account_for_check {
+                            return;
+                        }
+                        let next_visible = !record.completed;
+                        if view.ff_onboarding_visible == next_visible {
+                            return;
+                        }
+                        view.ff_onboarding_visible = next_visible;
+                        if record.completed {
+                            view.ff_onboarding_draft = FfOnboardingSelections::empty();
+                        }
+                        ctx.notify();
+                    }
+                    Err(err) => {
+                        tracing::warn!("FF onboarding sync failed: {err}");
+                    }
+                }
+            },
+        );
     }
 
     fn toggle_ff_onboarding_option(&mut self, group: FfOnboardingGroup, id: &str) {
@@ -430,16 +476,34 @@ impl AgentPanelView {
 
     fn skip_ff_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
         let data_dir = self.core.data_dir();
-        if let Err(err) = ff_onboarding_prefs::complete_onboarding(
+        let account = self.ff_onboarding_account.clone();
+        match ff_onboarding_prefs::complete_onboarding(
             &data_dir,
-            &self.ff_onboarding_account,
+            &account,
             true,
             FfOnboardingSelections::empty(),
         ) {
-            tracing::warn!("failed to persist FF onboarding skip: {err}");
+            Ok(record) => {
+                self.ff_onboarding_visible = false;
+                self.ff_onboarding_draft = FfOnboardingSelections::empty();
+                if account != LOCAL_GUEST_ACCOUNT_ID {
+                    let core = self.core.clone();
+                    ctx.spawn(
+                        async move {
+                            ff_onboarding_sync::push_completed(core.app_state(), &record).await
+                        },
+                        |_view, output, _ctx| {
+                            if let Err(err) = output {
+                                tracing::warn!("FF onboarding skip push failed: {err}");
+                            }
+                        },
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to persist FF onboarding skip: {err}");
+            }
         }
-        self.ff_onboarding_visible = false;
-        self.ff_onboarding_draft = FfOnboardingSelections::empty();
         ctx.notify();
     }
 
@@ -448,16 +512,35 @@ impl AgentPanelView {
             return;
         }
         let data_dir = self.core.data_dir();
+        let account = self.ff_onboarding_account.clone();
         let selections = self.ff_onboarding_draft.clone();
-        if let Err(err) = ff_onboarding_prefs::complete_onboarding(
+        match ff_onboarding_prefs::complete_onboarding(
             &data_dir,
-            &self.ff_onboarding_account,
+            &account,
             false,
             selections,
         ) {
-            tracing::warn!("failed to persist FF onboarding: {err}");
+            Ok(record) => {
+                self.ff_onboarding_visible = false;
+                self.ff_onboarding_draft = FfOnboardingSelections::empty();
+                if account != LOCAL_GUEST_ACCOUNT_ID {
+                    let core = self.core.clone();
+                    ctx.spawn(
+                        async move {
+                            ff_onboarding_sync::push_completed(core.app_state(), &record).await
+                        },
+                        |_view, output, _ctx| {
+                            if let Err(err) = output {
+                                tracing::warn!("FF onboarding submit push failed: {err}");
+                            }
+                        },
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to persist FF onboarding: {err}");
+            }
         }
-        self.ff_onboarding_visible = false;
         ctx.notify();
     }
 
@@ -737,7 +820,7 @@ impl AgentPanelView {
         }
         self.visible = visible;
         if visible {
-            self.sync_ff_onboarding_account();
+            self.sync_ff_onboarding_account(ctx);
             if let Ok(mut panel) = self.state.lock() {
                 panel.input_focused = true;
                 panel.sidebar_search_focused = false;
@@ -2236,6 +2319,50 @@ impl AgentPanelView {
         ctx.notify();
     }
 
+    fn toggle_agent_pet(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.add_menu_open = false;
+        }
+        let enabled = !self.agent_pet_enabled;
+        self.agent_pet_enabled = enabled;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                wormhole_desktop_core::agent_pet_set_enabled(core.app_state(), enabled).await
+            },
+            move |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        view.agent_pet_enabled = status.enabled;
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = if status.running {
+                            "Agent 桌宠已启动".into()
+                        } else if status.enabled {
+                            if status.binary_available {
+                                "桌宠已开启，但进程未运行".into()
+                            } else {
+                                "桌宠已开启，但未找到 wormhole-agent-pet".into()
+                            }
+                        } else {
+                            "Agent 桌宠已关闭".into()
+                        };
+                    }
+                    Err(err) => {
+                        view.agent_pet_enabled = !enabled;
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = format!("桌宠切换失败: {err}");
+                    }
+                }
+                view.bump();
+                ctx.notify();
+            },
+        );
+        self.bump();
+        ctx.notify();
+    }
+
     fn select_model_rate(&mut self, rate: AgentModelRate, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
             panel.model_menu_open = false;
@@ -3124,7 +3251,11 @@ impl AgentPanelView {
         if access_menu_open {
             stack.add_child(
                 Align::new(
-                    Container::new(composer_menus::render_access_menu(self.font, access_mode))
+                    Container::new(composer_menus::render_access_menu(
+                        self.font,
+                        access_mode,
+                        self.agent_pet_enabled,
+                    ))
                         .with_margin_left(ACCESS_POPOVER_INSET_LEFT)
                         .with_margin_bottom(bar_lift)
                         .finish(),
@@ -3686,6 +3817,7 @@ impl TypedActionView for AgentPanelView {
         match action {
             AgentPanelAction::SetVisible(visible) => self.set_tab_visible(*visible, ctx),
             AgentPanelAction::SelectAccessMode(mode) => self.select_access_mode(*mode, ctx),
+            AgentPanelAction::ToggleAgentPet => self.toggle_agent_pet(ctx),
             AgentPanelAction::ToggleAccessMenu => self.toggle_access_menu(ctx),
             AgentPanelAction::SelectModelRate(rate) => self.select_model_rate(*rate, ctx),
             AgentPanelAction::SelectAgentModel {
@@ -3946,6 +4078,9 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::ToggleAccessMenu => {
                 AccessibilityContent::new_without_help("访问权限菜单", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::ToggleAgentPet => {
+                AccessibilityContent::new_without_help("切换 Agent 桌宠", WarpA11yRole::MenuItemRole)
             }
             AgentPanelAction::ToggleAddMenu
             | AgentPanelAction::OpenFilesModal
