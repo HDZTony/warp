@@ -169,6 +169,16 @@ fn main() -> Result<()> {
     }
 
     #[cfg(unix)]
+    {
+        // Forward OAuth / other `wormhole://` launches into the primary instance via file.
+        if let Some(url) = std::env::args().find(|arg| arg.trim().starts_with("wormhole://")) {
+            let path = wormhole_desktop_core::deeplink_commands::incoming_deeplink_file(&data_dir);
+            if let Err(err) = std::fs::write(&path, url.trim()) {
+                tracing::warn!("无法写入 incoming deeplink: {err}");
+            }
+        }
+    }
+    #[cfg(unix)]
     let _gui_instance_lock = acquire_gui_instance_or_exit();
 
     #[cfg(any(windows, target_os = "linux"))]
