@@ -914,13 +914,11 @@ impl DevicesView {
             return;
         };
         let Some(author) = entry.version_author.as_deref() else {
-            self.workspace_status =
-                "文件缺少 SyncIndex 来源节点，暂时无法定位远程虚拟机。请在来源电脑重新扫描后刷新"
-                    .into();
+            self.workspace_status = "打开时将向来源电脑准备文件身份".into();
             return;
         };
         let Some(worker) = self.workspace_worker_for_author(author) else {
-            self.workspace_status = "远程虚拟机尚未准备 Ubuntu 工具运行器".into();
+            self.workspace_status = "远程虚拟机运行器尚未就绪".into();
             return;
         };
         if workspace_worker_supports_app(worker, &self.workspace_selected_app) {
@@ -963,7 +961,7 @@ impl DevicesView {
                 view.share_file_busy = false;
                 view.set_workspace_progress(match result {
                     Ok(session) => format!(
-                        "会话 {} 已提交，正在等待 Ubuntu 运行器就绪",
+                        "会话 {} 已提交，正在等待虚拟机应用就绪",
                         session.session_id
                     ),
                     Err(error) => format!("远程虚拟机打开失败: {error}"),
@@ -1011,7 +1009,7 @@ impl DevicesView {
             requested_by_node_id: None,
         };
         self.workspace_loading = true;
-        self.set_workspace_progress("正在向来源电脑请求准备 Ubuntu 工具运行器…");
+        self.set_workspace_progress("正在向来源电脑请求准备虚拟机运行器…");
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -1168,6 +1166,10 @@ impl DevicesView {
             },
         );
         self.close_workspace_app_picker(ctx);
+        if version_author.as_deref().is_none_or(str::is_empty) {
+            self.workspace_open_selected(ctx);
+            return;
+        }
         let can_open = version_author.as_deref().is_some_and(|author| {
             self.workspace_worker_for_author(author)
                 .is_some_and(|worker| {
@@ -5349,7 +5351,7 @@ impl DevicesView {
             DevicesAction::ConfirmWorkspaceAppOpen,
             true,
             72.0,
-            can_confirm && !self.share_file_busy && !self.workspace_loading,
+            can_confirm && !self.share_file_busy,
         ));
         dialog.add_child(
             Container::new(actions.finish())

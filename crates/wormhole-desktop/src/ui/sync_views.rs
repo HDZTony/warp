@@ -342,6 +342,7 @@ impl SyncView {
                     worker_node_id: Some(worker_node.clone()),
                     policy_id: None,
                     mode: WorkspaceMode::Edit,
+                    shared_source: None,
                 };
                 let session = workspace_open_file(&state, request).await?;
                 workspace_start_session_worker(&state, session.session_id.clone()).await?;
