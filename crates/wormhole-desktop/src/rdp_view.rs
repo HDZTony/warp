@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use display_core::protocol::CodecType;
+use display_server::iroh_transport::ViewerFrame;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
@@ -628,41 +629,29 @@ impl RdpViewerView {
 
                 let mut rx = viewer.subscribe_frames();
                 let mut generation = 0u64;
+                if let Some(viewer_frame) = viewer.last_frame().await {
+                    Self::apply_viewer_frame(
+                        &session_id,
+                        viewer_frame,
+                        &frame,
+                        &mut generation,
+                        &data_dir,
+                        extras_ui.as_ref(),
+                    )
+                    .await;
+                }
                 loop {
                     match rx.recv().await {
                         Ok(viewer_frame) => {
-                            let codec = match viewer_frame.codec.as_str() {
-                                "hevc" => CodecType::Hevc,
-                                "av1" => CodecType::Av1,
-                                _ => CodecType::H264,
-                            };
-                            if let Some((width, height, rgb)) =
-                                decode_frame(session_id.clone(), codec, viewer_frame.data).await
-                            {
-                                generation += 1;
-                                if let Ok(mut guard) = frame.lock() {
-                                    guard.width = width;
-                                    guard.height = height;
-                                    guard.bytes = rgb.clone();
-                                    guard.generation = generation;
-                                }
-                                let push_vcam = extras_ui.as_ref().and_then(|ui| {
-                                    ui.lock()
-                                        .ok()
-                                        .filter(|g| {
-                                            g.virtual_cam_enabled && g.virtual_cam_available
-                                        })
-                                        .map(|_| ())
-                                });
-                                if push_vcam.is_some() {
-                                    let data_dir = data_dir.clone();
-                                    std::thread::spawn(move || {
-                                        let _ = crate::shell_bridge::push_virtual_cam_rgb(
-                                            &data_dir, width, height, &rgb,
-                                        );
-                                    });
-                                }
-                            }
+                            Self::apply_viewer_frame(
+                                &session_id,
+                                viewer_frame,
+                                &frame,
+                                &mut generation,
+                                &data_dir,
+                                extras_ui.as_ref(),
+                            )
+                            .await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(_) => break,
@@ -670,6 +659,46 @@ impl RdpViewerView {
                 }
             });
         });
+    }
+
+    async fn apply_viewer_frame(
+        session_id: &str,
+        viewer_frame: ViewerFrame,
+        frame: &Arc<Mutex<SharedFrame>>,
+        generation: &mut u64,
+        data_dir: &PathBuf,
+        extras_ui: Option<&Arc<Mutex<ExtrasUiState>>>,
+    ) {
+        let codec = match viewer_frame.codec.as_str() {
+            "hevc" => CodecType::Hevc,
+            "av1" => CodecType::Av1,
+            _ => CodecType::H264,
+        };
+        let Some((width, height, rgb)) =
+            decode_frame(session_id.to_owned(), codec, viewer_frame.data).await
+        else {
+            return;
+        };
+
+        *generation += 1;
+        if let Ok(mut guard) = frame.lock() {
+            guard.width = width;
+            guard.height = height;
+            guard.bytes = rgb.clone();
+            guard.generation = *generation;
+        }
+        let push_vcam = extras_ui.and_then(|ui| {
+            ui.lock()
+                .ok()
+                .filter(|g| g.virtual_cam_enabled && g.virtual_cam_available)
+                .map(|_| ())
+        });
+        if push_vcam.is_some() {
+            let data_dir = data_dir.clone();
+            std::thread::spawn(move || {
+                let _ = crate::shell_bridge::push_virtual_cam_rgb(&data_dir, width, height, &rgb);
+            });
+        }
     }
 
     fn normalize_pointer(
