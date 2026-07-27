@@ -1,6 +1,8 @@
 use crate::wormhole_native_ipc::{InvokeRdpRequest, InvokeRdpResponse};
+use display_core::protocol::CodecType;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 use wormhole_desktop_rdp::{settings, RdpRuntime};
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,29 @@ struct SessionArgs {
     session_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct FrameProbeArgs {
+    session_id: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SendInputArgs {
+    session_id: String,
+    event_type: u8,
+    x: f32,
+    y: f32,
+    #[serde(default)]
+    extra: f32,
+    #[serde(default)]
+    pressure: f32,
+    #[serde(default)]
+    tilt_x: f32,
+    #[serde(default)]
+    tilt_y: f32,
+}
+
 pub async fn dispatch(runtime: &RdpRuntime, request: InvokeRdpRequest) -> InvokeRdpResponse {
     match request.command.as_str() {
         "remote_desktop_config" => match runtime.remote_desktop_config().await {
@@ -44,6 +69,92 @@ pub async fn dispatch(runtime: &RdpRuntime, request: InvokeRdpRequest) -> Invoke
             Ok(value) => ok(serde_json::to_value(value).unwrap_or(Value::Null)),
             Err(error) => err(error),
         },
+        "remote_desktop_frame_probe" => {
+            let args: FrameProbeArgs = match serde_json::from_value(request.args) {
+                Ok(args) => args,
+                Err(error) => return err(format!("invalid args: {error}")),
+            };
+            let viewer = match runtime.viewer(&args.session_id).await {
+                Ok(viewer) => viewer,
+                Err(error) => return err(error),
+            };
+            let mut frames = viewer.subscribe_frames();
+            let timeout_ms = args.timeout_ms.unwrap_or(5_000).clamp(100, 15_000);
+            let frame = match viewer.last_frame().await {
+                Some(frame) => frame,
+                None => {
+                    match tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+                        loop {
+                            match frames.recv().await {
+                                Ok(frame) => return Ok(frame),
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    continue;
+                                }
+                                Err(error) => return Err(error.to_string()),
+                            }
+                        }
+                    })
+                    .await
+                    {
+                        Ok(Ok(frame)) => frame,
+                        Ok(Err(error)) => {
+                            return err(format!("receive viewer frame failed: {error}"));
+                        }
+                        Err(_) => {
+                            return err(format!(
+                                "viewer frame probe timed out after {timeout_ms} ms"
+                            ));
+                        }
+                    }
+                }
+            };
+            let codec = match frame.codec.as_str() {
+                "hevc" => CodecType::Hevc,
+                "av1" => CodecType::Av1,
+                _ => CodecType::H264,
+            };
+            match wormhole_desktop_rdp::decode_frame(args.session_id, codec, frame.data).await {
+                Some((width, height, rgb)) => {
+                    let nonzero_bytes = rgb.iter().filter(|byte| **byte != 0).count();
+                    let distinct_sample_colors = rgb
+                        .chunks_exact(3)
+                        .step_by(257)
+                        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                        .collect::<std::collections::HashSet<_>>()
+                        .len();
+                    ok(json!({
+                        "width": width,
+                        "height": height,
+                        "rgb_len": rgb.len(),
+                        "nonzero_bytes": nonzero_bytes,
+                        "distinct_sample_colors": distinct_sample_colors,
+                    }))
+                }
+                None => err("viewer frame decode returned no pixels".into()),
+            }
+        }
+        "remote_desktop_send_input" => {
+            let args: SendInputArgs = match serde_json::from_value(request.args) {
+                Ok(args) => args,
+                Err(error) => return err(format!("invalid args: {error}")),
+            };
+            match runtime
+                .send_input(
+                    &args.session_id,
+                    args.event_type,
+                    args.x,
+                    args.y,
+                    args.extra,
+                    args.pressure,
+                    args.tilt_x,
+                    args.tilt_y,
+                )
+                .await
+            {
+                Ok(()) => ok(Value::Null),
+                Err(error) => err(error),
+            }
+        }
         "remote_desktop_start" => {
             let args: StartViewerArgs = match serde_json::from_value(request.args) {
                 Ok(args) => args,
