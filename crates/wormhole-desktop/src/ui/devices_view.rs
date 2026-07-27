@@ -47,7 +47,7 @@ use wormhole_desktop_core::workspace_ui::{
     WorkspaceVmCandidate, WorkspaceWorker,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +80,8 @@ pub struct DevicesView {
     browsing_node_id: Option<String>,
     browsing_label: String,
     share_entries: Vec<ShareEntryDto>,
+    /// Session cache keyed by `(node_id, share_path_string)`; back/forward reuse without refetch.
+    share_listing_cache: HashMap<(String, String), Vec<ShareEntryDto>>,
     share_error: Option<String>,
     share_loading: bool,
     share_load_seq: u64,
@@ -176,6 +178,7 @@ impl DevicesView {
             browsing_node_id: None,
             browsing_label: String::new(),
             share_entries: Vec::new(),
+            share_listing_cache: HashMap::new(),
             share_error: None,
             share_loading: false,
             share_load_seq: 0,
@@ -327,7 +330,7 @@ impl DevicesView {
             self.stable_cluster_poll_scheduled = false;
         }
         if should_reload_share_root {
-            self.load_share_directory(ctx);
+            self.force_load_share_directory(ctx);
         }
     }
 
@@ -366,6 +369,7 @@ impl DevicesView {
                 self.browsing_node_id = None;
                 self.browsing_label.clear();
                 self.share_entries.clear();
+                self.clear_share_listing_cache();
                 self.share_error = None;
                 self.cancel_share_directory_load();
                 self.share_path.clear();
@@ -425,6 +429,7 @@ impl DevicesView {
             self.browsing_node_id = None;
             self.browsing_label.clear();
             self.share_entries.clear();
+            self.clear_share_listing_cache();
             self.share_error = None;
             self.cancel_share_directory_load();
             self.share_path.clear();
@@ -503,7 +508,7 @@ impl DevicesView {
                                         cluster.nodes.iter().any(|node| node.node_id == node_id)
                                     });
                                 if node_still_present {
-                                    view.load_share_directory(ctx);
+                                    view.force_load_share_directory(ctx);
                                 }
                             }
                         }
@@ -662,15 +667,47 @@ impl DevicesView {
         self.share_loading = false;
     }
 
+    fn clear_share_listing_cache(&mut self) {
+        self.share_listing_cache.clear();
+    }
+
+    /// Load the current share path. Cache hits return immediately without network.
     fn load_share_directory(&mut self, ctx: &mut ViewContext<Self>) {
+        self.load_share_directory_inner(ctx, false);
+    }
+
+    /// Drop the current path cache entry (if any) and fetch from core.
+    fn force_load_share_directory(&mut self, ctx: &mut ViewContext<Self>) {
+        self.load_share_directory_inner(ctx, true);
+    }
+
+    fn load_share_directory_inner(&mut self, ctx: &mut ViewContext<Self>, force: bool) {
         let Some(node_id) = self.browsing_node_id.clone() else {
             return;
         };
         let path = self.share_path_string();
+        let cache_key = (node_id.clone(), path.clone());
+        if force {
+            self.share_listing_cache.remove(&cache_key);
+        } else if let Some(cached) = self.share_listing_cache.get(&cache_key).cloned() {
+            self.share_load_seq = self.share_load_seq.wrapping_add(1);
+            self.share_loading = false;
+            self.share_error = None;
+            self.share_entries = cached;
+            if self
+                .selected_share_file
+                .as_ref()
+                .is_some_and(|name| !self.share_entries.iter().any(|e| &e.name == name))
+            {
+                self.selected_share_file = None;
+            }
+            ctx.notify();
+            return;
+        }
+
         self.share_load_seq = self.share_load_seq.wrapping_add(1);
         let load_seq = self.share_load_seq;
         self.share_loading = true;
-        self.share_entries.clear();
         self.share_error = None;
         let core = self.core.clone();
         ctx.spawn(
@@ -697,6 +734,8 @@ impl DevicesView {
                 view.share_loading = false;
                 match result {
                     Ok(entries) => {
+                        view.share_listing_cache
+                            .insert((node_id, path), entries.clone());
                         view.share_entries = entries;
                         view.share_error = None;
                         if view
@@ -1235,6 +1274,7 @@ impl DevicesView {
         self.browsing_node_id = Some(node_id.clone());
         self.browsing_label = label;
         self.share_entries.clear();
+        self.clear_share_listing_cache();
         self.selected_share_file = None;
         self.workspace_remote_job = None;
         self.share_error = None;
@@ -1245,7 +1285,7 @@ impl DevicesView {
         self.share_add_modal_open = false;
         self.device_context_menu = None;
         self.reset_share_scroll();
-        self.load_share_directory(ctx);
+        self.force_load_share_directory(ctx);
         if is_remote {
             let core = self.core.clone();
             let opened_node = node_id.clone();
@@ -1273,7 +1313,7 @@ impl DevicesView {
                             && view.mode == ViewMode::Files
                             && view.share_path.is_empty()
                         {
-                            view.load_share_directory(ctx);
+                            view.force_load_share_directory(ctx);
                         }
                     }
                     ctx.notify();
@@ -1288,6 +1328,7 @@ impl DevicesView {
         self.browsing_node_id = None;
         self.browsing_label.clear();
         self.share_entries.clear();
+        self.clear_share_listing_cache();
         self.selected_share_file = None;
         self.workspace_remote_job = None;
         self.share_error = None;
@@ -1491,7 +1532,7 @@ impl DevicesView {
                 match output {
                     Ok(created) => {
                         view.share_status = Some(format!("已新建 · {}", created.name));
-                        view.load_share_directory(ctx);
+                        view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
                         view.share_status = Some(format!("新建失败 · {e}"));
@@ -1581,7 +1622,7 @@ impl DevicesView {
                         view.share_rename_entry = None;
                         view.share_rename_feedback = None;
                         view.share_status = Some(format!("已重命名 · {name}"));
-                        view.load_share_directory(ctx);
+                        view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
                         view.share_rename_feedback = Some((StatusTone::Warn, e));
@@ -1682,7 +1723,7 @@ impl DevicesView {
                         view.share_add_modal_open = false;
                         view.share_add_feedback = None;
                         view.share_status = Some("已添加共享文件夹".into());
-                        view.load_share_directory(ctx);
+                        view.force_load_share_directory(ctx);
                         view.refresh_cluster(ctx);
                     }
                     Err(e) => {
@@ -1762,7 +1803,7 @@ impl DevicesView {
                 match output {
                     Ok(()) => {
                         view.share_status = Some(format!("{success} · {entry_name}"));
-                        view.load_share_directory(ctx);
+                        view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
                         view.share_status = Some(format!("失败 · {e}"));
@@ -4789,7 +4830,7 @@ impl DevicesView {
                     Ok(_) => {
                         view.close_share_unshare_modal(ctx);
                         view.share_status = Some(format!("已取消共享 · {name} · 本机文件保留"));
-                        view.load_share_directory(ctx);
+                        view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
                         view.share_error = Some(format!("取消共享失败: {e}"));

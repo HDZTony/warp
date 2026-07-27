@@ -40,7 +40,7 @@ pub fn pick_file_for_kind(kind: AttachKind) -> Option<PathBuf> {
             .set_title("选择图片或视频")
             .add_filter(
                 "图片",
-                &["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic"],
+                &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic"],
             )
             .add_filter("视频", &["mp4", "mov", "webm", "mkv", "avi"])
             .pick_file(),
@@ -53,6 +53,14 @@ pub fn pick_file_for_kind(kind: AttachKind) -> Option<PathBuf> {
                     "7z", "csv", "json",
                 ],
             )
+            .add_filter(
+                "图片或视频（按文件发送）",
+                &[
+                    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic", "mp4", "mov",
+                    "webm", "mkv", "avi",
+                ],
+            )
+            .add_filter("所有文件", &["*"])
             .pick_file(),
     }
 }
