@@ -13,10 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use composer_add::{
-    ComposerAttachment, FilesModalState, MediaModalState, ADD_POPOVER_INSET_LEFT, DEMO_FILES,
-    DEMO_MEDIA,
-};
+use composer_add::{ComposerAttachment, FilesModalState, ADD_POPOVER_INSET_LEFT, DEMO_FILES};
 use composer_menus::{access_label, composer_model_chip_label};
 use ff_onboarding::FfOnboardingGroup;
 use pathfinder_color::ColorU;
@@ -34,6 +31,7 @@ use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_core::agent_llm_commands::{AgentLlmChatMessage, AgentLlmChatParams};
+use wormhole_desktop_core::agent_plugins_catalog::{self, AgentPluginListItem};
 use wormhole_desktop_core::agent_provider_commands::{
     self, AgentModelChoiceDto, SelectAgentModelParams,
 };
@@ -99,10 +97,10 @@ pub enum AgentPanelAction {
     CloseFilesModal,
     SelectDemoFile(usize),
     ConfirmFilesModal,
-    OpenMediaModal,
-    CloseMediaModal,
-    SelectDemoMedia(usize),
-    ConfirmMediaModal,
+    OpenPluginsPicker,
+    ClosePluginsPicker,
+    SelectPlugin(String),
+    InstallPlugin(String),
     ToggleGoalMode,
     TogglePlanMode,
     ClearGoalMode,
@@ -226,11 +224,18 @@ struct PanelState {
     access_menu_open: bool,
     model_menu_open: bool,
     add_menu_open: bool,
+    /// Char index of `@` that opened the add menu (if any).
+    at_anchor: Option<usize>,
+    plugins_picker_open: bool,
+    plugins_list: Vec<AgentPluginListItem>,
+    plugins_available: Vec<AgentPluginListItem>,
+    plugins_loading: bool,
+    plugins_error: Option<String>,
+    plugins_installing: Option<String>,
     plan_mode: bool,
     goal_mode: bool,
     attachments: Vec<ComposerAttachment>,
     files_modal: Option<FilesModalState>,
-    media_modal: Option<MediaModalState>,
     field_state: TextFieldState,
     sidebar_hover: Option<String>,
     project_head_hover: Option<String>,
@@ -364,11 +369,17 @@ impl AgentPanelView {
                 access_menu_open: false,
                 model_menu_open: false,
                 add_menu_open: false,
+                at_anchor: None,
+                plugins_picker_open: false,
+                plugins_list: Vec::new(),
+                plugins_available: Vec::new(),
+                plugins_loading: false,
+                plugins_error: None,
+                plugins_installing: None,
                 plan_mode: false,
                 goal_mode: false,
                 attachments: Vec::new(),
                 files_modal: None,
-                media_modal: None,
                 field_state: TextFieldState::new(),
                 sidebar_hover: None,
                 project_head_hover: None,
@@ -2084,6 +2095,13 @@ impl AgentPanelView {
                 panel.add_menu_open = false;
                 changed = true;
             }
+            if panel.plugins_picker_open {
+                panel.plugins_picker_open = false;
+                changed = true;
+            }
+            if panel.at_anchor.take().is_some() {
+                changed = true;
+            }
         }
         if changed {
             ctx.notify();
@@ -2098,15 +2116,54 @@ impl AgentPanelView {
             panel.session_context_menu = None;
             panel.access_menu_open = false;
             panel.model_menu_open = false;
+            panel.plugins_picker_open = false;
             panel.add_menu_open = !panel.add_menu_open;
+            // `+` toggle never owns an `@` anchor.
+            panel.at_anchor = None;
         }
         ctx.notify();
     }
 
+    fn open_add_menu_from_at(&mut self, anchor: usize, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.project_row_menu = None;
+            panel.chats_menu_open = false;
+            panel.chats_flyout = None;
+            panel.session_context_menu = None;
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.plugins_picker_open = false;
+            panel.add_menu_open = true;
+            panel.at_anchor = Some(anchor);
+        }
+        ctx.notify();
+    }
+
+    /// Remove a bare `@` that opened the add menu when choosing a non-plugin action.
+    fn clear_at_trigger_from_draft(panel: &mut PanelState) {
+        let Some(anchor) = panel.at_anchor.take() else {
+            return;
+        };
+        let chars: Vec<char> = panel.draft.chars().collect();
+        if chars.get(anchor) != Some(&'@') {
+            return;
+        }
+        let mut next = String::new();
+        for (i, ch) in chars.into_iter().enumerate() {
+            if i != anchor {
+                next.push(ch);
+            }
+        }
+        panel.draft = next;
+        let cursor = panel.field_state.cursor;
+        panel.field_state.cursor = cursor.saturating_sub(1).min(panel.draft.chars().count());
+    }
+
     fn open_files_modal(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
+            Self::clear_at_trigger_from_draft(&mut panel);
             panel.add_menu_open = false;
-            panel.media_modal = None;
+            panel.plugins_picker_open = false;
             panel.files_modal = Some(FilesModalState::new());
         }
         ctx.notify();
@@ -2152,67 +2209,168 @@ impl AgentPanelView {
         ctx.notify();
     }
 
-    fn open_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
+    fn open_plugins_picker(&mut self, ctx: &mut ViewContext<Self>) {
+        let should_load = {
+            let Ok(mut panel) = self.state.lock() else {
+                return;
+            };
             panel.add_menu_open = false;
-            panel.files_modal = None;
-            panel.media_modal = Some(MediaModalState::new());
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.plugins_picker_open = true;
+            panel.plugins_loading = true;
+            panel.plugins_error = None;
+            true
+        };
+        ctx.notify();
+        if should_load {
+            self.refresh_plugins_list(ctx);
+        }
+    }
+
+    fn close_plugins_picker(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.plugins_picker_open = false;
         }
         ctx.notify();
     }
 
-    fn close_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
-            panel.media_modal = None;
-        }
-        ctx.notify();
-    }
-
-    fn select_demo_media(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        if let Ok(mut panel) = self.state.lock() {
-            if let Some(modal) = panel.media_modal.as_mut() {
-                if index < DEMO_MEDIA.len() {
-                    modal.selected = index;
+    fn refresh_plugins_list(&mut self, ctx: &mut ViewContext<Self>) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_plugins_catalog::agent_plugins_list(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(mut panel) = view.state.lock() {
+                    panel.plugins_loading = false;
+                    match output {
+                        Ok(dto) => {
+                            panel.plugins_list = dto.plugins;
+                            panel.plugins_available = dto.available;
+                            panel.plugins_error = None;
+                        }
+                        Err(err) => {
+                            panel.plugins_list.clear();
+                            panel.plugins_available.clear();
+                            panel.plugins_error = Some(err);
+                        }
+                    }
                 }
-            }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn select_plugin(&mut self, plugin_id: String, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            let Some(plugin) = panel
+                .plugins_list
+                .iter()
+                .find(|p| p.id == plugin_id)
+                .cloned()
+            else {
+                panel.plugins_picker_open = false;
+                return;
+            };
+            let insert = format!("{} ", plugin.insert_text);
+            let chars: Vec<char> = panel.draft.chars().collect();
+            let (start, end) = if let Some(anchor) = panel.at_anchor {
+                let mut end = (anchor + 1).min(chars.len());
+                while end < chars.len() && !chars[end].is_whitespace() {
+                    end += 1;
+                }
+                (anchor.min(chars.len()), end)
+            } else {
+                let cursor = panel.field_state.cursor.min(chars.len());
+                (cursor, cursor)
+            };
+            let mut rebuilt = String::new();
+            rebuilt.extend(chars.iter().take(start));
+            rebuilt.push_str(&insert);
+            rebuilt.extend(chars.iter().skip(end));
+            panel.draft = rebuilt;
+            panel.field_state.cursor = start + insert.chars().count();
+            panel.at_anchor = None;
+            panel.plugins_picker_open = false;
+            panel.add_menu_open = false;
+            panel.input_focused = true;
         }
+        self.bump();
         ctx.notify();
     }
 
-    fn confirm_media_modal(&mut self, ctx: &mut ViewContext<Self>) {
+    fn install_plugin(&mut self, plugin_id: String, ctx: &mut ViewContext<Self>) {
+        let plugin_name = {
+            let Ok(panel) = self.state.lock() else {
+                return;
+            };
+            panel
+                .plugins_available
+                .iter()
+                .find(|p| p.id == plugin_id)
+                .map(|p| {
+                    p.id.split('@')
+                        .next()
+                        .unwrap_or(p.name.as_str())
+                        .to_string()
+                })
+        };
+        let Some(name) = plugin_name else {
+            return;
+        };
         if let Ok(mut panel) = self.state.lock() {
-            let Some(modal) = panel.media_modal.as_ref() else {
-                return;
-            };
-            let Some(item) = DEMO_MEDIA.get(modal.selected) else {
-                return;
-            };
-            let path = item.name.to_string();
-            if !panel.attachments.iter().any(|a| a.path == path) {
-                panel.attachments.push(ComposerAttachment {
-                    name: item.name.to_string(),
-                    path,
-                    size: item.size.to_string(),
-                    is_folder: false,
-                });
-            }
-            panel.media_modal = None;
+            panel.plugins_installing = Some(plugin_id.clone());
+            panel.plugins_error = None;
         }
         ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_plugins_catalog::agent_plugins_install(
+                    &state,
+                    agent_plugins_catalog::AgentPluginInstallParams { name },
+                )
+                .await?;
+                agent_plugins_catalog::agent_plugins_list(&state).await
+            },
+            |view, output, ctx| {
+                if let Ok(mut panel) = view.state.lock() {
+                    panel.plugins_installing = None;
+                    match output {
+                        Ok(dto) => {
+                            panel.plugins_list = dto.plugins;
+                            panel.plugins_available = dto.available;
+                            panel.plugins_error = None;
+                        }
+                        Err(err) => {
+                            panel.plugins_error = Some(err);
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn toggle_goal_mode(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
+            Self::clear_at_trigger_from_draft(&mut panel);
             panel.goal_mode = !panel.goal_mode;
             panel.add_menu_open = false;
+            panel.plugins_picker_open = false;
         }
         ctx.notify();
     }
 
     fn toggle_plan_mode(&mut self, ctx: &mut ViewContext<Self>) {
         if let Ok(mut panel) = self.state.lock() {
+            Self::clear_at_trigger_from_draft(&mut panel);
             panel.plan_mode = !panel.plan_mode;
             panel.add_menu_open = false;
+            panel.plugins_picker_open = false;
         }
         ctx.notify();
     }
@@ -2225,6 +2383,7 @@ impl AgentPanelView {
             panel.session_context_menu = None;
             panel.model_menu_open = false;
             panel.add_menu_open = false;
+            panel.plugins_picker_open = false;
             panel.access_menu_open = !panel.access_menu_open;
         }
         ctx.notify();
@@ -2241,6 +2400,7 @@ impl AgentPanelView {
             panel.session_context_menu = None;
             panel.access_menu_open = false;
             panel.add_menu_open = false;
+            panel.plugins_picker_open = false;
             panel.model_menu_open = !panel.model_menu_open;
             panel.model_menu_open
         };
@@ -3167,6 +3327,12 @@ impl AgentPanelView {
         access_menu_open: bool,
         model_menu_open: bool,
         add_menu_open: bool,
+        plugins_picker_open: bool,
+        plugins: &[AgentPluginListItem],
+        plugins_available: &[AgentPluginListItem],
+        plugins_loading: bool,
+        plugins_installing: Option<&str>,
+        plugins_error: Option<&str>,
         goal_mode: bool,
         plan_mode: bool,
         folder_below: bool,
@@ -3184,6 +3350,12 @@ impl AgentPanelView {
             access_menu_open,
             model_menu_open,
             add_menu_open,
+            plugins_picker_open,
+            plugins,
+            plugins_available,
+            plugins_loading,
+            plugins_installing,
+            plugins_error,
             goal_mode,
             plan_mode,
             bar_lift,
@@ -3199,6 +3371,12 @@ impl AgentPanelView {
         access_menu_open: bool,
         model_menu_open: bool,
         add_menu_open: bool,
+        plugins_picker_open: bool,
+        plugins: &[AgentPluginListItem],
+        plugins_available: &[AgentPluginListItem],
+        plugins_loading: bool,
+        plugins_installing: Option<&str>,
+        plugins_error: Option<&str>,
         goal_mode: bool,
         plan_mode: bool,
     ) -> Box<dyn Element> {
@@ -3211,6 +3389,12 @@ impl AgentPanelView {
             access_menu_open,
             model_menu_open,
             add_menu_open,
+            plugins_picker_open,
+            plugins,
+            plugins_available,
+            plugins_loading,
+            plugins_installing,
+            plugins_error,
             goal_mode,
             plan_mode,
             COMPOSER_BAR_LIFT,
@@ -3230,6 +3414,12 @@ impl AgentPanelView {
         access_menu_open: bool,
         model_menu_open: bool,
         add_menu_open: bool,
+        plugins_picker_open: bool,
+        plugins: &[AgentPluginListItem],
+        plugins_available: &[AgentPluginListItem],
+        plugins_loading: bool,
+        plugins_installing: Option<&str>,
+        plugins_error: Option<&str>,
         goal_mode: bool,
         plan_mode: bool,
         bar_lift: f32,
@@ -3239,6 +3429,25 @@ impl AgentPanelView {
                 Align::new(
                     Container::new(composer_add::render_add_menu(
                         self.font, goal_mode, plan_mode,
+                    ))
+                    .with_margin_left(ADD_POPOVER_INSET_LEFT)
+                    .with_margin_bottom(bar_lift)
+                    .finish(),
+                )
+                .bottom_left()
+                .finish(),
+            );
+        }
+        if plugins_picker_open {
+            stack.add_child(
+                Align::new(
+                    Container::new(composer_add::render_plugins_picker(
+                        self.font,
+                        plugins,
+                        plugins_available,
+                        plugins_loading,
+                        plugins_installing,
+                        plugins_error,
                     ))
                     .with_margin_left(ADD_POPOVER_INSET_LEFT)
                     .with_margin_bottom(bar_lift)
@@ -3418,11 +3627,16 @@ impl View for AgentPanelView {
         let access_menu_open = state.access_menu_open;
         let model_menu_open = state.model_menu_open;
         let add_menu_open = state.add_menu_open;
+        let plugins_picker_open = state.plugins_picker_open;
+        let plugins_list = state.plugins_list.clone();
+        let plugins_available = state.plugins_available.clone();
+        let plugins_loading = state.plugins_loading;
+        let plugins_installing = state.plugins_installing.clone();
+        let plugins_error = state.plugins_error.clone();
         let plan_mode = state.plan_mode;
         let goal_mode = state.goal_mode;
         let attachments = state.attachments.clone();
         let files_modal = state.files_modal.clone();
-        let media_modal = state.media_modal.clone();
         let access_mode = self.access_mode;
         let model_rate = self.model_rate;
         let projects = state.projects.clone();
@@ -3570,7 +3784,7 @@ impl View for AgentPanelView {
                 .with_child(Expanded::new(1.0, idle_stack.finish()).finish())
                 .finish();
             main_stack.add_child(idle_body);
-            if access_menu_open || model_menu_open || add_menu_open {
+            if access_menu_open || model_menu_open || add_menu_open || plugins_picker_open {
                 let chips_extra = if plan_mode || goal_mode || !attachments.is_empty() {
                     40.0
                 } else {
@@ -3584,6 +3798,12 @@ impl View for AgentPanelView {
                     access_menu_open,
                     model_menu_open,
                     add_menu_open,
+                    plugins_picker_open,
+                    &plugins_list,
+                    &plugins_available,
+                    plugins_loading,
+                    plugins_installing.as_deref(),
+                    plugins_error.as_deref(),
                     goal_mode,
                     plan_mode,
                 ));
@@ -3626,13 +3846,19 @@ impl View for AgentPanelView {
             main_stack.add_child(thread_column);
             main_stack
                 .add_child(self.composer_bottom_layer(composer_folder.clone(), composer_surface));
-            if access_menu_open || model_menu_open || add_menu_open {
+            if access_menu_open || model_menu_open || add_menu_open || plugins_picker_open {
                 main_stack.add_child(self.render_composer_popovers(
                     access_mode,
                     model_rate,
                     access_menu_open,
                     model_menu_open,
                     add_menu_open,
+                    plugins_picker_open,
+                    &plugins_list,
+                    &plugins_available,
+                    plugins_loading,
+                    plugins_installing.as_deref(),
+                    plugins_error.as_deref(),
                     goal_mode,
                     plan_mode,
                     composer_folder.is_some(),
@@ -3713,9 +3939,6 @@ impl View for AgentPanelView {
                 self.font, self.mono, files,
             ));
         }
-        if let Some(media) = &media_modal {
-            root_stack.add_child(composer_add::render_media_modal(self.font, media));
-        }
         if let Some((session_id, archived, x, y)) = session_context_menu {
             root_stack.add_child(sidebar::render_session_context_menu(
                 self.font,
@@ -3750,7 +3973,7 @@ impl View for AgentPanelView {
                     move |ctx, _, keystroke| {
                         if keystroke.key == "escape" {
                             ctx.dispatch_typed_action(AgentPanelAction::CloseFilesModal);
-                            ctx.dispatch_typed_action(AgentPanelAction::CloseMediaModal);
+                            ctx.dispatch_typed_action(AgentPanelAction::ClosePluginsPicker);
                             ctx.dispatch_typed_action(AgentPanelAction::CloseProjectDeleteModal);
                             ctx.dispatch_typed_action(AgentPanelAction::CloseProjectCreateModal);
                             ctx.dispatch_typed_action(AgentPanelAction::CloseSessionContextMenu);
@@ -3830,10 +4053,10 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::CloseFilesModal => self.close_files_modal(ctx),
             AgentPanelAction::SelectDemoFile(i) => self.select_demo_file(*i, ctx),
             AgentPanelAction::ConfirmFilesModal => self.confirm_files_modal(ctx),
-            AgentPanelAction::OpenMediaModal => self.open_media_modal(ctx),
-            AgentPanelAction::CloseMediaModal => self.close_media_modal(ctx),
-            AgentPanelAction::SelectDemoMedia(i) => self.select_demo_media(*i, ctx),
-            AgentPanelAction::ConfirmMediaModal => self.confirm_media_modal(ctx),
+            AgentPanelAction::OpenPluginsPicker => self.open_plugins_picker(ctx),
+            AgentPanelAction::ClosePluginsPicker => self.close_plugins_picker(ctx),
+            AgentPanelAction::SelectPlugin(id) => self.select_plugin(id.clone(), ctx),
+            AgentPanelAction::InstallPlugin(id) => self.install_plugin(id.clone(), ctx),
             AgentPanelAction::ToggleGoalMode => self.toggle_goal_mode(ctx),
             AgentPanelAction::TogglePlanMode => self.toggle_plan_mode(ctx),
             AgentPanelAction::ClearGoalMode => {
@@ -4030,12 +4253,27 @@ impl TypedActionView for AgentPanelView {
                 self.stop_active_run(ctx);
             }
             AgentPanelAction::TextFieldEdit(edit) => {
-                if let Ok(mut panel) = self.state.lock() {
+                let open_at_anchor = {
+                    let Ok(mut panel) = self.state.lock() else {
+                        return;
+                    };
                     let edit = edit.clone();
+                    let typed_at = matches!(
+                        &edit,
+                        TextFieldEditAction::TypedCharacters(s) if s == "@"
+                    );
                     let mut draft = std::mem::take(&mut panel.draft);
                     panel.field_state.apply(&mut draft, &edit);
                     panel.draft = draft;
                     panel.input_focused = true;
+                    if typed_at {
+                        at_mention_anchor(&panel.draft, panel.field_state.cursor)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(anchor) = open_at_anchor {
+                    self.open_add_menu_from_at(anchor, ctx);
                 }
                 sync_caret_blink(self, ctx);
                 self.bump();
@@ -4087,10 +4325,10 @@ impl TypedActionView for AgentPanelView {
             | AgentPanelAction::CloseFilesModal
             | AgentPanelAction::SelectDemoFile(_)
             | AgentPanelAction::ConfirmFilesModal
-            | AgentPanelAction::OpenMediaModal
-            | AgentPanelAction::CloseMediaModal
-            | AgentPanelAction::SelectDemoMedia(_)
-            | AgentPanelAction::ConfirmMediaModal
+            | AgentPanelAction::OpenPluginsPicker
+            | AgentPanelAction::ClosePluginsPicker
+            | AgentPanelAction::SelectPlugin(_)
+            | AgentPanelAction::InstallPlugin(_)
             | AgentPanelAction::ToggleGoalMode
             | AgentPanelAction::TogglePlanMode
             | AgentPanelAction::ClearGoalMode
@@ -4258,6 +4496,23 @@ impl CaretBlinkHost for AgentPanelView {
     }
 }
 
+/// If `cursor` sits right after a standalone `@` (start of draft or after whitespace),
+/// return the char index of that `@`.
+fn at_mention_anchor(draft: &str, cursor: usize) -> Option<usize> {
+    let chars: Vec<char> = draft.chars().collect();
+    if cursor == 0 || cursor > chars.len() {
+        return None;
+    }
+    let anchor = cursor - 1;
+    if chars.get(anchor) != Some(&'@') {
+        return None;
+    }
+    if anchor > 0 && !chars[anchor - 1].is_whitespace() {
+        return None;
+    }
+    Some(anchor)
+}
+
 fn run_elapsed_seconds(started_at: Option<SystemTime>, now: SystemTime) -> Option<u64> {
     started_at.and_then(|started| {
         now.duration_since(started)
@@ -4309,11 +4564,17 @@ mod tests {
             access_menu_open: false,
             model_menu_open: false,
             add_menu_open: false,
+            at_anchor: None,
+            plugins_picker_open: false,
+            plugins_list: Vec::new(),
+            plugins_available: Vec::new(),
+            plugins_loading: false,
+            plugins_error: None,
+            plugins_installing: None,
             plan_mode: false,
             goal_mode: false,
             attachments: Vec::new(),
             files_modal: None,
-            media_modal: None,
             field_state: TextFieldState::new(),
             sidebar_hover: None,
             project_head_hover: None,

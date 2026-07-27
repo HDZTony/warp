@@ -19,9 +19,9 @@ use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::device_identity::device_bootstrap;
 use wormhole_desktop_core::{
-    cloud_auth_status, supabase_password_login, supabase_resend_signup, supabase_signup,
-    CloudAuthStatusDto, SupabasePasswordLoginParams, SupabaseResendSignupParams,
-    SupabaseSignupParams,
+    cloud_auth_status, poll_google_oauth, start_google_oauth, supabase_password_login,
+    supabase_resend_signup, supabase_signup, CloudAuthStatusDto, SupabasePasswordLoginParams,
+    SupabaseResendSignupParams, SupabaseSignupParams,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +35,7 @@ pub enum LoginModalAction {
     Open,
     Close,
     Submit,
+    StartGoogleOAuth,
     ResendConfirmation,
     ToggleMode,
     ToggleRemember,
@@ -82,6 +83,8 @@ pub struct LoginModalView {
     auto_login: bool,
     /// Guards against repeated silent auto-login attempts in one process.
     auto_login_attempted: bool,
+    /// Waiting for browser Google OAuth deep-link callback.
+    oauth_waiting: bool,
 }
 
 impl LoginModalView {
@@ -108,6 +111,7 @@ impl LoginModalView {
             remember: false,
             auto_login: false,
             auto_login_attempted: false,
+            oauth_waiting: false,
         }
     }
 
@@ -120,6 +124,7 @@ impl LoginModalView {
         self.mode = AuthMode::Login;
         self.status.clear();
         self.pending_confirmation = false;
+        self.oauth_waiting = false;
         self.apply_remembered_credentials();
         self.focus_email_only();
         sync_caret_blink(self, ctx);
@@ -584,6 +589,24 @@ impl LoginModalView {
                 .finish(),
         );
 
+        if !is_register {
+            col.add_child(
+                Container::new(
+                    self.action_button(
+                        if self.oauth_waiting {
+                            "等待 Google 浏览器回调…"
+                        } else {
+                            "使用 Google 登录"
+                        },
+                        LoginModalAction::StartGoogleOAuth,
+                        false,
+                    ),
+                )
+                .with_vertical_margin(4.0)
+                .finish(),
+            );
+        }
+
         let mut switch_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::Center);
@@ -630,12 +653,114 @@ impl LoginModalView {
         view.persist_current_login_prefs();
         view.status.clear();
         view.pending_confirmation = false;
+        view.oauth_waiting = false;
         view.close(ctx);
         ctx.emit(LoginModalEvent::AuthChanged {
             authenticated: status.authenticated,
             device_id: status.device_id,
             email: status.email,
         });
+    }
+
+    fn start_google_oauth(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.busy || self.oauth_waiting {
+            return;
+        }
+        self.busy = true;
+        self.oauth_waiting = true;
+        self.pending_confirmation = false;
+        self.status = "正在打开浏览器完成 Google 登录…".into();
+        self.status_tone = StatusTone::Placeholder;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                start_google_oauth(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(_) => {
+                        view.status = "请在浏览器完成 Google 登录，完成后将自动返回。".into();
+                        view.status_tone = StatusTone::Placeholder;
+                        view.schedule_oauth_poll(ctx);
+                    }
+                    Err(err) => {
+                        view.oauth_waiting = false;
+                        view.status = err;
+                        view.status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_oauth_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.oauth_waiting {
+            return;
+        }
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                let state = core.runtime().state.clone();
+                poll_google_oauth(&state).await
+            },
+            |view, output, ctx| {
+                if !view.oauth_waiting {
+                    return;
+                }
+                match output {
+                    Ok(Some(status)) => {
+                        view.busy = true;
+                        view.status = "Google 登录成功，正在绑定设备…".into();
+                        view.status_tone = StatusTone::Placeholder;
+                        view.complete_oauth_bootstrap(status, ctx);
+                    }
+                    Ok(None) => view.schedule_oauth_poll(ctx),
+                    Err(err) => {
+                        view.oauth_waiting = false;
+                        view.status = err;
+                        view.status_tone = StatusTone::Danger;
+                        ctx.notify();
+                    }
+                }
+            },
+        );
+    }
+
+    fn complete_oauth_bootstrap(
+        &mut self,
+        _status: CloudAuthStatusDto,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let bootstrap = device_bootstrap(&state)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if !bootstrap.ready {
+                    return Err(bootstrap.error.unwrap_or_else(|| "设备身份恢复失败".into()));
+                }
+                cloud_auth_status(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(status) => Self::finish_authenticated(view, status, ctx),
+                    Err(err) => {
+                        view.oauth_waiting = false;
+                        view.status = err;
+                        view.status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn submit(&mut self, ctx: &mut ViewContext<Self>) {
@@ -836,8 +961,12 @@ impl TypedActionView for LoginModalView {
     fn handle_action(&mut self, action: &LoginModalAction, ctx: &mut ViewContext<Self>) {
         match action {
             LoginModalAction::Open => self.open(ctx),
-            LoginModalAction::Close => self.close(ctx),
+            LoginModalAction::Close => {
+                self.oauth_waiting = false;
+                self.close(ctx);
+            }
             LoginModalAction::Submit => self.submit(ctx),
+            LoginModalAction::StartGoogleOAuth => self.start_google_oauth(ctx),
             LoginModalAction::ResendConfirmation => self.resend_confirmation(ctx),
             LoginModalAction::ToggleMode => self.toggle_mode(ctx),
             LoginModalAction::ToggleRemember => {

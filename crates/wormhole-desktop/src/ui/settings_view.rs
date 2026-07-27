@@ -18,6 +18,7 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui::agent_providers_view::AgentProvidersView;
+use crate::ui::plugins_view::PluginsView;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
@@ -47,6 +48,7 @@ pub enum SettingsPage {
     Cache,
     Archive,
     VirtualMachine,
+    Plugins,
 }
 
 impl SettingsPage {
@@ -61,6 +63,7 @@ impl SettingsPage {
             SettingsPage::Cache,
             SettingsPage::Archive,
             SettingsPage::VirtualMachine,
+            SettingsPage::Plugins,
         ]
     }
 
@@ -75,6 +78,7 @@ impl SettingsPage {
             SettingsPage::Cache => "清理缓存",
             SettingsPage::Archive => "历史归档",
             SettingsPage::VirtualMachine => "虚拟机",
+            SettingsPage::Plugins => "插件",
         }
     }
 
@@ -82,13 +86,14 @@ impl SettingsPage {
         match self {
             SettingsPage::Account => ("ACCOUNT", "账号"),
             SettingsPage::Email => ("CONNECTORS", "邮箱"),
-            SettingsPage::Agent => ("AGENT", "Codex / bb-browser"),
+            SettingsPage::Agent => ("AGENT", "Codex 供应商"),
             SettingsPage::Cluster => ("CLUSTER", "设置集群"),
             SettingsPage::Relay => ("P2P", "Relay"),
             SettingsPage::SharedPath => ("DATA", "共享文件存放位置"),
             SettingsPage::Cache => ("CACHE", "清理缓存"),
             SettingsPage::Archive => ("ARCHIVE", "历史对话归档"),
             SettingsPage::VirtualMachine => ("SYSTEM", "虚拟机"),
+            SettingsPage::Plugins => ("PLUGIN", "bb-browser"),
         }
     }
 
@@ -98,7 +103,7 @@ impl SettingsPage {
             SettingsPage::Cluster | SettingsPage::Relay => "集群",
             SettingsPage::SharedPath => "数据",
             SettingsPage::Cache | SettingsPage::Archive => "存储",
-            SettingsPage::VirtualMachine => "系统",
+            SettingsPage::VirtualMachine | SettingsPage::Plugins => "系统",
         }
     }
 
@@ -112,6 +117,7 @@ impl SettingsPage {
             SettingsPage::Cache => "share-sync.svg",
             SettingsPage::Archive => "agent-menu-archive.svg",
             SettingsPage::VirtualMachine => "device-pc.svg",
+            SettingsPage::Plugins => "tab-toolbox.svg",
         }
     }
 
@@ -122,10 +128,13 @@ impl SettingsPage {
             haystack.push_str(" email gmail outlook");
         }
         if self == SettingsPage::Agent {
-            haystack.push_str(" codex cursor bb-browser mcp computer use llm api key");
+            haystack.push_str(" codex cursor mcp computer use llm api key");
         }
         if self == SettingsPage::VirtualMachine {
             haystack.push_str(" 工具箱 toolbox runner");
+        }
+        if self == SettingsPage::Plugins {
+            haystack.push_str(" bb-browser chromium browser mcp plugin 插件");
         }
         haystack
     }
@@ -234,6 +243,7 @@ pub struct SettingsView {
     scroll: ClippedScrollStateHandle,
     toolbox: ViewHandle<ToolboxView>,
     agent_providers: ViewHandle<AgentProvidersView>,
+    plugins: ViewHandle<PluginsView>,
 }
 
 impl SettingsView {
@@ -254,6 +264,7 @@ impl SettingsView {
             ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone()));
         let agent_providers =
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
+        let plugins = ctx.add_typed_action_view(|ctx| PluginsView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -296,6 +307,7 @@ impl SettingsView {
             scroll: ClippedScrollStateHandle::new(),
             toolbox,
             agent_providers,
+            plugins,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
@@ -730,6 +742,7 @@ impl SettingsView {
             SettingsPage::Cache => col.add_child(self.cache_block()),
             SettingsPage::Archive => col.add_child(self.archive_block()),
             SettingsPage::VirtualMachine => col.add_child(ChildView::new(&self.toolbox).finish()),
+            SettingsPage::Plugins => col.add_child(ChildView::new(&self.plugins).finish()),
         }
         col.add_child(
             Container::new(
@@ -2130,8 +2143,9 @@ mod tests {
         assert!(SettingsPage::Account.matches_query("账号"));
         assert!(SettingsPage::Relay.matches_query("p2p"));
         assert!(SettingsPage::Email.matches_query("gmail"));
-        assert!(SettingsPage::Agent.matches_query("bb-browser"));
+        assert!(SettingsPage::Plugins.matches_query("bb-browser"));
         assert!(SettingsPage::Agent.matches_query("codex"));
+        assert!(!SettingsPage::Agent.matches_query("bb-browser"));
         assert!(SettingsPage::VirtualMachine.matches_query("工具箱"));
         assert!(SettingsPage::VirtualMachine.matches_query("toolbox"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
@@ -2146,6 +2160,10 @@ mod tests {
         assert_eq!(
             settings_pages_in_group("集群"),
             vec![SettingsPage::Cluster, SettingsPage::Relay]
+        );
+        assert_eq!(
+            settings_pages_in_group("系统"),
+            vec![SettingsPage::VirtualMachine, SettingsPage::Plugins]
         );
     }
 

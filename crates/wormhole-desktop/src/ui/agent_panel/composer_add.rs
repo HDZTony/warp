@@ -1,5 +1,5 @@
-//! Composer「添加」面板 + chips + 演示用文件/媒体浏览器（对齐 `#agent-add-panel` /
-//! `#agent-files-modal` / `#agent-media-modal`）。
+//! Composer「添加」面板 + chips + 演示用文件浏览器 + `@ Plugins` 选择器
+//!（对齐 `#agent-add-panel` / `#agent-files-modal`）。
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
@@ -36,12 +36,6 @@ pub struct DemoFileItem {
     pub size: &'static str,
     pub is_folder: bool,
     pub preview: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DemoMediaItem {
-    pub name: &'static str,
-    pub size: &'static str,
 }
 
 /// HTML `fileItems` demo catalog.
@@ -97,22 +91,6 @@ pub const DEMO_FILES: &[DemoFileItem] = &[
     },
 ];
 
-/// HTML `mediaItems` demo catalog (names/sizes; thumbs are placeholders).
-pub const DEMO_MEDIA: &[DemoMediaItem] = &[
-    DemoMediaItem {
-        name: "wormhole-hero.png",
-        size: "6.3 MB",
-    },
-    DemoMediaItem {
-        name: "codex-add-menu.png",
-        size: "15 KB",
-    },
-    DemoMediaItem {
-        name: "ui-markup.png",
-        size: "407 KB",
-    },
-];
-
 #[derive(Debug, Clone)]
 pub struct FilesModalState {
     pub selected: usize,
@@ -122,17 +100,6 @@ impl FilesModalState {
     pub fn new() -> Self {
         let selected = DEMO_FILES.iter().position(|f| !f.is_folder).unwrap_or(0);
         Self { selected }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct MediaModalState {
-    pub selected: usize,
-}
-
-impl MediaModalState {
-    pub fn new() -> Self {
-        Self { selected: 0 }
     }
 }
 
@@ -204,15 +171,14 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
         .with_horizontal_padding(4.0)
         .finish(),
     );
-    // HTML ships `#agent-media-modal` (demo); keep it reachable from the add menu.
     col.add_child(
         Container::new(add_menu_item(
             font,
-            "agent-attach.svg",
-            "图片或视频",
-            None,
+            "agent-menu-organize.svg",
+            "@ Plugins",
+            Some("插件"),
             false,
-            AgentPanelAction::OpenMediaModal,
+            AgentPanelAction::OpenPluginsPicker,
         ))
         .with_horizontal_padding(4.0)
         .finish(),
@@ -680,191 +646,118 @@ pub fn render_files_modal(
         .finish()
 }
 
-fn media_thumb(
+/// Popover listing installed + installable Wormhole marketplace plugins.
+pub fn render_plugins_picker(
     font: FamilyId,
-    item: &DemoMediaItem,
-    index: usize,
-    selected: bool,
+    installed: &[wormhole_desktop_core::AgentPluginListItem],
+    available: &[wormhole_desktop_core::AgentPluginListItem],
+    loading: bool,
+    installing_id: Option<&str>,
+    error: Option<&str>,
 ) -> Box<dyn Element> {
-    let border = if selected {
-        theme::accent_cool()
-    } else {
-        theme::border()
-    };
-    EventHandler::new(
-        Container::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(
-                    ConstrainedBox::new(
-                        Container::new(
-                            Align::new(icons::icon("agent-attach.svg", 28.0, theme::muted()))
-                                .finish(),
-                        )
-                        .with_background(theme::canvas())
-                        .finish(),
-                    )
-                    .with_height(88.0)
-                    .finish(),
-                )
-                .with_child(
-                    Container::new(
-                        ui_text::body(item.name.to_string(), font)
-                            .with_color(theme::text())
-                            .finish(),
-                    )
-                    .with_padding_top(6.0)
-                    .finish(),
-                )
-                .finish(),
-        )
-        .with_uniform_padding(8.0)
-        .with_border(Border::all(1.0).with_border_fill(border))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-        .finish(),
-    )
-    .on_left_mouse_down(move |ctx, _, _| {
-        ctx.dispatch_typed_action(AgentPanelAction::SelectDemoMedia(index));
-        DispatchEventResult::StopPropagation
-    })
-    .finish()
-}
+    let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    col.add_child(popover_menu_header(font, "Plugins"));
 
-pub fn render_media_modal(font: FamilyId, state: &MediaModalState) -> Box<dyn Element> {
-    let selected = DEMO_MEDIA.get(state.selected).unwrap_or(&DEMO_MEDIA[0]);
-    let mut grid = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    let mut row = Flex::row();
-    for (i, item) in DEMO_MEDIA.iter().enumerate() {
-        row.add_child(
-            Container::new(media_thumb(font, item, i, i == state.selected))
-                .with_margin_right(8.0)
-                .with_margin_bottom(8.0)
-                .finish(),
-        );
-        if (i + 1) % 2 == 0 {
-            grid.add_child(row.finish());
-            row = Flex::row();
-        }
-    }
-    if DEMO_MEDIA.len() % 2 != 0 {
-        grid.add_child(row.finish());
-    }
-
-    let mut preview = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    preview.add_child(
-        ConstrainedBox::new(
+    if loading {
+        col.add_child(
             Container::new(
-                Align::new(icons::icon("agent-attach.svg", 48.0, theme::muted())).finish(),
+                ui_text::body("正在加载插件…".to_string(), font)
+                    .with_color(theme::muted())
+                    .finish(),
             )
-            .with_background(theme::canvas())
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .with_uniform_padding(12.0)
             .finish(),
-        )
-        .with_height(180.0)
-        .finish(),
-    );
-    preview.add_child(
-        Container::new(
-            ui_text::body(format!("{} · {}", selected.name, selected.size), font)
+        );
+    } else if let Some(err) = error {
+        col.add_child(
+            Container::new(
+                ui_text::body(err.to_string(), font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_uniform_padding(12.0)
+            .finish(),
+        );
+    } else if installed.is_empty() && available.is_empty() {
+        col.add_child(
+            Container::new(
+                ui_text::body(
+                    "暂无插件。登录 Wormhole 账号后可浏览远程市场。".to_string(),
+                    font,
+                )
                 .with_color(theme::muted())
                 .finish(),
-        )
-        .with_padding_top(10.0)
-        .finish(),
-    );
-
-    let mut body = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-    body.add_child(
-        Flex::row()
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(
-                ui_text::modal_dialog_title("图片或视频".to_string(), font)
-                    .with_color(theme::text())
-                    .finish(),
             )
-            .with_child(modal_close_btn(font, AgentPanelAction::CloseMediaModal))
+            .with_uniform_padding(12.0)
             .finish(),
-    );
-    body.add_child(
-        Container::new(
-            Flex::row()
-                .with_child(
-                    ConstrainedBox::new(grid.finish())
-                        .with_width(280.0)
+        );
+    } else {
+        if !installed.is_empty() {
+            col.add_child(
+                Container::new(
+                    ui_text::body("已安装".to_string(), font)
+                        .with_color(theme::muted())
                         .finish(),
                 )
-                .with_child(
-                    Expanded::new(
-                        1.0,
-                        Container::new(preview.finish())
-                            .with_padding_left(12.0)
-                            .finish(),
-                    )
-                    .finish(),
-                )
+                .with_horizontal_padding(12.0)
+                .with_padding_top(4.0)
+                .with_padding_bottom(2.0)
                 .finish(),
-        )
-        .with_padding_top(12.0)
-        .finish(),
-    );
-    body.add_child(
-        Container::new(
-            Flex::row()
-                .with_main_axis_alignment(MainAxisAlignment::End)
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_child(modal_foot_btn(
-                    font,
-                    "取消",
-                    false,
-                    true,
-                    AgentPanelAction::CloseMediaModal,
-                ))
-                .with_child(
-                    Container::new(modal_foot_btn(
+            );
+            for plugin in installed {
+                let id = plugin.id.clone();
+                let title = plugin.name.clone();
+                let desc = plugin.description.clone();
+                col.add_child(
+                    Container::new(add_menu_item(
                         font,
-                        "添加",
-                        true,
-                        true,
-                        AgentPanelAction::ConfirmMediaModal,
+                        "agent-menu-organize.svg",
+                        &title,
+                        desc.as_deref(),
+                        false,
+                        AgentPanelAction::SelectPlugin(id),
                     ))
-                    .with_margin_left(8.0)
+                    .with_horizontal_padding(4.0)
                     .finish(),
+                );
+            }
+        }
+        if !available.is_empty() {
+            col.add_child(
+                Container::new(
+                    ui_text::body("可安装".to_string(), font)
+                        .with_color(theme::muted())
+                        .finish(),
                 )
+                .with_horizontal_padding(12.0)
+                .with_padding_top(8.0)
+                .with_padding_bottom(2.0)
                 .finish(),
-        )
-        .with_padding_top(16.0)
-        .finish(),
-    );
+            );
+            for plugin in available {
+                let id = plugin.id.clone();
+                let title = plugin.name.clone();
+                let installing = installing_id == Some(id.as_str());
+                let desc = if installing {
+                    Some("安装中…".to_string())
+                } else {
+                    plugin.description.clone()
+                };
+                col.add_child(
+                    Container::new(add_menu_item(
+                        font,
+                        "agent-menu-organize.svg",
+                        &title,
+                        desc.as_deref(),
+                        false,
+                        AgentPanelAction::InstallPlugin(id),
+                    ))
+                    .with_horizontal_padding(4.0)
+                    .finish(),
+                );
+            }
+        }
+    }
 
-    let dialog = EventHandler::new(
-        Container::new(
-            ConstrainedBox::new(body.finish())
-                .with_width(680.0)
-                .finish(),
-        )
-        .with_uniform_padding(20.0)
-        .with_background(theme::panel_elevated())
-        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
-        .finish(),
-    )
-    .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
-    .finish();
-
-    let scrim = EventHandler::new(
-        Container::new(Flex::row().finish())
-            .with_background(ColorU::new(8, 7, 11, 180))
-            .finish(),
-    )
-    .on_left_mouse_down(|ctx, _, _| {
-        ctx.dispatch_typed_action(AgentPanelAction::CloseMediaModal);
-        DispatchEventResult::StopPropagation
-    })
-    .finish();
-
-    Stack::new()
-        .with_child(scrim)
-        .with_child(Align::new(dialog).finish())
-        .finish()
+    popover_shell_with_radius(ADD_POPOVER_WIDTH, ADD_POPOVER_RADIUS, col.finish())
 }
