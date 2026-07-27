@@ -4,6 +4,7 @@
 use std::io::Read;
 use std::path::Path;
 
+use storage_core::decode_chat_image_to_rgb;
 use warpui::assets::asset_cache::AssetCache;
 use warpui::{SingletonEntity, ViewContext};
 use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
@@ -16,14 +17,19 @@ pub fn chat_attachment_asset_id(attachment_id: &str) -> String {
     format!("wormhole-chat-attachment-{attachment_id}")
 }
 
+/// Decode bytes via `storage-core` (png/jpeg/gif/webp/bmp/avif/heic) into RGB asset payload.
 pub fn decode_image_asset_payload(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|err| err.to_string())?;
-    let image = reader.decode().map_err(|err| err.to_string())?.to_rgb8();
-    let (width, height) = image.dimensions();
+    let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+    let path = dir.path().join("chat-preview.bin");
+    std::fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+    decode_image_asset_from_path(&path)
+}
+
+pub fn decode_image_asset_from_path(path: &Path) -> Result<Vec<u8>, String> {
+    let rgb = decode_chat_image_to_rgb(path).map_err(|err| err.to_string())?;
+    let (width, height) = rgb.dimensions();
     CustomImageHeader::prepend_custom_header(
-        image.into_raw(),
+        rgb.into_raw(),
         width,
         height,
         CustomImageFormat::Rgb,
@@ -66,8 +72,7 @@ pub fn insert_attachment_image_asset<V: warpui::View>(
     attachment_id: &str,
     path: &Path,
 ) -> Result<String, String> {
-    let bytes = load_image_bytes_from_path(path)?;
-    let payload = decode_image_asset_payload(bytes)?;
+    let payload = decode_image_asset_from_path(path)?;
     let asset_id = chat_attachment_asset_id(attachment_id);
     AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
         cache.insert_raw_asset_bytes::<ImageType>(asset_id.clone(), &payload, model_ctx);
@@ -93,5 +98,21 @@ mod tests {
             chat_attachment_asset_id("att-1"),
             "wormhole-chat-attachment-att-1"
         );
+    }
+
+    #[test]
+    fn decode_png_asset_payload_works() {
+        use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.png");
+        let mut img = RgbImage::new(4, 3);
+        for p in img.pixels_mut() {
+            *p = Rgb([1, 2, 3]);
+        }
+        DynamicImage::ImageRgb8(img)
+            .save_with_format(&path, ImageFormat::Png)
+            .unwrap();
+        let payload = decode_image_asset_from_path(&path).unwrap();
+        assert!(!payload.is_empty());
     }
 }
