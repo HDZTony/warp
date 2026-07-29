@@ -1,4 +1,4 @@
-//! Settings → 插件：bb-browser 托管 Chromium / MCP。
+//! Settings → 插件：Codex 市场 + bb-browser 托管 Chromium / MCP。
 
 use warpui::elements::{
     Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
@@ -8,6 +8,9 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use wormhole_desktop_core::agent_bb_browser_commands::{
     self, AgentBbBrowserStatusDto, ConfigureAgentBbBrowserParams,
+};
+use wormhole_desktop_core::agent_plugins_catalog::{
+    self, AgentPluginInstallParams, AgentPluginListItem, AgentPluginsListDto,
 };
 
 use crate::ui::core_handle::CoreHandle;
@@ -20,6 +23,7 @@ use crate::ui_text;
 #[derive(Debug, Clone)]
 pub enum PluginsAction {
     Refresh,
+    InstallMarketplacePlugin(String),
     ToggleBbBrowser,
     ToggleBbBrowserAutoStart,
     EnsureBbBrowser,
@@ -30,6 +34,9 @@ pub enum PluginsAction {
 pub struct PluginsView {
     core: CoreHandle,
     font: FamilyId,
+    marketplace: Option<AgentPluginsListDto>,
+    marketplace_error: Option<String>,
+    installing_id: Option<String>,
     bb_browser: Option<AgentBbBrowserStatusDto>,
     status: String,
     busy: bool,
@@ -41,6 +48,9 @@ impl PluginsView {
         let mut view = Self {
             core,
             font,
+            marketplace: None,
+            marketplace_error: None,
+            installing_id: None,
             bb_browser: None,
             status: String::new(),
             busy: false,
@@ -57,20 +67,78 @@ impl PluginsView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                agent_bb_browser_commands::agent_bb_browser_status(&state).await
+                let bb = agent_bb_browser_commands::agent_bb_browser_status(&state).await;
+                let market = agent_plugins_catalog::agent_plugins_list(&state).await;
+                (bb, market)
             },
             |view, output, ctx| {
-                match output {
+                match output.0 {
                     Ok(status) => {
                         view.bb_browser = Some(status);
-                        view.status = "插件状态已刷新".into();
                     }
                     Err(error) => {
                         view.bb_browser = None;
-                        view.status = format!("刷新插件失败: {error}");
+                        view.status = format!("刷新 bb-browser 失败: {error}");
+                    }
+                }
+                match output.1 {
+                    Ok(dto) => {
+                        view.marketplace = Some(dto);
+                        view.marketplace_error = None;
+                        if view.status.starts_with("正在刷新") || view.status.is_empty() {
+                            view.status = "插件状态已刷新".into();
+                        }
+                    }
+                    Err(error) => {
+                        view.marketplace = None;
+                        view.marketplace_error = Some(error.clone());
+                        view.status = format!("刷新 Codex 市场失败: {error}");
                     }
                 }
                 view.busy = false;
+                view.installing_id = None;
+                ctx.notify();
+            },
+        );
+    }
+
+    fn install_marketplace_plugin(&mut self, plugin_id: String, ctx: &mut ViewContext<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.installing_id = Some(plugin_id.clone());
+        self.status = format!("正在安装 {plugin_id}…");
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let (name, marketplace) = if let Some((n, m)) = plugin_id.split_once('@') {
+                    (n.to_string(), Some(m.to_string()))
+                } else {
+                    (plugin_id.clone(), None)
+                };
+                agent_plugins_catalog::agent_plugins_install(
+                    &state,
+                    AgentPluginInstallParams { name, marketplace },
+                )
+                .await?;
+                agent_plugins_catalog::agent_plugins_list(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                view.installing_id = None;
+                match output {
+                    Ok(dto) => {
+                        view.marketplace = Some(dto);
+                        view.marketplace_error = None;
+                        view.status = "插件已安装".into();
+                    }
+                    Err(err) => {
+                        view.status = format!("安装失败: {err}");
+                    }
+                }
                 ctx.notify();
             },
         );
@@ -235,6 +303,122 @@ impl PluginsView {
         .finish()
     }
 
+    fn marketplace_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("CODEX · 插件市场", self.font));
+        col.add_child(section_hint(
+            "浏览 Wormhole 托管的 Codex 插件（官方镜像按需下载单个 zip）。需登录；不 clone openai/plugins，不启用 remote_plugin。",
+            self.font,
+        ));
+
+        if let Some(error) = &self.marketplace_error {
+            col.add_child(status_line(
+                truncate_middle(error, 140),
+                self.font,
+                StatusTone::Danger,
+            ));
+            return col.finish();
+        }
+
+        let Some(dto) = &self.marketplace else {
+            col.add_child(status_line(
+                "正在加载 Codex 插件市场…",
+                self.font,
+                StatusTone::Muted,
+            ));
+            return col.finish();
+        };
+
+        let installed_count = dto.plugins.len();
+        let available_count = dto.available.len();
+        col.add_child(status_line(
+            format!("已安装 {installed_count} · 可安装 {available_count}"),
+            self.font,
+            StatusTone::Neutral,
+        ));
+
+        if !dto.plugins.is_empty() {
+            col.add_child(
+                Container::new(section_hint("已安装", self.font))
+                    .with_margin_top(8.0)
+                    .finish(),
+            );
+            for plugin in &dto.plugins {
+                col.add_child(self.plugin_row(plugin, false));
+            }
+        }
+
+        if !dto.available.is_empty() {
+            col.add_child(
+                Container::new(section_hint("可安装", self.font))
+                    .with_margin_top(10.0)
+                    .finish(),
+            );
+            for plugin in &dto.available {
+                col.add_child(self.plugin_row(plugin, true));
+            }
+        }
+
+        if dto.plugins.is_empty() && dto.available.is_empty() {
+            col.add_child(status_line(
+                "市场为空。请确认已登录，且 R2 catalog 已同步。",
+                self.font,
+                StatusTone::Placeholder,
+            ));
+        }
+
+        col.finish()
+    }
+
+    fn plugin_row(&self, plugin: &AgentPluginListItem, installable: bool) -> Box<dyn Element> {
+        let category = plugin
+            .category
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("—");
+        let desc = plugin
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .trim();
+        let line = if desc.is_empty() {
+            format!("{} · {}", plugin.name, category)
+        } else {
+            format!("{} · {} · {}", plugin.name, category, desc)
+        };
+        let mut row_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        row_col.add_child(
+            ui_text::body(truncate_middle(&line, 110), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        if installable {
+            let id = plugin.id.clone();
+            let installing = self.installing_id.as_deref() == Some(id.as_str());
+            let label = if installing { "安装中…" } else { "安装" };
+            row_col.add_child(
+                Container::new(self.action_button(
+                    label,
+                    PluginsAction::InstallMarketplacePlugin(id),
+                ))
+                .with_margin_top(6.0)
+                .finish(),
+            );
+        } else {
+            row_col.add_child(
+                Container::new(status_line("已安装", self.font, StatusTone::Success))
+                    .with_margin_top(4.0)
+                    .finish(),
+            );
+        }
+        Container::new(row_col.finish())
+            .with_uniform_padding(10.0)
+            .with_margin_top(6.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+            .finish()
+    }
+
     fn bb_browser_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("PLUGIN · bb-browser", self.font));
@@ -397,8 +581,13 @@ impl View for PluginsView {
         }
 
         col.add_child(
-            Container::new(self.bb_browser_block())
+            Container::new(self.marketplace_block())
                 .with_margin_top(12.0)
+                .finish(),
+        );
+        col.add_child(
+            Container::new(self.bb_browser_block())
+                .with_margin_top(16.0)
                 .finish(),
         );
 
@@ -412,6 +601,9 @@ impl TypedActionView for PluginsView {
     fn handle_action(&mut self, action: &PluginsAction, ctx: &mut ViewContext<Self>) {
         match action {
             PluginsAction::Refresh => self.refresh(ctx),
+            PluginsAction::InstallMarketplacePlugin(id) => {
+                self.install_marketplace_plugin(id.clone(), ctx)
+            }
             PluginsAction::ToggleBbBrowser => {
                 let enabled = self
                     .bb_browser

@@ -2302,7 +2302,7 @@ impl AgentPanelView {
     }
 
     fn install_plugin(&mut self, plugin_id: String, ctx: &mut ViewContext<Self>) {
-        let plugin_name = {
+        let install_params = {
             let Ok(panel) = self.state.lock() else {
                 return;
             };
@@ -2311,13 +2311,14 @@ impl AgentPanelView {
                 .iter()
                 .find(|p| p.id == plugin_id)
                 .map(|p| {
-                    p.id.split('@')
-                        .next()
-                        .unwrap_or(p.name.as_str())
-                        .to_string()
+                    let (name, marketplace) = match p.id.split_once('@') {
+                        Some((name, market)) => (name.to_string(), Some(market.to_string())),
+                        None => (p.name.clone(), None),
+                    };
+                    agent_plugins_catalog::AgentPluginInstallParams { name, marketplace }
                 })
         };
-        let Some(name) = plugin_name else {
+        let Some(params) = install_params else {
             return;
         };
         if let Ok(mut panel) = self.state.lock() {
@@ -2329,11 +2330,7 @@ impl AgentPanelView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                agent_plugins_catalog::agent_plugins_install(
-                    &state,
-                    agent_plugins_catalog::AgentPluginInstallParams { name },
-                )
-                .await?;
+                agent_plugins_catalog::agent_plugins_install(&state, params).await?;
                 agent_plugins_catalog::agent_plugins_list(&state).await
             },
             |view, output, ctx| {
