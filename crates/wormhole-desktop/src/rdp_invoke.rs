@@ -80,41 +80,22 @@ pub async fn dispatch(runtime: &RdpRuntime, request: InvokeRdpRequest) -> Invoke
             };
             let mut frames = viewer.subscribe_frames();
             let timeout_ms = args.timeout_ms.unwrap_or(5_000).clamp(100, 15_000);
-            let frame = match viewer.last_frame().await {
-                Some(frame) => frame,
-                None => {
-                    match tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-                        loop {
-                            match frames.recv().await {
-                                Ok(frame) => return Ok(frame),
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                    continue;
-                                }
-                                Err(error) => return Err(error.to_string()),
-                            }
-                        }
-                    })
-                    .await
-                    {
-                        Ok(Ok(frame)) => frame,
-                        Ok(Err(error)) => {
-                            return err(format!("receive viewer frame failed: {error}"));
-                        }
-                        Err(_) => {
-                            return err(format!(
-                                "viewer frame probe timed out after {timeout_ms} ms"
-                            ));
-                        }
-                    }
-                }
-            };
-            let codec = match frame.codec.as_str() {
-                "hevc" => CodecType::Hevc,
-                "av1" => CodecType::Av1,
-                _ => CodecType::H264,
-            };
-            match wormhole_desktop_rdp::decode_frame(args.session_id, codec, frame.data).await {
-                Some((width, height, rgb)) => {
+            // H.264 software decoders often need an IDR (and may return None for the
+            // first packet). Keep feeding frames until one decodes within the timeout.
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let mut last_decode_error = "viewer frame decode returned no pixels".to_string();
+            let mut attempted = 0u32;
+            if let Some(frame) = viewer.last_frame().await {
+                attempted += 1;
+                let codec = match frame.codec.as_str() {
+                    "hevc" => CodecType::Hevc,
+                    "av1" => CodecType::Av1,
+                    _ => CodecType::H264,
+                };
+                if let Some((width, height, rgb)) =
+                    wormhole_desktop_rdp::decode_frame(args.session_id.clone(), codec, frame.data)
+                        .await
+                {
                     let nonzero_bytes = rgb.iter().filter(|byte| **byte != 0).count();
                     let distinct_sample_colors = rgb
                         .chunks_exact(3)
@@ -122,16 +103,77 @@ pub async fn dispatch(runtime: &RdpRuntime, request: InvokeRdpRequest) -> Invoke
                         .map(|pixel| [pixel[0], pixel[1], pixel[2]])
                         .collect::<std::collections::HashSet<_>>()
                         .len();
-                    ok(json!({
+                    return ok(json!({
                         "width": width,
                         "height": height,
                         "rgb_len": rgb.len(),
                         "nonzero_bytes": nonzero_bytes,
                         "distinct_sample_colors": distinct_sample_colors,
-                    }))
+                        "frames_tried": attempted,
+                    }));
                 }
-                None => err("viewer frame decode returned no pixels".into()),
             }
+            while tokio::time::Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let frame = match tokio::time::timeout(remaining, async {
+                    loop {
+                        match frames.recv().await {
+                            Ok(frame) => return Ok(frame),
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(error) => return Err(error.to_string()),
+                        }
+                    }
+                })
+                .await
+                {
+                    Ok(Ok(frame)) => frame,
+                    Ok(Err(error)) => {
+                        return err(format!("receive viewer frame failed: {error}"));
+                    }
+                    Err(_) => break,
+                };
+                attempted += 1;
+                let codec = match frame.codec.as_str() {
+                    "hevc" => CodecType::Hevc,
+                    "av1" => CodecType::Av1,
+                    _ => CodecType::H264,
+                };
+                match wormhole_desktop_rdp::decode_frame(
+                    args.session_id.clone(),
+                    codec,
+                    frame.data,
+                )
+                .await
+                {
+                    Some((width, height, rgb)) => {
+                        let nonzero_bytes = rgb.iter().filter(|byte| **byte != 0).count();
+                        let distinct_sample_colors = rgb
+                            .chunks_exact(3)
+                            .step_by(257)
+                            .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                            .collect::<std::collections::HashSet<_>>()
+                            .len();
+                        return ok(json!({
+                            "width": width,
+                            "height": height,
+                            "rgb_len": rgb.len(),
+                            "nonzero_bytes": nonzero_bytes,
+                            "distinct_sample_colors": distinct_sample_colors,
+                            "frames_tried": attempted,
+                        }));
+                    }
+                    None => {
+                        last_decode_error = format!(
+                            "viewer frame decode returned no pixels after {attempted} frame(s)"
+                        );
+                    }
+                }
+            }
+            err(if attempted == 0 {
+                format!("viewer frame probe timed out after {timeout_ms} ms")
+            } else {
+                last_decode_error
+            })
         }
         "remote_desktop_send_input" => {
             let args: SendInputArgs = match serde_json::from_value(request.args) {

@@ -13,7 +13,11 @@ path = "src/main.rs"
 
 [features]
 default = ["media-ffmpeg", "remote-desktop", "native-ui"]
-media-ffmpeg = ["wormhole-desktop-core/media-ffmpeg"]
+media-ffmpeg = [
+  "wormhole-desktop-core/media-ffmpeg",
+  "wormhole-desktop-rdp/media-ffmpeg",
+  "display-server/media-ffmpeg",
+]
 remote-desktop = ["wormhole-desktop-core/remote-desktop"]
 native-ui = ["wormhole-desktop-core/native-ui"]
 
