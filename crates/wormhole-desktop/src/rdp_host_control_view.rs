@@ -13,9 +13,10 @@ use wormhole_desktop_rdp::settings::{load_settings, save_settings, RdpSettings};
 use wormhole_desktop_rdp::wol::send_magic_packet;
 use wormhole_desktop_rdp::{
     apply_host_side_effects, format_addressbook_entries, format_entries, generate_totp_secret,
-    list as list_audit, load_addressbook, logon_task_installed, trim as trim_audit,
-    upsert_addressbook_entry, windows_service_installed, RdpAddressBookEntry, RdpRuntime,
-    RemoteDesktopSessionDto, SessionRole, DEFAULT_BROADCAST,
+    list as list_audit, load_addressbook, logon_task_installed, mic_sink_status_line,
+    next_viewer_mic_sink, trim as trim_audit, upsert_addressbook_entry, windows_service_installed,
+    HostMonitorInfo, RdpAddressBookEntry, RdpRuntime, RemoteDesktopSessionDto, SessionRole,
+    DEFAULT_BROADCAST,
 };
 
 use crate::coordinator::{CoordinatorState, UiCommand};
@@ -41,6 +42,7 @@ enum HostControlField {
     AbName,
     AbNodeId,
     WolMac,
+    PrintDropPeer,
 }
 
 struct HostControlUi {
@@ -64,6 +66,8 @@ struct HostControlUi {
     vram_available: bool,
     logon_task_installed: bool,
     windows_service_installed: bool,
+    host_monitors: Vec<HostMonitorInfo>,
+    mic_sink_label: String,
 }
 
 impl Default for HostControlUi {
@@ -89,6 +93,8 @@ impl Default for HostControlUi {
             vram_available: false,
             logon_task_installed: false,
             windows_service_installed: false,
+            host_monitors: Vec::new(),
+            mic_sink_label: "扬声器（D1-A）".into(),
         }
     }
 }
@@ -211,6 +217,8 @@ impl RdpHostControlView {
                     .unwrap_or_else(|e| format!("读取审计失败: {e}"));
                 let book = load_addressbook(&data_dir).await.unwrap_or_default();
                 let discovered_text = format_discovered(&sessions);
+                let monitors = runtime.list_host_monitors();
+                let mic_sink_label = mic_sink_status_line(&settings);
                 Some((
                     settings,
                     config.node_id.unwrap_or_default(),
@@ -220,6 +228,8 @@ impl RdpHostControlView {
                     audit,
                     book.entries,
                     discovered_text,
+                    monitors,
+                    mic_sink_label,
                 ))
             })
         })
@@ -236,6 +246,8 @@ impl RdpHostControlView {
             audit_text,
             book_entries,
             discovered_text,
+            host_monitors,
+            mic_sink_label,
         )) = snapshot
         {
             let sessions_text = format_sessions(&sessions);
@@ -259,6 +271,8 @@ impl RdpHostControlView {
                 ui.audit_text = audit_text;
                 ui.book_entries = book_entries;
                 ui.discovered_text = discovered_text;
+                ui.host_monitors = host_monitors;
+                ui.mic_sink_label = mic_sink_label;
             }
         }
     }
@@ -349,18 +363,34 @@ impl RdpHostControlView {
         let ui = self.ui.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().ok();
-            let msg = rt
-                .and_then(|rt| {
-                    rt.block_on(async {
-                        save_settings(&data_dir, &settings).await?;
-                        apply_host_side_effects(&data_dir, &settings)?;
-                        let runtime = runtime.lock().await;
-                        runtime.ensure_unattended_host(&settings).await
-                    })
-                    .ok()
-                })
-                .map(|_| "设置已保存".to_string())
-                .unwrap_or_else(|| "保存设置失败".to_string());
+            let msg = match rt {
+                Some(rt) => match rt.block_on(async {
+                    let mut settings = settings;
+                    if let Some(peer) = settings.print_drop_peer.as_mut() {
+                        let trimmed = peer.trim().to_string();
+                        if trimmed.is_empty() {
+                            settings.print_drop_peer = None;
+                        } else {
+                            *peer = trimmed;
+                        }
+                    }
+                    save_settings(&data_dir, &settings).await?;
+                    apply_host_side_effects(&data_dir, &settings)?;
+                    let runtime = runtime.lock().await;
+                    runtime.ensure_unattended_host(&settings).await?;
+                    Ok::<_, String>(settings)
+                }) {
+                    Ok(settings) => {
+                        if let Ok(mut guard) = ui.lock() {
+                            guard.settings = settings;
+                            guard.mic_sink_label = mic_sink_status_line(&guard.settings);
+                        }
+                        "设置已保存".to_string()
+                    }
+                    Err(e) => format!("保存失败: {e}"),
+                },
+                None => "保存设置失败".to_string(),
+            };
             if let Ok(mut guard) = ui.lock() {
                 guard.status = msg;
                 guard.logon_task_installed = logon_task_installed();
@@ -689,7 +719,18 @@ impl RdpHostControlView {
 
     fn bump_monitor(&self, delta: i32) {
         if let Ok(mut ui) = self.ui.lock() {
-            ui.settings.host_monitor = (ui.settings.host_monitor + delta).clamp(0, 7);
+            let max = ui.host_monitors.len().saturating_sub(1) as i32;
+            let max = max.max(0);
+            ui.settings.host_monitor = (ui.settings.host_monitor + delta).clamp(0, max);
+        }
+        self.bump();
+    }
+
+    fn cycle_mic_sink(&self) {
+        if let Ok(mut ui) = self.ui.lock() {
+            ui.settings.viewer_mic_sink = next_viewer_mic_sink(&ui.settings.viewer_mic_sink);
+            ui.mic_sink_label = mic_sink_status_line(&ui.settings);
+            ui.status = format!("麦克风注入：{}", ui.mic_sink_label);
         }
         self.bump();
     }
@@ -713,7 +754,7 @@ impl RdpHostControlView {
                 | HostControlField::ConnectTotp => {
                     ui.page = HostControlPage::Connect;
                 }
-                HostControlField::HostPassword => {
+                HostControlField::HostPassword | HostControlField::PrintDropPeer => {
                     ui.page = HostControlPage::Host;
                 }
                 HostControlField::AbName | HostControlField::AbNodeId => {
@@ -762,6 +803,12 @@ impl RdpHostControlView {
                 HostControlField::AbName => &mut ui.ab_name,
                 HostControlField::AbNodeId => &mut ui.ab_node_id,
                 HostControlField::WolMac => &mut ui.wol_mac,
+                HostControlField::PrintDropPeer => {
+                    if ui.settings.print_drop_peer.is_none() {
+                        ui.settings.print_drop_peer = Some(String::new());
+                    }
+                    ui.settings.print_drop_peer.as_mut().unwrap()
+                }
             };
             match keystroke.key.as_str() {
                 "backspace" => {
@@ -815,6 +862,7 @@ fn field_label(field: HostControlField) -> &'static str {
         HostControlField::AbName => "地址簿名称",
         HostControlField::AbNodeId => "地址簿 Node ID",
         HostControlField::WolMac => "WoL MAC",
+        HostControlField::PrintDropPeer => "Print Drop 对端",
     }
 }
 
@@ -887,8 +935,32 @@ fn format_host_body(ui: &HostControlUi) -> String {
     } else {
         "仅 Windows"
     };
+    let monitors = if ui.host_monitors.is_empty() {
+        format!("{}", ui.settings.host_monitor)
+    } else {
+        let list = ui
+            .host_monitors
+            .iter()
+            .map(|m| {
+                let mark = if m.index as i32 == ui.settings.host_monitor {
+                    "*"
+                } else {
+                    " "
+                };
+                format!("{mark}{}:{}x{}", m.index, m.width, m.height)
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        format!("{}  [{}]", ui.settings.host_monitor, list)
+    };
+    let print_peer = ui
+        .settings
+        .print_drop_peer
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("（未设置 — 聚焦后输入 Node ID/别名）");
     format!(
-        "本机 Node ID\n{}\n\n无人值守：{}\n启动自监听：{}\n访问密码：{}\n\nFPS：{}  监视器：{}\n画质：{} ({})  编码：{}\nVRAM：{}\n隐私屏：{}\nTOTP：{}  密钥：{}\n登录计划任务：{}\nWindows 服务模式：{}\n\n聚焦「访问密码」后键盘输入；Enter 保存设置。\n当前聚焦：{}\n\n{}",
+        "本机 Node ID\n{}\n\n无人值守：{}\n启动自监听：{}\n访问密码：{}\n\nFPS：{}  监视器：{}\n画质：{} ({})  编码：{}\nVRAM：{}\n隐私屏：{}\nTOTP：{}  密钥：{}\n登录计划任务：{}\nWindows 服务模式：{}\n麦克风注入：{}\nPrint Drop 对端：{}\n\n聚焦「访问密码 / Print Drop」后键盘输入；Enter 保存设置。\n当前聚焦：{}\n\n{}",
         ui.node_id,
         if ui.settings.unattended_enabled {
             "已启用"
@@ -902,7 +974,7 @@ fn format_host_body(ui: &HostControlUi) -> String {
         },
         password,
         ui.settings.host_fps,
-        ui.settings.host_monitor,
+        monitors,
         quality_label(&ui.settings.quality_preset),
         ui.settings.quality_preset,
         ui.settings.host_codec.to_uppercase(),
@@ -920,6 +992,8 @@ fn format_host_body(ui: &HostControlUi) -> String {
         totp_secret,
         logon,
         service,
+        ui.mic_sink_label,
+        print_peer,
         field_label(ui.active_field),
         ui.status,
     )
@@ -1128,6 +1202,23 @@ impl View for RdpHostControlView {
                         v.bump_monitor(delta);
                     }));
             }
+            let v = self.clone_refs();
+            host_actions = host_actions.with_child(link_label(
+                "切换麦克风注入",
+                self.font,
+                false,
+                move || v.cycle_mic_sink(),
+            ));
+            let v = self.clone_refs();
+            let print_active = ui.active_field == HostControlField::PrintDropPeer;
+            host_actions = host_actions.with_child(link_label(
+                "编辑 Print Drop 对端",
+                self.font,
+                print_active,
+                move || {
+                    v.focus_field(HostControlField::PrintDropPeer);
+                },
+            ));
             let v = self.clone_refs();
             host_actions =
                 host_actions.with_child(link_label("切换画质", self.font, false, move || {

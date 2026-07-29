@@ -76,6 +76,9 @@ pub struct ExtrasUiState {
     pub virtual_cam_enabled: bool,
     pub virtual_cam_available: bool,
     pub virtual_cam_hint: String,
+    pub peer_monitor_count: u32,
+    pub peer_monitor_index: u32,
+    pub mic_uplink_enabled: bool,
 }
 
 impl ExtrasUiState {
@@ -115,6 +118,8 @@ pub enum ExtrasUiAction {
     ToggleFullscreen,
     Reconnect,
     ToggleVirtualCam,
+    CyclePeerMonitor,
+    ToggleMicUplink,
 }
 
 pub fn apply_keystroke(state: &Arc<Mutex<ExtrasUiState>>, keystroke: &Keystroke) -> bool {
@@ -286,6 +291,36 @@ pub fn render_toolbar(
                     .finish(),
             );
         }
+        let (mon_count, mon_idx, mic_on) = state
+            .lock()
+            .map(|s| {
+                (
+                    s.peer_monitor_count,
+                    s.peer_monitor_index,
+                    s.mic_uplink_enabled,
+                )
+            })
+            .unwrap_or((0, 0, false));
+        if mon_count > 1 {
+            let a = on_action.clone();
+            row = row.with_child(link_label(
+                &format!("屏幕 {}/{}", mon_idx.saturating_add(1), mon_count),
+                font,
+                false,
+                move || a(ExtrasUiAction::CyclePeerMonitor),
+            ));
+        }
+        let a = on_action.clone();
+        row = row.with_child(link_label(
+            if mic_on {
+                "上行麦·开"
+            } else {
+                "上行麦·关"
+            },
+            font,
+            mic_on,
+            move || a(ExtrasUiAction::ToggleMicUplink),
+        ));
         let a = on_action.clone();
         row = row.with_child(link_label("断开", font, false, move || {
             a(ExtrasUiAction::Disconnect);

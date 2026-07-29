@@ -17,7 +17,7 @@ use warpui::{
 use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::{CacheOption, CustomImageFormat, CustomImageHeader, ImageType};
 use warpui_core::keymap::Keystroke;
-use wormhole_desktop_rdp::{decode_frame, ExtrasStateHandle, RdpRuntime};
+use wormhole_desktop_rdp::{decode_frame, ExtrasStateHandle, RdpRuntime, SessionRole};
 
 use crate::rdp_extras_ui::{
     self, apply_keystroke, render_auth_panel, spawn_audio_muted, spawn_audio_volume,
@@ -418,6 +418,7 @@ impl RdpViewerView {
             ui_generation: self.ui_generation.clone(),
             data_dir: self.data_dir.clone(),
             frame: self.frame.clone(),
+            session_id: self.session_id.clone(),
         }
     }
 
@@ -614,6 +615,23 @@ impl RdpViewerView {
                 };
                 *session_id_slot.lock().expect("session lock") = Some(session_id.clone());
                 *status.lock().expect("status lock") = format!("已连接 · {peer}");
+
+                if let Some(ui) = extras_ui.as_ref() {
+                    let (mon_count, mon_idx) = {
+                        let runtime = runtime.lock().await;
+                        let sessions = runtime.list_sessions().await.unwrap_or_default();
+                        sessions
+                            .iter()
+                            .find(|s| s.peer == peer && matches!(s.role, SessionRole::Host))
+                            .or_else(|| sessions.iter().find(|s| s.id == session_id))
+                            .map(|s| (s.monitor_count.max(1), s.monitor_index))
+                            .unwrap_or((1, 0))
+                    };
+                    if let Ok(mut guard) = ui.lock() {
+                        guard.peer_monitor_count = mon_count;
+                        guard.peer_monitor_index = mon_idx;
+                    }
+                }
 
                 let viewer = {
                     let runtime = runtime.lock().await;
@@ -1012,6 +1030,7 @@ struct RdpExtrasDispatch {
     ui_generation: Arc<Mutex<u64>>,
     data_dir: PathBuf,
     frame: Arc<Mutex<SharedFrame>>,
+    session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl RdpExtrasDispatch {
@@ -1094,6 +1113,58 @@ impl RdpExtrasDispatch {
                 let data_dir = self.data_dir.clone();
                 std::thread::spawn(move || {
                     let _ = crate::shell_bridge::set_virtual_cam(&data_dir, enabled, width, height);
+                });
+                self.bump();
+            }
+            ExtrasUiAction::CyclePeerMonitor => {
+                let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
+                let Some(session_id) = session_id else {
+                    return;
+                };
+                let next = self
+                    .extras_ui
+                    .lock()
+                    .map(|mut g| {
+                        if g.peer_monitor_count == 0 {
+                            return g.peer_monitor_index;
+                        }
+                        let next = (g.peer_monitor_index + 1) % g.peer_monitor_count;
+                        g.peer_monitor_index = next;
+                        next
+                    })
+                    .unwrap_or(0);
+                let runtime = self.runtime.clone();
+                std::thread::spawn(move || {
+                    if let Ok(rt) = tokio::runtime::Runtime::new() {
+                        let _ = rt.block_on(async move {
+                            let runtime = runtime.lock().await;
+                            runtime.viewer_switch_monitor(&session_id, next).await
+                        });
+                    }
+                });
+                self.bump();
+            }
+            ExtrasUiAction::ToggleMicUplink => {
+                let session_id = self.session_id.lock().ok().and_then(|g| g.clone());
+                let Some(session_id) = session_id else {
+                    return;
+                };
+                let enabled = self
+                    .extras_ui
+                    .lock()
+                    .map(|mut g| {
+                        g.mic_uplink_enabled = !g.mic_uplink_enabled;
+                        g.mic_uplink_enabled
+                    })
+                    .unwrap_or(false);
+                let runtime = self.runtime.clone();
+                std::thread::spawn(move || {
+                    if let Ok(rt) = tokio::runtime::Runtime::new() {
+                        let _ = rt.block_on(async move {
+                            let runtime = runtime.lock().await;
+                            runtime.set_viewer_mic_uplink(&session_id, enabled).await
+                        });
+                    }
                 });
                 self.bump();
             }
