@@ -31,6 +31,11 @@ use wormhole_desktop_core::chat_commands::{
     SearchChatMessagesParams,
 };
 use wormhole_desktop_core::chat_rtc_call::video_signal_display_text;
+use wormhole_desktop_core::video_chat_commands::{
+    parse_video_room_signal, video_chat_join, VideoChatJoinParams,
+};
+use crate::ui::chat::calls_panel::open_video_viewer_url;
+use crate::ui::chat::voice_call_ui;
 use wormhole_desktop_core::chat_ui_prefs::load_chat_ui_prefs;
 use wormhole_desktop_core::chat_wallpaper_storage::wallpaper_abs_path;
 
@@ -39,6 +44,7 @@ struct BubbleEntry {
     body: String,
     visible: bool,
     handle: warpui::ViewHandle<ChatBubbleView>,
+    video_room_id: Option<String>,
 }
 
 pub struct ChatThreadView {
@@ -88,6 +94,7 @@ const RECENT_MESSAGE_PAGE: usize = 50;
 #[derive(Debug, Clone)]
 pub enum ChatThreadAction {
     LoadEarlier,
+    JoinVideoRoom { room_id: String },
 }
 
 fn advance_history_before(current: Option<u64>, fetched: &[ChatMessageDto]) -> Option<u64> {
@@ -930,10 +937,12 @@ impl ChatThreadView {
                     max_bubble_width,
                 )
             });
+            let video_room_id = parse_video_room_signal(&msg.body).map(|p| p.room_id);
             self.bubbles.push(BubbleEntry {
                 outgoing,
                 body: msg.body.clone(),
                 visible,
+                video_room_id,
                 handle,
             });
         }
@@ -1015,9 +1024,30 @@ impl View for ChatThreadView {
                     })
                     .unwrap_or(false);
                 let margin_bottom = message_row_margin_bottom(grouped_with_next);
+                let mut row = Flex::column().with_main_axis_size(MainAxisSize::Min);
+                row.add_child(ChildView::new(&bubble.handle).finish());
+                if let Some(room_id) = bubble.video_room_id.clone() {
+                    let join = EventHandler::new(
+                        Container::new(
+                            ui_text::body("加入群视频".to_string(), self.font)
+                                .with_color(theme::accent_cool())
+                                .finish(),
+                        )
+                        .with_uniform_padding(8.0)
+                        .finish(),
+                    )
+                    .on_left_mouse_down(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(ChatThreadAction::JoinVideoRoom {
+                            room_id: room_id.clone(),
+                        });
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish();
+                    row.add_child(join);
+                }
                 col.add_child(
                     SavePosition::new(
-                        Container::new(ChildView::new(&bubble.handle).finish())
+                        Container::new(row.finish())
                             .with_margin_bottom(margin_bottom)
                             .finish(),
                         &message_position_id(&self.messages[index].id),
@@ -1087,16 +1117,61 @@ impl TypedActionView for ChatThreadView {
                 self.fetch_older_messages(conv_id, Some(before), ctx);
                 ctx.notify();
             }
+            ChatThreadAction::JoinVideoRoom { room_id } => {
+                let core = self.core.clone();
+                let shell_state = self.shell_state.clone();
+                let room_id = room_id.clone();
+                ctx.spawn(
+                    async move {
+                        let runtime = core.runtime();
+                        video_chat_join(
+                            &runtime.state,
+                            VideoChatJoinParams {
+                                room_id,
+                                display_name: None,
+                            },
+                        )
+                        .await
+                    },
+                    move |_view, result, ctx| match result {
+                        Ok(join) => {
+                            if let Err(err) = open_video_viewer_url(&join.open_url) {
+                                if let Ok(mut state) = shell_state.lock() {
+                                    state.show_toast(
+                                        format!("无法打开群视频: {err}"),
+                                        StatusTone::Danger,
+                                    );
+                                }
+                            } else if let Ok(mut state) = shell_state.lock() {
+                                state.show_toast("已打开群视频", StatusTone::Success);
+                            }
+                            ctx.notify();
+                        }
+                        Err(err) => {
+                            let (text, tone) = voice_call_ui::video_error_toast(&err);
+                            if let Ok(mut state) = shell_state.lock() {
+                                state.show_toast(text, tone);
+                            }
+                            ctx.notify();
+                        }
+                    },
+                );
+                ctx.notify();
+            }
         }
     }
 
     fn action_accessibility_contents(
         &mut self,
-        _action: &ChatThreadAction,
+        action: &ChatThreadAction,
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
+        let label = match action {
+            ChatThreadAction::LoadEarlier => "加载更早消息",
+            ChatThreadAction::JoinVideoRoom { .. } => "加入群视频",
+        };
         ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-            "加载更早消息",
+            label,
             WarpA11yRole::ButtonRole,
         ))
     }

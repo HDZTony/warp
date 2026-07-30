@@ -28,8 +28,8 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    chat_config, chat_list_conversations, chat_start_conversation, ChatConversationDto,
-    StartChatConversationParams,
+    chat_config, chat_create_cluster_group, chat_list_conversations, chat_start_conversation,
+    ChatConversationDto, ChatGroupMemberDto, CreateClusterGroupParams, StartChatConversationParams,
 };
 use wormhole_desktop_core::chat_ui_prefs::{
     load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
@@ -74,11 +74,20 @@ pub enum ChatSidebarAction {
     ContextOpen,
     ContextToggleMute,
     ContextDelete,
+    ToggleSidebarMenu,
+    CloseSidebarMenu,
+    MenuNewGroup,
+    MenuNewChannel,
+    MenuContacts,
+    MenuCalls,
+    MenuFavorites,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChatSidebarEvent {
     Selected(String),
+    OpenContacts,
+    OpenCalls,
 }
 
 struct SidebarRow {
@@ -239,6 +248,82 @@ impl ChatSidebarView {
                 }
             },
         );
+    }
+
+    fn create_default_cluster_group(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(cluster) = self.cluster.clone() else {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast("请先加入家庭集群", StatusTone::Danger);
+            }
+            ctx.notify();
+            return;
+        };
+        let Some(cluster_id) = cluster.cluster_id.clone() else {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast("请先加入家庭集群", StatusTone::Danger);
+            }
+            ctx.notify();
+            return;
+        };
+        let members: Vec<ChatGroupMemberDto> = cluster
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let endpoint = node.chat_endpoint_id.clone().unwrap_or_default();
+                if endpoint.trim().is_empty() {
+                    return None;
+                }
+                Some(ChatGroupMemberDto {
+                    node_id: node.node_id.clone(),
+                    endpoint,
+                    display_name: Some(format!("{} · {}", node.os, node.hostname)),
+                    bootstrap_addrs: node.chat_bootstrap_addrs.clone(),
+                    is_local: node.node_id == cluster.local_node_id,
+                })
+            })
+            .collect();
+        if members.len() < 2 {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast("集群成员不足，无法建群", StatusTone::Danger);
+            }
+            ctx.notify();
+            return;
+        }
+        let core = self.core.clone();
+        let title = "集群群聊".to_string();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let app = runtime.ctx.as_ref();
+                chat_create_cluster_group(
+                    app,
+                    &runtime.state,
+                    CreateClusterGroupParams {
+                        title,
+                        cluster_id,
+                        members,
+                        default_group: true,
+                    },
+                )
+                .await
+            },
+            |view, result, ctx| match result {
+                Ok(conv) => {
+                    view.apply_selection(conv.id, ctx);
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast("已创建群组", StatusTone::Success);
+                    }
+                    view.refresh(ctx);
+                }
+                Err(err) => {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(format!("建群失败: {err}"), StatusTone::Danger);
+                    }
+                    ctx.notify();
+                }
+            },
+        );
+        ctx.notify();
     }
 
     fn apply_selection(&mut self, conv_id: String, ctx: &mut ViewContext<Self>) {
@@ -614,9 +699,18 @@ impl ChatSidebarView {
 
     fn filtered_rows(&self) -> Vec<&SidebarRow> {
         let q = self.search.trim().to_lowercase();
+        let favorites_only = self
+            .shell_state
+            .lock()
+            .map(|s| s.favorites_only)
+            .unwrap_or(false);
         self.rows
             .iter()
             .filter(|row| {
+                if favorites_only {
+                    // No favorites prefs yet — empty list when filter is on.
+                    return false;
+                }
                 q.is_empty()
                     || row.title.to_lowercase().contains(&q)
                     || row.preview.to_lowercase().contains(&q)
@@ -887,6 +981,81 @@ impl ChatSidebarView {
         positioned_context_menu(x, y, panel)
     }
 
+    fn sidebar_menu_item(
+        &self,
+        label: &str,
+        action: ChatSidebarAction,
+        enabled: bool,
+    ) -> Box<dyn Element> {
+        let color = if enabled {
+            theme::text()
+        } else {
+            theme::muted()
+        };
+        let label = label.to_string();
+        EventHandler::new(
+            Container::new(
+                ui_text::body(label, self.font)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_padding_left(12.0)
+            .with_padding_right(12.0)
+            .with_padding_top(10.0)
+            .with_padding_bottom(10.0)
+            .finish(),
+        )
+        .on_left_mouse_down(move |ctx, _, _| {
+            if enabled {
+                ctx.dispatch_typed_action(action.clone());
+            }
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+    }
+
+    fn sidebar_hamburger_menu(&self) -> Box<dyn Element> {
+        let mut menu = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_main_axis_size(MainAxisSize::Min);
+        menu.add_child(self.sidebar_menu_item(
+            "新建群组",
+            ChatSidebarAction::MenuNewGroup,
+            true,
+        ));
+        menu.add_child(self.sidebar_menu_item(
+            "新建频道（即将推出）",
+            ChatSidebarAction::MenuNewChannel,
+            false,
+        ));
+        menu.add_child(self.sidebar_menu_item(
+            "联系人",
+            ChatSidebarAction::MenuContacts,
+            true,
+        ));
+        menu.add_child(self.sidebar_menu_item(
+            "通话",
+            ChatSidebarAction::MenuCalls,
+            true,
+        ));
+        menu.add_child(self.sidebar_menu_item(
+            "我的收藏",
+            ChatSidebarAction::MenuFavorites,
+            true,
+        ));
+        let panel = Container::new(
+            ConstrainedBox::new(menu.finish())
+                .with_width(200.0)
+                .finish(),
+        )
+        .with_background(theme::panel_elevated())
+        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+        .finish();
+        // Anchor under the hamburger (search row left).
+        positioned_context_menu(8.0, 52.0, panel)
+    }
+
     fn clear_selection_if_matches(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
         let selected = self.selection.lock().ok().and_then(|g| g.clone());
         let matches = selected.as_deref() == Some(id)
@@ -938,7 +1107,14 @@ impl View for ChatSidebarView {
                 Container::new(
                     ui_text::body(
                         if self.search.is_empty() {
-                            if self.status.is_empty() {
+                            let favorites_only = self
+                                .shell_state
+                                .lock()
+                                .map(|s| s.favorites_only)
+                                .unwrap_or(false);
+                            if favorites_only {
+                                "暂无收藏".to_string()
+                            } else if self.status.is_empty() {
                                 "暂无会话".to_string()
                             } else {
                                 format!("暂无会话 · {}", self.status)
@@ -961,6 +1137,32 @@ impl View for ChatSidebarView {
             }
         }
 
+        let sidebar_menu_open = self
+            .shell_state
+            .lock()
+            .map(|s| s.sidebar_menu_open)
+            .unwrap_or(false);
+        let menu_btn = EventHandler::new(
+            Container::new(icons::chat_sidebar_menu_icon(if sidebar_menu_open {
+                theme::text()
+            } else {
+                theme::muted()
+            }))
+            .with_uniform_padding(8.0)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .with_background(if sidebar_menu_open {
+                theme::accent_cool_bg(28)
+            } else {
+                ColorU::new(0, 0, 0, 0)
+            })
+            .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::ToggleSidebarMenu);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+
         let body = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -968,19 +1170,20 @@ impl View for ChatSidebarView {
                 Container::new(
                     Flex::row()
                         .with_main_axis_size(MainAxisSize::Max)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(menu_btn)
                         .with_child(
                             Expanded::new(
                                 1.0,
-                                ConstrainedBox::new(self.search_box())
-                                    .with_width(CHAT_ITEM_INNER_WIDTH)
+                                Container::new(self.search_box())
+                                    .with_padding_left(6.0)
                                     .finish(),
                             )
                             .finish(),
                         )
                         .finish(),
                 )
-                .with_horizontal_padding(12.0)
+                .with_horizontal_padding(8.0)
                 .with_vertical_padding(10.0)
                 .with_background(theme::panel())
                 .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
@@ -1010,28 +1213,45 @@ impl View for ChatSidebarView {
             )
             .finish();
 
-        if !menu_open {
+        if !menu_open && !sidebar_menu_open {
             return body;
         }
 
         let mut stack = Stack::new();
         stack.add_child(body);
-        let scrim = EventHandler::new(
-            Container::new(Flex::column().finish())
-                .with_background(ColorU::new(8, 7, 11, 40))
-                .finish(),
-        )
-        .on_left_mouse_down(|ctx, _, _| {
-            ctx.dispatch_typed_action(ChatSidebarAction::CloseContextMenu);
-            DispatchEventResult::StopPropagation
-        })
-        .finish();
-        stack.add_child(scrim);
-        stack.add_child(self.conversation_context_menu());
+        if menu_open {
+            let scrim = EventHandler::new(
+                Container::new(Flex::column().finish())
+                    .with_background(ColorU::new(8, 7, 11, 40))
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::CloseContextMenu);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            stack.add_child(scrim);
+            stack.add_child(self.conversation_context_menu());
+        }
+        if sidebar_menu_open {
+            let scrim = EventHandler::new(
+                Container::new(Flex::column().finish())
+                    .with_background(ColorU::new(0, 0, 0, 0))
+                    .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::CloseSidebarMenu);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            stack.add_child(scrim);
+            stack.add_child(self.sidebar_hamburger_menu());
+        }
         EventHandler::new(stack.finish())
             .on_keydown(|ctx, _, keystroke| {
                 if keystroke.key.as_str() == "escape" {
                     ctx.dispatch_typed_action(ChatSidebarAction::CloseContextMenu);
+                    ctx.dispatch_typed_action(ChatSidebarAction::CloseSidebarMenu);
                     return DispatchEventResult::StopPropagation;
                 }
                 DispatchEventResult::PropagateToParent
@@ -1197,6 +1417,66 @@ impl TypedActionView for ChatSidebarView {
                         }
                     },
                 );
+                ctx.notify();
+            }
+            ChatSidebarAction::ToggleSidebarMenu => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = !state.sidebar_menu_open;
+                    state.header_menu_open = false;
+                    state.mute_flyout_open = false;
+                }
+                self.context_menu = None;
+                ctx.notify();
+            }
+            ChatSidebarAction::CloseSidebarMenu => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                }
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuNewGroup => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                }
+                self.create_default_cluster_group(ctx);
+            }
+            ChatSidebarAction::MenuNewChannel => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                    state.show_toast("频道即将推出", StatusTone::Muted);
+                }
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuContacts => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                    state.open_contacts();
+                }
+                ctx.emit(ChatSidebarEvent::OpenContacts);
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuCalls => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                    state.open_calls();
+                }
+                ctx.emit(ChatSidebarEvent::OpenCalls);
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuFavorites => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.sidebar_menu_open = false;
+                    state.favorites_only = !state.favorites_only;
+                    let on = state.favorites_only;
+                    state.show_toast(
+                        if on {
+                            "仅显示收藏（暂无收藏）"
+                        } else {
+                            "显示全部会话"
+                        },
+                        StatusTone::Muted,
+                    );
+                }
                 ctx.notify();
             }
         }

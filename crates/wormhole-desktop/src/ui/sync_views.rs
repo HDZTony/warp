@@ -69,9 +69,13 @@ impl RemoteWorkerSummary {
             && if tool_id.eq_ignore_ascii_case("default") {
                 !self.apps.is_empty()
             } else {
-                self.apps
-                    .iter()
-                    .any(|app| app.eq_ignore_ascii_case(tool_id))
+                self.apps.iter().any(|app| {
+                    let declared = canonicalize_workspace_tool_id(app);
+                    let requested = canonicalize_workspace_tool_id(tool_id);
+                    declared == requested
+                        || (workspace_office_capability(&declared)
+                            && workspace_office_capability(&requested))
+                })
             }
     }
 
@@ -187,20 +191,32 @@ impl SyncView {
                         .collect::<Vec<_>>()
                 });
                 let tools = toolbox_list_tools(&state).await.map(|tools| {
-                    tools
-                        .into_iter()
-                        .filter(|tool| tool.descriptor.executor == ToolExecutorKind::SourceRuntime)
-                        .map(|tool| RemoteToolSummary {
-                            id: tool.descriptor.id,
-                            name: tool.descriptor.name,
+                    let mut out = Vec::new();
+                    for tool in tools {
+                        if tool.descriptor.executor != ToolExecutorKind::SourceRuntime {
+                            continue;
+                        }
+                        let id = canonicalize_workspace_tool_id(&tool.descriptor.id);
+                        if out.iter().any(|existing: &RemoteToolSummary| existing.id == id) {
+                            continue;
+                        }
+                        let name = if tool.descriptor.id.eq_ignore_ascii_case("onlyoffice") {
+                            "LibreOffice".to_string()
+                        } else {
+                            tool.descriptor.name
+                        };
+                        out.push(RemoteToolSummary {
+                            id,
+                            name,
                             extensions: tool.descriptor.extensions,
                             installable: tool.status.available_version.is_some()
                                 || matches!(
                                     tool.status.stage,
                                     ToolInstallStage::Prepared | ToolInstallStage::Ready
                                 ),
-                        })
-                        .collect::<Vec<_>>()
+                        });
+                    }
+                    out
                 });
                 (gate, status, queue, files, workers, tools)
             },
@@ -541,6 +557,22 @@ impl SyncView {
         }
         section_card(col.finish())
     }
+}
+
+fn canonicalize_workspace_tool_id(id: &str) -> String {
+    let id = id.trim().to_ascii_lowercase();
+    if id == "onlyoffice" {
+        "libreoffice".into()
+    } else {
+        id
+    }
+}
+
+fn workspace_office_capability(app: &str) -> bool {
+    matches!(
+        canonicalize_workspace_tool_id(app).as_str(),
+        "libreoffice" | "word" | "excel" | "powerpoint"
+    )
 }
 
 impl Entity for SyncView {

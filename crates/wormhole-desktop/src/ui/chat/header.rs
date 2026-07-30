@@ -14,13 +14,15 @@ use crate::ui::chat::labels::{
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::chat::voice_call_ui::{
-    accept, apply_voice_status, cancel, decline, end, fetch_status, invite, voice_error_toast,
-    voice_status_to_header_line,
+    accept, apply_voice_status, cancel, cancel_video, decline, end, end_video, fetch_status,
+    fetch_video_status, invite, invite_video, record_incoming_ringing, video_error_toast,
+    video_status_to_header_line, voice_error_toast, voice_status_to_header_line,
 };
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_SM_SIZE};
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::call_history::CallHistoryKind;
 use wormhole_desktop_core::chat_commands::chat_list_conversations;
 use wormhole_desktop_core::chat_ui_prefs::{
     clear_chat_wallpaper, install_chat_wallpaper_from_path, load_chat_ui_prefs,
@@ -78,6 +80,7 @@ pub enum ChatHeaderAction {
     ClearHistory,
     DeleteChat,
     VoiceCallPrimary,
+    VideoCallPrimary,
     VoiceCallAccept,
     VoiceCallDecline,
     SetWallpaper,
@@ -267,6 +270,25 @@ impl ChatHeaderView {
                     Ok(status) => {
                         apply_voice_status(&shell_state, &status);
                         view.status = voice_status_to_header_line(&status.phase, view.online);
+                        if status.phase == "incoming" {
+                            let core = view.core.clone();
+                            let conv = view.last_voice_conv.clone().unwrap_or_default();
+                            let call_id = status.call_id.clone();
+                            if !conv.is_empty() {
+                                ctx.spawn(
+                                    async move {
+                                        record_incoming_ringing(
+                                            &core,
+                                            &conv,
+                                            call_id.as_deref(),
+                                            CallHistoryKind::Voice,
+                                        )
+                                        .await;
+                                    },
+                                    |_view, _, _ctx| {},
+                                );
+                            }
+                        }
                         if status.phase == "active" && status.peer_live {
                             let peer = view.peer_endpoint.trim().to_string();
                             let should_open = view
@@ -298,6 +320,131 @@ impl ChatHeaderView {
 
     pub(crate) fn trigger_voice_call(&mut self, ctx: &mut ViewContext<Self>) {
         self.spawn_voice_primary(ctx);
+    }
+
+    pub(crate) fn trigger_video_call(&mut self, ctx: &mut ViewContext<Self>) {
+        self.spawn_video_primary(ctx);
+    }
+
+    fn spawn_video_primary(&mut self, ctx: &mut ViewContext<Self>) {
+        let conv_id = match self.selected_conv_id() {
+            Some(id) => id,
+            None => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.show_toast("请先选择会话", StatusTone::Muted);
+                }
+                ctx.notify();
+                return;
+            }
+        };
+        let phase = self
+            .shell_state
+            .lock()
+            .map(|state| state.voice_call_phase.clone())
+            .unwrap_or_else(|_| "idle".into());
+        if phase == "idle" && !self.online {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast("终端离线，无法发起视频通话", StatusTone::Muted);
+            }
+            ctx.notify();
+            return;
+        }
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        let request_conv_id = conv_id.clone();
+        let future = async move {
+            match phase.as_str() {
+                "ringing" => cancel_video(&core, &request_conv_id).await,
+                "active" => end_video(&core, &request_conv_id).await,
+                _ => invite_video(&core, &request_conv_id).await,
+            }
+        };
+        ctx.spawn(future, move |view, output, ctx| match output {
+            Ok(status) => {
+                apply_voice_status(&shell_state, &status);
+                view.status = video_status_to_header_line(&status.phase, view.online);
+                if status.phase == "ringing" {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast("正在视频呼叫…", StatusTone::Neutral);
+                    }
+                } else if status.phase == "active" && status.peer_live {
+                    let peer = view.peer_endpoint.trim().to_string();
+                    if !peer.is_empty() {
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.voice_live_peer = Some(peer.clone());
+                        }
+                        let title = format!("视频 · {}", view.title);
+                        ctx.emit(ChatHeaderEvent::OpenLiveViewer { peer, title });
+                    }
+                } else if status.phase == "idle" {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast("视频通话已结束", StatusTone::Muted);
+                        state.voice_live_peer = None;
+                    }
+                }
+                view.poll_video_status(&conv_id, ctx);
+            }
+            Err(err) => {
+                let (text, tone) = video_error_toast(&err);
+                if let Ok(mut state) = view.shell_state.lock() {
+                    state.show_toast(text, tone);
+                }
+            }
+        });
+        ctx.notify();
+    }
+
+    pub(crate) fn poll_video_status(&mut self, conv_id: &str, ctx: &mut ViewContext<Self>) {
+        self.last_voice_conv = Some(conv_id.to_string());
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        let conv = conv_id.to_string();
+        ctx.spawn(
+            async move { fetch_video_status(&core, &conv).await },
+            move |view, output, ctx| {
+                if let Ok(status) = output {
+                    apply_voice_status(&shell_state, &status);
+                    view.status = video_status_to_header_line(&status.phase, view.online);
+                    if status.phase == "incoming" {
+                        let core = view.core.clone();
+                        let conv = view.last_voice_conv.clone().unwrap_or_default();
+                        let call_id = status.call_id.clone();
+                        if !conv.is_empty() {
+                            ctx.spawn(
+                                async move {
+                                    record_incoming_ringing(
+                                        &core,
+                                        &conv,
+                                        call_id.as_deref(),
+                                        CallHistoryKind::Video,
+                                    )
+                                    .await;
+                                },
+                                |_view, _, _ctx| {},
+                            );
+                        }
+                    }
+                    if status.phase == "active" && status.peer_live {
+                        let peer = view.peer_endpoint.trim().to_string();
+                        if !peer.is_empty() {
+                            let already = view
+                                .shell_state
+                                .lock()
+                                .ok()
+                                .and_then(|s| s.voice_live_peer.clone());
+                            if already.as_deref() != Some(peer.as_str()) {
+                                if let Ok(mut state) = view.shell_state.lock() {
+                                    state.voice_live_peer = Some(peer.clone());
+                                }
+                                let title = format!("视频 · {}", view.title);
+                                ctx.emit(ChatHeaderEvent::OpenLiveViewer { peer, title });
+                            }
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn spawn_voice_primary(&mut self, ctx: &mut ViewContext<Self>) {
@@ -765,6 +912,11 @@ impl View for ChatHeaderView {
                 ChatHeaderAction::VoiceCallPrimary,
             ),
             (
+                "chat-header-video.svg",
+                phone_active,
+                ChatHeaderAction::VideoCallPrimary,
+            ),
+            (
                 "chat-header-rdp.svg",
                 false,
                 ChatHeaderAction::OpenRemoteDesktop,
@@ -785,7 +937,7 @@ impl View for ChatHeaderView {
                 Container::new(
                     ConstrainedBox::new(header_button(
                         icon,
-                        if icon == "chat-header-phone.svg" {
+                        if icon == "chat-header-phone.svg" || icon == "chat-header-video.svg" {
                             phone_icon_color
                         } else {
                             theme::muted()
@@ -1047,6 +1199,12 @@ impl TypedActionView for ChatHeaderView {
                     state.close_overlays();
                 }
                 self.spawn_voice_primary(ctx);
+            }
+            ChatHeaderAction::VideoCallPrimary => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.close_overlays();
+                }
+                self.spawn_video_primary(ctx);
             }
             ChatHeaderAction::VoiceCallAccept => {
                 self.spawn_voice_accept(ctx);

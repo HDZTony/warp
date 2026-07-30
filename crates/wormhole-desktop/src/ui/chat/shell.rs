@@ -4,14 +4,16 @@ use pathfinder_color::ColorU;
 use tokio::sync::broadcast::error::RecvError;
 use warpui::elements::{
     Align, Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
+    EventHandler, Expanded, Flex, MainAxisSize, ParentElement, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
     AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
 };
 
+use crate::ui::chat::calls_panel::{open_video_viewer_url, CallsPanelEvent, CallsPanelView};
 use crate::ui::chat::compose::ChatComposeView;
+use crate::ui::chat::contacts_panel::{ContactsPanelEvent, ContactsPanelView};
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
@@ -62,6 +64,8 @@ pub struct ChatShellView {
     thread: ViewHandle<ChatThreadView>,
     compose: ViewHandle<ChatComposeView>,
     profile: ViewHandle<ChatProfilePanelView>,
+    contacts: ViewHandle<ContactsPanelView>,
+    calls: ViewHandle<CallsPanelView>,
 }
 
 impl ChatShellView {
@@ -84,6 +88,12 @@ impl ChatShellView {
         });
         let profile = ctx.add_typed_action_view(|ctx| {
             ChatProfilePanelView::new(ctx, core.clone(), selection.clone(), shell_state.clone())
+        });
+        let contacts = ctx.add_typed_action_view(|ctx| {
+            ContactsPanelView::new(ctx, core.clone(), shell_state.clone())
+        });
+        let calls = ctx.add_typed_action_view(|ctx| {
+            CallsPanelView::new(ctx, core.clone(), shell_state.clone())
         });
         ctx.subscribe_to_view(&profile, |view, _, event, ctx| match event {
             ChatProfileEvent::BrowseNodeShares(node_id) => {
@@ -111,6 +121,7 @@ impl ChatShellView {
         });
         let selected_header = header.clone();
         let selected_thread = thread.clone();
+        let selected_sidebar = sidebar.clone();
         ctx.subscribe_to_view(&sidebar, move |_, _, event, ctx| match event {
             ChatSidebarEvent::Selected(_) => {
                 ctx.update_view(&selected_header, |header, ctx| {
@@ -121,6 +132,59 @@ impl ChatShellView {
                 });
                 ctx.notify();
             }
+            ChatSidebarEvent::OpenContacts | ChatSidebarEvent::OpenCalls => {
+                ctx.notify();
+            }
+        });
+        let open_header = header.clone();
+        let open_thread = thread.clone();
+        ctx.subscribe_to_view(&contacts, move |view, _, event, ctx| match event {
+            ContactsPanelEvent::OpenConversation(conv_id) => {
+                if let Ok(mut guard) = view.selection.lock() {
+                    *guard = Some(conv_id.clone());
+                }
+                if let Ok(mut state) = view.shell_state.lock() {
+                    state.selection_tick = state.selection_tick.saturating_add(1);
+                }
+                ctx.update_view(&open_header, |header, ctx| header.selection_changed(ctx));
+                ctx.update_view(&open_thread, |thread, ctx| thread.selection_changed(ctx));
+                ctx.update_view(&selected_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
+                ctx.notify();
+            }
+            ContactsPanelEvent::Closed => ctx.notify(),
+        });
+        let call_header = header.clone();
+        let call_thread = thread.clone();
+        let call_sidebar = sidebar.clone();
+        ctx.subscribe_to_view(&calls, move |view, _, event, ctx| match event {
+            CallsPanelEvent::OpenConversation(conv_id) => {
+                if let Ok(mut guard) = view.selection.lock() {
+                    *guard = Some(conv_id.clone());
+                }
+                if let Ok(mut state) = view.shell_state.lock() {
+                    state.selection_tick = state.selection_tick.saturating_add(1);
+                }
+                ctx.update_view(&call_header, |header, ctx| header.selection_changed(ctx));
+                ctx.update_view(&call_thread, |thread, ctx| thread.selection_changed(ctx));
+                ctx.update_view(&call_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
+                ctx.notify();
+            }
+            CallsPanelEvent::OpenVideoViewerUrl(url) => {
+                if let Err(err) = open_video_viewer_url(&url) {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(format!("无法打开视频窗口: {err}"), StatusTone::Danger);
+                    }
+                }
+                ctx.notify();
+            }
+            CallsPanelEvent::OpenLiveViewer { peer, title } => {
+                ctx.emit(ChatShellEvent::OpenLiveViewer {
+                    peer: peer.clone(),
+                    title: title.clone(),
+                });
+                ctx.notify();
+            }
+            CallsPanelEvent::Closed => ctx.notify(),
         });
         let font = crate::ui::fonts::load_ui_font(ctx);
         let event_rx = Arc::new(tokio::sync::Mutex::new(
@@ -139,6 +203,8 @@ impl ChatShellView {
             thread,
             compose,
             profile,
+            contacts,
+            calls,
         };
         view.poll_gate(ctx);
         view.start_chat_event_listener(ctx);
@@ -270,7 +336,14 @@ impl ChatShellView {
     fn overlay_open(&self) -> bool {
         self.shell_state
             .lock()
-            .map(|state| state.header_menu_open || state.profile_open || state.thread_search_open)
+            .map(|state| {
+                state.header_menu_open
+                    || state.profile_open
+                    || state.thread_search_open
+                    || state.sidebar_menu_open
+                    || state.contacts_open
+                    || state.calls_open
+            })
             .unwrap_or(false)
     }
 
@@ -306,9 +379,29 @@ impl TypedActionView for ChatShellView {
         match action {
             ChatShellAction::DismissOverlays => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.close_overlays();
-                    state.profile_open = false;
-                    state.close_thread_search();
+                    // Esc hierarchy: confirm → menu → subview → close panel → other overlays
+                    if state.calls_open {
+                        if state.calls_subview == "confirm" {
+                            state.calls_subview = "overview".into();
+                            state.calls_menu_open = false;
+                        } else if state.calls_menu_open {
+                            state.calls_menu_open = false;
+                        } else if state.calls_subview != "overview" {
+                            state.calls_subview = "overview".into();
+                        } else {
+                            state.close_calls();
+                        }
+                    } else if state.contacts_add_open {
+                        state.contacts_add_open = false;
+                    } else if state.contacts_open {
+                        state.close_contacts();
+                    } else if state.sidebar_menu_open {
+                        state.sidebar_menu_open = false;
+                    } else {
+                        state.close_overlays();
+                        state.profile_open = false;
+                        state.close_thread_search();
+                    }
                 }
                 ctx.notify();
             }
@@ -377,15 +470,21 @@ impl ChatShellView {
         }
 
         let body = tab_content_fill(row.finish());
-        EventHandler::new(body)
-            .on_keydown(|ctx, _, keystroke| {
-                if keystroke.key == "escape" {
-                    ctx.dispatch_typed_action(ChatShellAction::DismissOverlays);
-                    return DispatchEventResult::StopPropagation;
-                }
-                DispatchEventResult::PropagateToParent
-            })
-            .finish()
+        let mut stack = Stack::new();
+        stack.add_child(
+            EventHandler::new(body)
+                .on_keydown(|ctx, _, keystroke| {
+                    if keystroke.key == "escape" {
+                        ctx.dispatch_typed_action(ChatShellAction::DismissOverlays);
+                        return DispatchEventResult::StopPropagation;
+                    }
+                    DispatchEventResult::PropagateToParent
+                })
+                .finish(),
+        );
+        stack.add_child(ChildView::new(&self.contacts).finish());
+        stack.add_child(ChildView::new(&self.calls).finish());
+        stack.finish()
     }
 
     fn incoming_call_banner(&self) -> Box<dyn Element> {

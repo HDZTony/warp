@@ -32,6 +32,14 @@ pub struct ChatShellState {
     pub profile_open: bool,
     pub header_menu_open: bool,
     pub mute_flyout_open: bool,
+    pub sidebar_menu_open: bool,
+    pub contacts_open: bool,
+    pub contacts_add_open: bool,
+    pub calls_open: bool,
+    /// `overview` | `picker` | `settings` | `privacy` | `confirm`
+    pub calls_subview: String,
+    pub calls_menu_open: bool,
+    pub favorites_only: bool,
     pub thread_search_query: String,
     pub thread_search_from_ms: Option<u64>,
     pub thread_search_to_ms: Option<u64>,
@@ -70,6 +78,13 @@ impl Default for ChatShellState {
             profile_open: false,
             header_menu_open: false,
             mute_flyout_open: false,
+            sidebar_menu_open: false,
+            contacts_open: false,
+            contacts_add_open: false,
+            calls_open: false,
+            calls_subview: "overview".into(),
+            calls_menu_open: false,
+            favorites_only: false,
             thread_search_query: String::new(),
             thread_search_from_ms: None,
             thread_search_to_ms: None,
@@ -117,6 +132,34 @@ impl ChatShellState {
     pub fn close_overlays(&mut self) {
         self.header_menu_open = false;
         self.mute_flyout_open = false;
+        self.sidebar_menu_open = false;
+        self.calls_menu_open = false;
+    }
+
+    pub fn close_contacts(&mut self) {
+        self.contacts_open = false;
+        self.contacts_add_open = false;
+    }
+
+    pub fn close_calls(&mut self) {
+        self.calls_open = false;
+        self.calls_menu_open = false;
+        self.calls_subview = "overview".into();
+    }
+
+    pub fn open_contacts(&mut self) {
+        self.close_overlays();
+        self.close_calls();
+        self.contacts_open = true;
+        self.contacts_add_open = false;
+    }
+
+    pub fn open_calls(&mut self) {
+        self.close_overlays();
+        self.close_contacts();
+        self.calls_open = true;
+        self.calls_subview = "overview".into();
+        self.calls_menu_open = false;
     }
 
     pub fn close_thread_search(&mut self) {

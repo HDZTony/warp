@@ -32,6 +32,17 @@ const FRAME_ASSET_ID: &str = "wormhole-rdp-frame";
 const DEFAULT_FPS: i32 = 60;
 const VIEW_W: f32 = 1280.;
 const VIEW_H: f32 = 720.;
+/// Status shown when the viewer frame broadcast closes without a manual disconnect.
+const PASSIVE_DISCONNECT_STATUS: &str = "连接中断";
+const MANUAL_DISCONNECT_STATUS: &str = "已断开";
+
+/// Replaces a live「已连接…」status after the frame stream ends. Leaves manual
+/// 「已断开」and other terminal states alone.
+fn apply_passive_disconnect_status(status: &mut String, reason: &str) {
+    if status.starts_with("已连接") {
+        *status = reason.to_string();
+    }
+}
 
 #[derive(Default)]
 struct SharedFrame {
@@ -459,7 +470,7 @@ impl RdpViewerView {
             *guard = None;
         }
         if let Ok(mut status) = self.status.lock() {
-            *status = "已断开".into();
+            *status = MANUAL_DISCONNECT_STATUS.into();
         }
         self.bump_ui(ctx);
     }
@@ -658,7 +669,7 @@ impl RdpViewerView {
                     )
                     .await;
                 }
-                loop {
+                let disconnect_reason = loop {
                     match rx.recv().await {
                         Ok(viewer_frame) => {
                             Self::apply_viewer_frame(
@@ -672,9 +683,24 @@ impl RdpViewerView {
                             .await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(_) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break PASSIVE_DISCONNECT_STATUS;
+                        }
+                    }
+                };
+                // Passive stream ended (peer closed / session torn down). Clear the
+                // live session id and surface an explicit disconnected status so
+                // the toolbar no longer claims "已连接".
+                if let Ok(mut guard) = session_id_slot.lock() {
+                    if guard.as_deref() == Some(session_id.as_str()) {
+                        *guard = None;
                     }
                 }
+                if let Ok(mut status) = status.lock() {
+                    apply_passive_disconnect_status(&mut status, disconnect_reason);
+                }
+                let runtime = runtime.lock().await;
+                let _ = runtime.stop_session(&session_id).await;
             });
         });
     }
@@ -1275,5 +1301,20 @@ mod tests {
             key: "r".into(),
         });
         assert_eq!(chord, vec![0x5B, 0x52]);
+    }
+
+    #[test]
+    fn passive_frame_close_replaces_connected_status() {
+        let mut status = "已连接 · peer-node".to_string();
+        apply_passive_disconnect_status(&mut status, PASSIVE_DISCONNECT_STATUS);
+        assert_eq!(status, PASSIVE_DISCONNECT_STATUS);
+        assert!(!status.starts_with("已连接"));
+    }
+
+    #[test]
+    fn passive_frame_close_does_not_clobber_manual_disconnect() {
+        let mut status = MANUAL_DISCONNECT_STATUS.to_string();
+        apply_passive_disconnect_status(&mut status, PASSIVE_DISCONNECT_STATUS);
+        assert_eq!(status, MANUAL_DISCONNECT_STATUS);
     }
 }

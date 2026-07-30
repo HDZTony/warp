@@ -1,7 +1,9 @@
 pub mod agent_threads_sidebar;
 pub mod attach_panel;
 pub mod bubble;
+pub mod calls_panel;
 pub mod compose;
+pub mod contacts_panel;
 pub mod header;
 pub mod header_menu;
 pub mod image_asset;

@@ -39,6 +39,7 @@ use wormhole_desktop_core::cluster_commands::{
     NODE_PRESENCE_HANDSHAKE_FAILED, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
+use wormhole_desktop_core::toolbox_ui::{toolbox_list_tools, ToolExecutorKind, ToolSummary};
 use wormhole_desktop_core::workspace_ui::{
     workspace_app_preference, workspace_approve_provision_job,
     workspace_approve_provision_job_with_candidate, workspace_list_provision_jobs,
@@ -126,6 +127,7 @@ pub struct DevicesView {
     last_file_click: Option<(String, std::time::Instant)>,
     selected_share_file: Option<String>,
     workspace_workers: Vec<WorkspaceWorker>,
+    workspace_tools: Vec<ToolSummary>,
     workspace_vm_candidates: Vec<WorkspaceVmCandidate>,
     workspace_jobs: Vec<WorkspaceProvisionJob>,
     workspace_remote_job: Option<WorkspaceProvisionJob>,
@@ -223,6 +225,7 @@ impl DevicesView {
             last_file_click: None,
             selected_share_file: None,
             workspace_workers: Vec::new(),
+            workspace_tools: Vec::new(),
             workspace_vm_candidates: Vec::new(),
             workspace_jobs: Vec::new(),
             workspace_remote_job: None,
@@ -782,7 +785,7 @@ impl DevicesView {
             self.workspace_app_search.clear();
             self.workspace_app_search_field = TextFieldState::new();
         }
-        self.workspace_selected_app = recommended_workspace_app(&preference_file).to_string();
+        self.workspace_selected_app = self.recommended_workspace_app(&preference_file);
         if self
             .workspace_remote_job
             .as_ref()
@@ -799,8 +802,10 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Ok(Some(app)) = result {
+                    let app = workspace_canonical_tool_id(&app);
                     if view.selected_share_entry().is_some_and(|entry| {
-                        workspace_apps_for_file(&entry.name).contains(&app.as_str())
+                        view.workspace_catalog_tool_for_file(&entry.name, &app)
+                            .is_some()
                     }) {
                         view.workspace_selected_app = app;
                         view.update_workspace_status_from_selection();
@@ -826,6 +831,7 @@ impl DevicesView {
             async move {
                 let state = core.runtime().state.clone();
                 let workers = workspace_list_workers(&state).await;
+                let tools = toolbox_list_tools(&state).await;
                 let jobs = workspace_list_provision_jobs(&state).await;
                 let candidates = workspace_probe_vm_candidates().await;
                 let remote = if let Some((node_id, job_id)) = remote_job {
@@ -838,16 +844,26 @@ impl DevicesView {
                 } else {
                     None
                 };
-                (workers, jobs, candidates, remote)
+                (workers, tools, jobs, candidates, remote)
             },
             |view, output, ctx| {
                 view.workspace_loading = false;
-                let (workers, jobs, candidates, remote) = output;
+                let (workers, tools, jobs, candidates, remote) = output;
                 match workers {
                     Ok(workers) => view.workspace_workers = workers,
                     Err(error) => {
                         view.workspace_workers.clear();
                         view.set_workspace_progress(format!("Workspace worker 检测失败: {error}"));
+                    }
+                }
+                match tools {
+                    Ok(tools) => {
+                        view.workspace_tools =
+                            workspace_source_runtime_tools_from_catalog(tools);
+                    }
+                    Err(error) => {
+                        view.workspace_tools.clear();
+                        view.set_workspace_progress(format!("读取工具目录失败: {error}"));
                     }
                 }
                 if let Ok(jobs) = jobs {
@@ -1090,19 +1106,20 @@ impl DevicesView {
         let installed = self.workspace_installed_apps_for_file(&file_name);
         if !installed
             .iter()
-            .any(|app| *app == self.workspace_selected_app.as_str())
+            .any(|app| app == &self.workspace_selected_app)
         {
             self.workspace_selected_app = installed
                 .first()
-                .copied()
-                .unwrap_or_else(|| recommended_workspace_app(&file_name))
-                .to_string();
+                .cloned()
+                .unwrap_or_else(|| self.recommended_workspace_app(&file_name));
         }
         self.workspace_app_search.clear();
         self.workspace_app_search_field = TextFieldState::new();
         self.workspace_app_search_focused = false;
         self.workspace_app_picker_open = true;
         self.close_share_context_menu(ctx);
+        // Ensure catalog is fresh when opening the picker.
+        self.refresh_workspace(ctx);
         ctx.notify();
     }
 
@@ -1115,7 +1132,8 @@ impl DevicesView {
     }
 
     fn select_workspace_app(&mut self, app: String, ctx: &mut ViewContext<Self>) {
-        if workspace_app_catalog_entry(&app).is_none() {
+        let app = workspace_canonical_tool_id(&app);
+        if self.workspace_catalog_tool(&app).is_none() {
             self.set_workspace_progress("此远程虚拟机不支持该文件的打开方式");
             ctx.notify();
             return;
@@ -1147,7 +1165,8 @@ impl DevicesView {
         let app = self.workspace_selected_app.clone();
         if !self
             .workspace_installed_apps_for_file(&file_name)
-            .contains(&app.as_str())
+            .iter()
+            .any(|installed| installed == &app)
         {
             return;
         }
@@ -1186,7 +1205,8 @@ impl DevicesView {
     }
 
     fn workspace_install_and_open(&mut self, app: String, ctx: &mut ViewContext<Self>) {
-        if workspace_app_catalog_entry(&app).is_none() {
+        let app = workspace_canonical_tool_id(&app);
+        if self.workspace_catalog_tool(&app).is_none() {
             return;
         }
         self.workspace_selected_app = app;
@@ -1220,27 +1240,76 @@ impl DevicesView {
         }
     }
 
-    fn workspace_installed_apps_for_file(&self, file_name: &str) -> Vec<&'static str> {
-        let for_file = workspace_apps_for_file(file_name);
+    fn workspace_installed_apps_for_file(&self, file_name: &str) -> Vec<String> {
+        let catalog_for_file = self.workspace_catalog_tools_for_file(file_name);
         let Some(author) = self
             .selected_share_entry()
             .and_then(|entry| entry.version_author.as_deref())
         else {
-            return for_file.to_vec();
+            return Vec::new();
         };
         let Some(worker) = self.workspace_worker_for_author(author) else {
-            return for_file.to_vec();
+            return Vec::new();
         };
-        let supported: Vec<&'static str> = for_file
+        catalog_for_file
+            .into_iter()
+            .filter(|tool| {
+                workspace_worker_supports_app(
+                    worker,
+                    &workspace_canonical_tool_id(&tool.descriptor.id),
+                )
+            })
+            .map(|tool| workspace_canonical_tool_id(&tool.descriptor.id))
+            .collect()
+    }
+
+    fn workspace_catalog_tools_for_file(&self, file_name: &str) -> Vec<&ToolSummary> {
+        self.workspace_tools
             .iter()
-            .copied()
-            .filter(|app| workspace_worker_supports_app(worker, app))
-            .collect();
-        if supported.is_empty() {
-            for_file.to_vec()
-        } else {
-            supported
+            .filter(|tool| workspace_tool_supports_file(tool, file_name))
+            .collect()
+    }
+
+    fn workspace_catalog_tool(&self, app: &str) -> Option<&ToolSummary> {
+        let app = workspace_canonical_tool_id(app);
+        self.workspace_tools
+            .iter()
+            .find(|tool| workspace_canonical_tool_id(&tool.descriptor.id) == app)
+    }
+
+    fn workspace_catalog_tool_for_file(&self, file_name: &str, app: &str) -> Option<&ToolSummary> {
+        self.workspace_catalog_tools_for_file(file_name)
+            .into_iter()
+            .find(|tool| workspace_canonical_tool_id(&tool.descriptor.id) == workspace_canonical_tool_id(app))
+    }
+
+    fn recommended_workspace_app(&self, name: &str) -> String {
+        if let Some(app) = self.workspace_installed_apps_for_file(name).into_iter().next() {
+            return app;
         }
+        self.workspace_catalog_tools_for_file(name)
+            .into_iter()
+            .next()
+            .map(|tool| workspace_canonical_tool_id(&tool.descriptor.id))
+            .unwrap_or_default()
+    }
+
+    fn workspace_app_label(&self, app: &str) -> String {
+        self.workspace_catalog_tool(app)
+            .map(|tool| tool.descriptor.name.clone())
+            .unwrap_or_else(|| {
+                if app.is_empty() {
+                    "未选择程序".into()
+                } else {
+                    app.to_string()
+                }
+            })
+    }
+
+    fn workspace_app_desc(&self, app: &str) -> String {
+        self.workspace_catalog_tool(app)
+            .map(|tool| tool.descriptor.description.clone())
+            .unwrap_or_default()
     }
 
     pub fn open_node_from_chat(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
@@ -1765,7 +1834,7 @@ impl DevicesView {
             entry_id: entry.and_then(|entry| entry.entry_id.clone()),
             version_id: entry.and_then(|entry| entry.version_id.clone()),
             version_author: entry.and_then(|entry| entry.version_author.clone()),
-            requested_app: Some(recommended_workspace_app(entry_name).to_string()),
+            requested_app: Some(self.recommended_workspace_app(entry_name)),
         }
     }
 
@@ -5289,13 +5358,18 @@ impl DevicesView {
                 .finish(),
             );
         } else {
-            let matches: Vec<&'static str> = WORKSPACE_APP_CATALOG
+            let matches: Vec<String> = self
+                .workspace_tools
                 .iter()
-                .filter(|entry| {
-                    let haystack = format!("{} {}", entry.name, entry.desc).to_ascii_lowercase();
+                .filter(|tool| {
+                    let haystack = format!(
+                        "{} {}",
+                        tool.descriptor.name, tool.descriptor.description
+                    )
+                    .to_ascii_lowercase();
                     haystack.contains(&query)
                 })
-                .map(|entry| entry.id)
+                .map(|tool| workspace_canonical_tool_id(&tool.descriptor.id))
                 .collect();
             if matches.is_empty() {
                 search_results.add_child(
@@ -5309,9 +5383,9 @@ impl DevicesView {
                 );
             } else {
                 for app_id in matches {
-                    let is_installed = installed.contains(&app_id);
+                    let is_installed = installed.iter().any(|app| app == &app_id);
                     search_results.add_child(
-                        Container::new(self.workspace_app_search_row(app_id, is_installed))
+                        Container::new(self.workspace_app_search_row(&app_id, is_installed))
                             .with_margin_top(6.0)
                             .finish(),
                     );
@@ -5329,7 +5403,7 @@ impl DevicesView {
 
         let can_confirm = installed
             .iter()
-            .any(|app| *app == self.workspace_selected_app.as_str());
+            .any(|app| app == &self.workspace_selected_app);
         let mut actions = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
@@ -5398,18 +5472,17 @@ impl DevicesView {
     }
 
     fn workspace_app_option_row(&self, app: &str, selected: bool) -> Box<dyn Element> {
-        let entry = workspace_app_catalog_entry(app);
-        let name = entry.map(|e| e.name).unwrap_or_else(|| workspace_app_label(app));
-        let desc = entry.map(|e| e.desc).unwrap_or("");
+        let name = self.workspace_app_label(app);
+        let desc = self.workspace_app_desc(app);
         let mut copy = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
         copy.add_child(
-            ui_text::body(name.to_string(), self.font)
+            ui_text::body(name, self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         copy.add_child(
             Container::new(
-                    ui_text::chat_sidebar_time(desc.to_string(), self.font)
+                    ui_text::chat_sidebar_time(desc, self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -5454,18 +5527,17 @@ impl DevicesView {
     }
 
     fn workspace_app_search_row(&self, app: &str, installed: bool) -> Box<dyn Element> {
-        let entry = workspace_app_catalog_entry(app);
-        let name = entry.map(|e| e.name).unwrap_or_else(|| workspace_app_label(app));
-        let desc = entry.map(|e| e.desc).unwrap_or("");
+        let name = self.workspace_app_label(app);
+        let desc = self.workspace_app_desc(app);
         let mut copy = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
         copy.add_child(
-            ui_text::body(name.to_string(), self.font)
+            ui_text::body(name, self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         copy.add_child(
             Container::new(
-                ui_text::chat_sidebar_time(desc.to_string(), self.font)
+                ui_text::chat_sidebar_time(desc, self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -5717,96 +5789,81 @@ fn share_type_label(entry: &ShareEntryDto) -> String {
     }
 }
 
-fn workspace_apps_for_file(name: &str) -> &'static [&'static str] {
-    let extension = name
-        .rsplit_once('.')
+fn workspace_file_extension(name: &str) -> String {
+    name.rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
-        .unwrap_or_default();
-    match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" => &["paint", "default"],
-        "doc" | "docx" | "rtf" | "xls" | "xlsx" | "csv" | "ppt" | "pptx" => &["libreoffice"],
-        "txt" | "md" | "log" => &["notepad", "default"],
-        _ => &["default"],
+        .unwrap_or_default()
+}
+
+fn workspace_canonical_tool_id(id: &str) -> String {
+    let id = id.trim().to_ascii_lowercase();
+    if id == "onlyoffice" {
+        "libreoffice".into()
+    } else {
+        id
     }
 }
 
-fn recommended_workspace_app(name: &str) -> &'static str {
-    workspace_apps_for_file(name)[0]
+fn workspace_office_capability(app: &str) -> bool {
+    matches!(
+        workspace_canonical_tool_id(app).as_str(),
+        "libreoffice" | "word" | "excel" | "powerpoint"
+    )
 }
 
-#[derive(Clone, Copy)]
-struct WorkspaceAppCatalogEntry {
-    id: &'static str,
-    name: &'static str,
-    desc: &'static str,
+fn workspace_capability_matches(declared: &str, requested: &str) -> bool {
+    let declared = workspace_canonical_tool_id(declared);
+    let requested = workspace_canonical_tool_id(requested);
+    if declared == "default" || declared == requested {
+        return true;
+    }
+    workspace_office_capability(&declared) && workspace_office_capability(&requested)
 }
 
-const WORKSPACE_APP_CATALOG: &[WorkspaceAppCatalogEntry] = &[
-    WorkspaceAppCatalogEntry {
-        id: "paint",
-        name: "Paint",
-        desc: "在隔离运行器中编辑位图",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "libreoffice",
-        name: "LibreOffice",
-        desc: "用系统自带办公套件处理文档、表格与演示",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "notepad",
-        name: "Notepad",
-        desc: "编辑纯文本",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "word",
-        name: "Microsoft Word",
-        desc: "编辑 Word 文档",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "excel",
-        name: "Microsoft Excel",
-        desc: "编辑电子表格",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "powerpoint",
-        name: "Microsoft PowerPoint",
-        desc: "编辑演示文稿",
-    },
-    WorkspaceAppCatalogEntry {
-        id: "default",
-        name: "虚拟机默认应用",
-        desc: "使用镜像默认程序打开",
-    },
-];
-
-fn workspace_app_catalog_entry(app: &str) -> Option<&'static WorkspaceAppCatalogEntry> {
-    WORKSPACE_APP_CATALOG
+fn workspace_tool_supports_file(tool: &ToolSummary, file_name: &str) -> bool {
+    let extension = workspace_file_extension(file_name);
+    if extension.is_empty() {
+        return false;
+    }
+    tool.descriptor
+        .extensions
         .iter()
-        .find(|entry| entry.id.eq_ignore_ascii_case(app))
+        .any(|candidate| candidate.eq_ignore_ascii_case(&extension))
 }
 
-fn workspace_app_label(app: &str) -> &'static str {
-    workspace_app_catalog_entry(app)
-        .map(|entry| entry.name)
-        .unwrap_or("虚拟机默认应用")
+fn workspace_source_runtime_tools_from_catalog(tools: Vec<ToolSummary>) -> Vec<ToolSummary> {
+    let mut out = Vec::new();
+    for mut tool in tools {
+        if tool.descriptor.executor != ToolExecutorKind::SourceRuntime {
+            continue;
+        }
+        let canonical = workspace_canonical_tool_id(&tool.descriptor.id);
+        if out.iter().any(|existing: &ToolSummary| {
+            workspace_canonical_tool_id(&existing.descriptor.id) == canonical
+        }) {
+            continue;
+        }
+        if tool.descriptor.id.eq_ignore_ascii_case("onlyoffice") {
+            tool.descriptor.id = "libreoffice".into();
+            tool.descriptor.name = "LibreOffice".into();
+            tool.descriptor.description =
+                "在文件来源电脑的隔离运行器中处理文档、表格与演示。".into();
+        }
+        out.push(tool);
+    }
+    out
 }
 
 fn workspace_worker_supports_app(worker: &WorkspaceWorker, app: &str) -> bool {
-    let app = app.to_ascii_lowercase();
+    let app = workspace_canonical_tool_id(app);
     worker.images.iter().any(|image| {
         if app == "default" {
             return !image.installed_apps.is_empty();
         }
-        let office = |value: &str| {
-            matches!(
-                value,
-                "libreoffice" | "onlyoffice" | "word" | "excel" | "powerpoint"
-            )
-        };
-        image.installed_apps.iter().any(|installed| {
-            let installed = installed.to_ascii_lowercase();
-            installed == app || (office(&installed) && office(&app))
-        })
+        image
+            .installed_apps
+            .iter()
+            .any(|installed| workspace_capability_matches(installed, &app))
     })
 }
 
@@ -6318,13 +6375,64 @@ mod share_browse_path_tests {
 
 #[cfg(test)]
 mod workspace_office_route_tests {
-    use super::{recommended_workspace_app, workspace_app_label, workspace_apps_for_file};
+    use super::{
+        workspace_canonical_tool_id, workspace_capability_matches,
+        workspace_source_runtime_tools_from_catalog, workspace_tool_supports_file,
+    };
+    use wormhole_desktop_core::toolbox_ui::{
+        ToolCategory, ToolDescriptor, ToolExecutorKind, ToolInstallStage, ToolInstallStatus,
+        ToolSummary,
+    };
+
+    fn sample_tool(id: &str, name: &str, extensions: &[&str]) -> ToolSummary {
+        ToolSummary {
+            descriptor: ToolDescriptor {
+                id: id.into(),
+                name: name.into(),
+                description: format!("{name} desc"),
+                executor: ToolExecutorKind::SourceRuntime,
+                categories: vec![ToolCategory::Documents],
+                icon: None,
+                extensions: extensions.iter().map(|value| (*value).to_string()).collect(),
+                requires_file: true,
+                packages: Vec::new(),
+            },
+            status: ToolInstallStatus {
+                tool_id: id.into(),
+                stage: ToolInstallStage::Ready,
+                detail: String::new(),
+                bytes_downloaded: 0,
+                bytes_total: 0,
+                installed_version: Some("1".into()),
+                available_version: Some("1".into()),
+                entrypoint: None,
+                last_error: None,
+                updated_at: 0,
+            },
+        }
+    }
 
     #[test]
-    fn office_files_use_libreoffice_without_default_fallback() {
-        assert_eq!(workspace_apps_for_file("report.docx"), &["libreoffice"]);
-        assert_eq!(recommended_workspace_app("budget.xlsx"), "libreoffice");
-        assert_eq!(workspace_app_label("libreoffice"), "LibreOffice");
+    fn onlyoffice_catalog_entries_canonicalize_to_libreoffice() {
+        assert_eq!(workspace_canonical_tool_id("onlyoffice"), "libreoffice");
+        assert!(workspace_capability_matches("libreoffice", "onlyoffice"));
+        let tools = workspace_source_runtime_tools_from_catalog(vec![
+            sample_tool("onlyoffice", "ONLYOFFICE", &["docx"]),
+            sample_tool("paint", "Paint", &["png"]),
+        ]);
+        assert_eq!(tools[0].descriptor.id, "libreoffice");
+        assert_eq!(tools[0].descriptor.name, "LibreOffice");
+        assert!(workspace_tool_supports_file(&tools[0], "report.docx"));
+        assert!(!workspace_tool_supports_file(&tools[0], "photo.png"));
+        assert!(workspace_tool_supports_file(&tools[1], "photo.png"));
+    }
+
+    #[test]
+    fn empty_worker_capability_does_not_invent_apps() {
+        // Intersection helper lives on DevicesView; capability matching alone must not
+        // treat empty declarations as universal support.
+        assert!(!workspace_capability_matches("", "paint"));
+        assert!(!workspace_capability_matches(" ", "libreoffice"));
     }
 }
 

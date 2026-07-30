@@ -77,10 +77,12 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("chat-attach-location.svg"),
     bundled_icon!("chat-header-search.svg"),
     bundled_icon!("chat-header-phone.svg"),
+    bundled_icon!("chat-header-video.svg"),
     bundled_icon!("chat-header-rdp.svg"),
     bundled_icon!("chat-header-profile.svg"),
     bundled_icon!("chat-header-more.svg"),
     bundled_icon!("chat-sidebar-search.svg"),
+    bundled_icon!("chat-sidebar-menu.svg"),
 ];
 
 pub struct WormholeAssets;
@@ -162,10 +164,12 @@ mod tests {
             "chat-attach-location.svg",
             "chat-header-search.svg",
             "chat-header-phone.svg",
+            "chat-header-video.svg",
             "chat-header-rdp.svg",
             "chat-header-profile.svg",
             "chat-header-more.svg",
             "chat-sidebar-search.svg",
+            "chat-sidebar-menu.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");
@@ -185,10 +189,12 @@ mod tests {
             "chat-attach-location.svg",
             "chat-header-search.svg",
             "chat-header-phone.svg",
+            "chat-header-video.svg",
             "chat-header-rdp.svg",
             "chat-header-profile.svg",
             "chat-header-more.svg",
             "chat-sidebar-search.svg",
+            "chat-sidebar-menu.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             let markup = std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{name}: utf-8"));
