@@ -5724,7 +5724,7 @@ fn workspace_apps_for_file(name: &str) -> &'static [&'static str] {
         .unwrap_or_default();
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" => &["paint", "default"],
-        "doc" | "docx" | "rtf" | "xls" | "xlsx" | "csv" | "ppt" | "pptx" => &["onlyoffice"],
+        "doc" | "docx" | "rtf" | "xls" | "xlsx" | "csv" | "ppt" | "pptx" => &["libreoffice"],
         "txt" | "md" | "log" => &["notepad", "default"],
         _ => &["default"],
     }
@@ -5748,9 +5748,9 @@ const WORKSPACE_APP_CATALOG: &[WorkspaceAppCatalogEntry] = &[
         desc: "在隔离运行器中编辑位图",
     },
     WorkspaceAppCatalogEntry {
-        id: "onlyoffice",
-        name: "ONLYOFFICE Desktop Editors",
-        desc: "离线处理文档、表格与演示",
+        id: "libreoffice",
+        name: "LibreOffice",
+        desc: "用系统自带办公套件处理文档、表格与演示",
     },
     WorkspaceAppCatalogEntry {
         id: "notepad",
@@ -5792,15 +5792,21 @@ fn workspace_app_label(app: &str) -> &'static str {
 }
 
 fn workspace_worker_supports_app(worker: &WorkspaceWorker, app: &str) -> bool {
+    let app = app.to_ascii_lowercase();
     worker.images.iter().any(|image| {
-        if app.eq_ignore_ascii_case("default") {
-            !image.installed_apps.is_empty()
-        } else {
-            image
-                .installed_apps
-                .iter()
-                .any(|installed| installed.eq_ignore_ascii_case(app))
+        if app == "default" {
+            return !image.installed_apps.is_empty();
         }
+        let office = |value: &str| {
+            matches!(
+                value,
+                "libreoffice" | "onlyoffice" | "word" | "excel" | "powerpoint"
+            )
+        };
+        image.installed_apps.iter().any(|installed| {
+            let installed = installed.to_ascii_lowercase();
+            installed == app || (office(&installed) && office(&app))
+        })
     })
 }
 
@@ -6315,13 +6321,10 @@ mod workspace_office_route_tests {
     use super::{recommended_workspace_app, workspace_app_label, workspace_apps_for_file};
 
     #[test]
-    fn office_files_use_onlyoffice_without_default_fallback() {
-        assert_eq!(workspace_apps_for_file("report.docx"), &["onlyoffice"]);
-        assert_eq!(recommended_workspace_app("budget.xlsx"), "onlyoffice");
-        assert_eq!(
-            workspace_app_label("onlyoffice"),
-            "ONLYOFFICE Desktop Editors"
-        );
+    fn office_files_use_libreoffice_without_default_fallback() {
+        assert_eq!(workspace_apps_for_file("report.docx"), &["libreoffice"]);
+        assert_eq!(recommended_workspace_app("budget.xlsx"), "libreoffice");
+        assert_eq!(workspace_app_label("libreoffice"), "LibreOffice");
     }
 }
 
