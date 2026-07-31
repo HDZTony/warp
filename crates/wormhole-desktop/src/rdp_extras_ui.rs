@@ -285,11 +285,7 @@ pub fn render_toolbar(
                 move || a(ExtrasUiAction::ToggleVirtualCam),
             ));
         } else if !vcam.2.is_empty() {
-            row = row.with_child(
-                ui_text::body(vcam.2, font)
-                    .with_color(ColorU::new(140, 140, 140, 255))
-                    .finish(),
-            );
+            row = row.with_child(render_virtual_cam_guidance(font, &vcam.2));
         }
         let (mon_count, mon_idx, mic_on) = state
             .lock()
@@ -328,6 +324,52 @@ pub fn render_toolbar(
     }
 
     row.finish()
+}
+
+fn render_virtual_cam_guidance(font: FamilyId, hint: &str) -> Box<dyn Element> {
+    #[cfg(target_os = "macos")]
+    if hint.contains("OBS") || hint.contains("BlackHole") {
+        return Container::new(
+            Flex::column()
+                .with_child(
+                    ui_text::body("macOS 虚拟摄像头", font)
+                        .with_color(ColorU::new(210, 210, 210, 255))
+                        .finish(),
+                )
+                .with_child(guidance_line(
+                    font,
+                    "1. 安装 OBS Studio，菜单「工具 → 虚拟摄像头」启动输出。",
+                ))
+                .with_child(guidance_line(
+                    font,
+                    "2. 在 Zoom / Teams / Meet 中选择「OBS Virtual Camera」。",
+                ))
+                .with_child(guidance_line(
+                    font,
+                    "3. 若需把 Viewer 音频注入会议麦，另装 BlackHole 并在系统声音里选多输出。",
+                ))
+                .finish(),
+        )
+        .with_uniform_padding(4.)
+        .finish();
+    }
+    Container::new(
+        ui_text::body(hint.to_string(), font)
+            .with_color(ColorU::new(140, 140, 140, 255))
+            .finish(),
+    )
+    .with_uniform_padding(4.)
+    .finish()
+}
+
+fn guidance_line(font: FamilyId, text: &str) -> Box<dyn Element> {
+    Container::new(
+        ui_text::body(text.to_string(), font)
+            .with_color(ColorU::new(140, 140, 140, 255))
+            .finish(),
+    )
+    .with_padding_top(2.)
+    .finish()
 }
 
 pub fn render_auth_panel(

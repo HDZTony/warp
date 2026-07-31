@@ -28,7 +28,7 @@ pub mod toolbox_view;
 pub mod w_drive_view;
 pub mod window_chrome;
 pub mod window_options;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod windows_shell;
 
 pub use app_shell::AppShellView;

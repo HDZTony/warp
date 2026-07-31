@@ -1511,6 +1511,17 @@ impl DevicesView {
         self.open_node(node_id, ctx);
     }
 
+    /// Prefill cluster join modal from a deeplink or saved pending invite.
+    pub fn prefill_join_invite(&mut self, invite: String, ctx: &mut ViewContext<Self>) {
+        let invite = invite.trim().to_string();
+        if invite.is_empty() {
+            return;
+        }
+        self.join_invite_draft = invite;
+        self.join_feedback = None;
+        self.open_join_modal(ctx);
+    }
+
     fn open_node(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         let local_id = self
             .cluster

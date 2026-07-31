@@ -49,6 +49,10 @@ use wormhole_desktop_core::cloud_auth_status;
 use wormhole_desktop_core::cloud_credits::{CloudCreditProductDto, CloudCreditRedeemRequest};
 use wormhole_desktop_core::cluster_commands::{cluster_status, cluster_status_hud};
 use wormhole_desktop_core::cluster_gossip_coordinator::ClusterGossipCoordinator;
+use wormhole_desktop_core::deeplink_commands::{
+    cluster_invite_from_deeplink, save_pending_cluster_invite, take_pending_cluster_invite,
+    take_pending_deeplink,
+};
 use wormhole_desktop_core::warp_embed_prefs::PreferredAgent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +214,7 @@ pub struct AppShellView {
     desktop_event_rx: Arc<
         tokio::sync::Mutex<tokio::sync::broadcast::Receiver<wormhole_desktop_core::DesktopEvent>>,
     >,
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     tray: std::sync::Arc<wormhole_desktop_tray::TrayController>,
 }
 
@@ -219,7 +223,7 @@ impl AppShellView {
         ctx: &mut ViewContext<Self>,
         core: CoreHandle,
         coordinator: std::sync::Arc<std::sync::Mutex<CoordinatorState>>,
-        #[cfg(any(windows, target_os = "linux"))] tray: std::sync::Arc<
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))] tray: std::sync::Arc<
             wormhole_desktop_tray::TrayController,
         >,
     ) -> Self {
@@ -227,7 +231,7 @@ impl AppShellView {
         let mono = crate::ui::fonts::load_mono_font(ctx, font);
         let coordinator_view =
             ctx.add_typed_action_view(|ctx| CoordinatorView::new(ctx, coordinator.clone()));
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         crate::ui::windows_shell::register_main_shell_window(ctx.window_id(), &coordinator);
         let w_drive = ctx.add_view(|ctx| SharedVaultView::new(ctx, core.clone()));
         let sync = ctx.add_typed_action_view(|ctx| SyncView::new(ctx, core.clone()));
@@ -290,6 +294,9 @@ impl AppShellView {
                         settings.refresh_account(ctx);
                     });
                     view.refresh_auth_gated_views(ctx);
+                    if *authenticated {
+                        view.try_resume_pending_cluster_invite(ctx);
+                    }
                 }
                 LoginModalEvent::OpenChanged { open } => {
                     view.login_modal_open = *open;
@@ -322,6 +329,14 @@ impl AppShellView {
                     view.tab_bar_keyboard_focus = false;
                     view.persist_last_tab();
                     ctx.notify();
+                }
+                SettingsEvent::OpenRdpHostControl => {
+                    if let Ok(mut guard) = view.coordinator.lock() {
+                        guard.enqueue(UiCommand::OpenHostControl {
+                            window_key: "settings-rdp-host".into(),
+                            title: "Remote Desktop 控制台".into(),
+                        });
+                    }
                 }
                 SettingsEvent::RestoreArchivedSession(id) => {
                     let warp_handle = view.warp.clone();
@@ -363,7 +378,7 @@ impl AppShellView {
         let desktop_event_rx = Arc::new(tokio::sync::Mutex::new(
             core.runtime().ctx.events.subscribe(),
         ));
-        let view = Self {
+        let mut view = Self {
             tab,
             tab_focus: tab,
             tab_bar_keyboard_focus: false,
@@ -416,14 +431,14 @@ impl AppShellView {
             window_id,
             traffic_light_mouse_states: TrafficLightMouseStates::default(),
             desktop_event_rx,
-            #[cfg(any(windows, target_os = "linux"))]
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             tray,
         };
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.refresh_auth_status(ctx);
         view.start_event_listener(ctx);
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         view.start_tray_poll(ctx);
         Self::sync_titlebar_height(ctx);
         window_chrome::sync_window_button_visibility(ctx);
@@ -433,6 +448,7 @@ impl AppShellView {
                 settings.select_virtual_machine(ctx);
             });
         }
+        view.consume_startup_deeplinks(ctx);
         view
     }
 
@@ -506,6 +522,9 @@ impl AppShellView {
                                 view.prompt_login_if_needed(ctx);
                             }
                         }
+                        if device_ready {
+                            view.try_resume_pending_cluster_invite(ctx);
+                        }
                     }
                     view.device_ready = device_ready;
                     ctx.notify();
@@ -559,6 +578,15 @@ impl AppShellView {
                         }
                         "cluster-gossip-changed" => {
                             view.refresh_cluster_gossip_views(ctx, &devices, &chat, &core);
+                        }
+                        "wormhole-deeplink" => {
+                            if let Some(url) = event
+                                .payload
+                                .get("url")
+                                .and_then(|value| value.as_str())
+                            {
+                                view.handle_deeplink_url(url, ctx);
+                            }
                         }
                         _ => {}
                     },
@@ -633,7 +661,52 @@ impl AppShellView {
         );
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    fn consume_startup_deeplinks(&mut self, ctx: &mut ViewContext<Self>) {
+        let state = self.core.runtime().state.clone();
+        if let Some(url) = take_pending_deeplink(&state).url {
+            self.handle_deeplink_url(&url, ctx);
+            return;
+        }
+        let data_dir = self.core.data_dir();
+        if let Some(invite) = take_pending_cluster_invite(&data_dir) {
+            self.handle_cluster_join_invite(&invite, ctx);
+        }
+    }
+
+    fn handle_deeplink_url(&mut self, url: &str, ctx: &mut ViewContext<Self>) {
+        if let Some(invite) = cluster_invite_from_deeplink(url) {
+            self.handle_cluster_join_invite(&invite, ctx);
+        }
+    }
+
+    fn handle_cluster_join_invite(&mut self, invite: &str, ctx: &mut ViewContext<Self>) {
+        let invite = invite.trim().to_string();
+        if invite.is_empty() {
+            return;
+        }
+        self.tab = AppTab::Devices;
+        self.tab_focus = AppTab::Devices;
+        self.tab_bar_keyboard_focus = false;
+        if self.auth_authenticated && self.device_ready {
+            let devices = self.devices.clone();
+            ctx.update_view(&devices, |devices, ctx| {
+                devices.prefill_join_invite(invite, ctx);
+            });
+        } else {
+            let _ = save_pending_cluster_invite(&self.core.data_dir(), &invite);
+            if !self.auth_authenticated {
+                self.open_login_modal(ctx);
+            } else {
+                let devices = self.devices.clone();
+                ctx.update_view(&devices, |devices, ctx| {
+                    devices.prefill_join_invite(invite, ctx);
+                });
+            }
+        }
+        ctx.notify();
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn start_tray_poll(&self, ctx: &mut ViewContext<Self>) {
         let tray = self.tray.clone();
         let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
@@ -646,7 +719,7 @@ impl AppShellView {
         Self::poll_tray_once(ctx, tick_rx, tray);
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn poll_tray_once(
         ctx: &mut ViewContext<Self>,
         tick_rx: async_channel::Receiver<()>,
@@ -876,6 +949,16 @@ impl AppShellView {
         }
         self.open_login_modal(ctx);
         ctx.notify();
+    }
+
+    fn try_resume_pending_cluster_invite(&mut self, ctx: &mut ViewContext<Self>) {
+        if !(self.auth_authenticated && self.device_ready) {
+            return;
+        }
+        let data_dir = self.core.data_dir();
+        if let Some(invite) = take_pending_cluster_invite(&data_dir) {
+            self.handle_cluster_join_invite(&invite, ctx);
+        }
     }
 
     fn refresh_auth_gated_views(&self, ctx: &mut ViewContext<Self>) {
@@ -1779,9 +1862,9 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::CloseWindow => {
                 self.persist_last_tab();
-                #[cfg(any(windows, target_os = "linux"))]
+                #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                 crate::ui::windows_shell::hide_main_window_from_view(ctx);
-                #[cfg(not(any(windows, target_os = "linux")))]
+                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
                 ctx.close_window();
             }
             AppShellAction::OpenLogin => {

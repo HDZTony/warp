@@ -19,6 +19,7 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui::agent_providers_view::AgentProvidersView;
 use crate::ui::plugins_view::PluginsView;
+use crate::ui::display_view::DisplayView;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui_text;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
@@ -33,8 +34,9 @@ use wormhole_desktop_core::sync_commands::{
     migrate_shared_storage, shared_storage_info, SharedStorageInfoDto,
 };
 use wormhole_desktop_core::{
-    clear_cloud_auth_token, cloud_auth_status, get_network_relay_status, save_network_relay_config,
-    NetworkRelayStatusDto, SaveNetworkRelayParams,
+    check_desktop_update, clear_cloud_auth_token, cloud_auth_status, get_network_relay_status,
+    save_network_relay_config, DesktopUpdateStatusDto, NetworkRelayStatusDto,
+    SaveNetworkRelayParams,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +50,10 @@ pub enum SettingsPage {
     Cache,
     Archive,
     VirtualMachine,
+    RdpHost,
+    Display,
     Plugins,
+    About,
 }
 
 impl SettingsPage {
@@ -63,7 +68,10 @@ impl SettingsPage {
             SettingsPage::Cache,
             SettingsPage::Archive,
             SettingsPage::VirtualMachine,
+            SettingsPage::RdpHost,
+            SettingsPage::Display,
             SettingsPage::Plugins,
+            SettingsPage::About,
         ]
     }
 
@@ -78,7 +86,10 @@ impl SettingsPage {
             SettingsPage::Cache => "清理缓存",
             SettingsPage::Archive => "历史归档",
             SettingsPage::VirtualMachine => "虚拟机",
+            SettingsPage::RdpHost => "远程桌面 Host",
+            SettingsPage::Display => "虚拟显示器",
             SettingsPage::Plugins => "插件",
+            SettingsPage::About => "关于",
         }
     }
 
@@ -93,7 +104,10 @@ impl SettingsPage {
             SettingsPage::Cache => ("CACHE", "清理缓存"),
             SettingsPage::Archive => ("ARCHIVE", "历史对话归档"),
             SettingsPage::VirtualMachine => ("SYSTEM", "虚拟机"),
+            SettingsPage::RdpHost => ("RDP", "远程桌面 Host"),
+            SettingsPage::Display => ("DISPLAY", "虚拟显示器"),
             SettingsPage::Plugins => ("PLUGIN", "bb-browser"),
+            SettingsPage::About => ("APP", "版本与更新"),
         }
     }
 
@@ -103,7 +117,8 @@ impl SettingsPage {
             SettingsPage::Cluster | SettingsPage::Relay => "集群",
             SettingsPage::SharedPath => "数据",
             SettingsPage::Cache | SettingsPage::Archive => "存储",
-            SettingsPage::VirtualMachine | SettingsPage::Plugins => "系统",
+            SettingsPage::VirtualMachine | SettingsPage::RdpHost | SettingsPage::Display
+            | SettingsPage::Plugins | SettingsPage::About => "系统",
         }
     }
 
@@ -117,7 +132,10 @@ impl SettingsPage {
             SettingsPage::Cache => "share-sync.svg",
             SettingsPage::Archive => "agent-menu-archive.svg",
             SettingsPage::VirtualMachine => "device-pc.svg",
+            SettingsPage::RdpHost => "device-pc.svg",
+            SettingsPage::Display => "tab-devices.svg",
             SettingsPage::Plugins => "tab-toolbox.svg",
+            SettingsPage::About => "cluster-refresh.svg",
         }
     }
 
@@ -133,8 +151,17 @@ impl SettingsPage {
         if self == SettingsPage::VirtualMachine {
             haystack.push_str(" 工具箱 toolbox runner");
         }
+        if self == SettingsPage::RdpHost {
+            haystack.push_str(" rdp host 无人值守 隐私屏 totp fps");
+        }
+        if self == SettingsPage::Display {
+            haystack.push_str(" ipad display mirror extend 虚拟显示器");
+        }
         if self == SettingsPage::Plugins {
             haystack.push_str(" bb-browser chromium browser mcp plugin 插件");
+        }
+        if self == SettingsPage::About {
+            haystack.push_str(" update version 更新 检查更新 版本");
         }
         haystack
     }
@@ -166,6 +193,7 @@ pub enum SettingsEvent {
     AccountChanged { authenticated: bool },
     OpenLogin,
     OpenClusterManagement,
+    OpenRdpHostControl,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
 }
@@ -199,6 +227,9 @@ pub enum SettingsAction {
     ApplyRelay,
     RefreshCache,
     ClearCache(String),
+    CheckDesktopUpdate,
+    OpenUpdateDownload(String),
+    OpenRdpHostControl,
 }
 
 pub struct SettingsView {
@@ -240,8 +271,13 @@ pub struct SettingsView {
     cache_message: String,
     cache_tone: StatusTone,
     cache_busy: bool,
+    update_status: Option<DesktopUpdateStatusDto>,
+    update_message: String,
+    update_tone: StatusTone,
+    update_busy: bool,
     scroll: ClippedScrollStateHandle,
     toolbox: ViewHandle<ToolboxView>,
+    display: ViewHandle<DisplayView>,
     agent_providers: ViewHandle<AgentProvidersView>,
     plugins: ViewHandle<PluginsView>,
 }
@@ -262,6 +298,7 @@ impl SettingsView {
         let archive_expanded = Self::load_archive_expanded(&core);
         let toolbox =
             ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone()));
+        let display = ctx.add_typed_action_view(|ctx| DisplayView::new(ctx, core.clone()));
         let agent_providers =
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let plugins = ctx.add_typed_action_view(|ctx| PluginsView::new(ctx, core.clone()));
@@ -304,8 +341,13 @@ impl SettingsView {
             cache_message: String::new(),
             cache_tone: StatusTone::Placeholder,
             cache_busy: false,
+            update_status: None,
+            update_message: String::new(),
+            update_tone: StatusTone::Placeholder,
+            update_busy: false,
             scroll: ClippedScrollStateHandle::new(),
             toolbox,
+            display,
             agent_providers,
             plugins,
         };
@@ -447,6 +489,54 @@ impl SettingsView {
                     Err(error) => {
                         view.cache_message = format!("缓存统计失败: {error}");
                         view.cache_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn check_desktop_update(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.update_busy {
+            return;
+        }
+        self.update_busy = true;
+        self.update_message = "正在检查更新…".into();
+        self.update_tone = StatusTone::Placeholder;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                check_desktop_update(&runtime).await
+            },
+            |view, output, ctx| {
+                view.update_busy = false;
+                match output {
+                    Ok(status) => {
+                        view.update_status = Some(status.clone());
+                        if status.manifest_url.is_none() {
+                            view.update_message =
+                                "未配置更新源（desktop.config.json 或 WORMHOLE_UPDATER_MANIFEST_URL）。"
+                                    .into();
+                            view.update_tone = StatusTone::Placeholder;
+                        } else if status.update_available {
+                            let latest = status
+                                .latest_version
+                                .as_deref()
+                                .unwrap_or("未知版本");
+                            view.update_message =
+                                format!("发现新版本 {latest}（当前 {}）", status.current_version);
+                            view.update_tone = StatusTone::Success;
+                        } else {
+                            view.update_message =
+                                format!("当前版本 {} 已是最新。", status.current_version);
+                            view.update_tone = StatusTone::Success;
+                        }
+                    }
+                    Err(error) => {
+                        view.update_message = format!("检查更新失败: {error}");
+                        view.update_tone = StatusTone::Danger;
                     }
                 }
                 ctx.notify();
@@ -742,7 +832,10 @@ impl SettingsView {
             SettingsPage::Cache => col.add_child(self.cache_block()),
             SettingsPage::Archive => col.add_child(self.archive_block()),
             SettingsPage::VirtualMachine => col.add_child(ChildView::new(&self.toolbox).finish()),
+            SettingsPage::RdpHost => col.add_child(self.rdp_host_block()),
+            SettingsPage::Display => col.add_child(ChildView::new(&self.display).finish()),
             SettingsPage::Plugins => col.add_child(ChildView::new(&self.plugins).finish()),
+            SettingsPage::About => col.add_child(self.about_block()),
         }
         col.add_child(
             Container::new(
@@ -1221,6 +1314,111 @@ impl SettingsView {
         ));
         col.add_child(
             Container::new(self.inline_action_row(auth_actions))
+                .with_vertical_margin(8.0)
+                .finish(),
+        );
+        self.flat_section(col.finish())
+    }
+
+    fn rdp_host_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            "配置无人值守、隐私屏、FPS、TOTP 与登录自启。完整 Host / Connect / 地址簿控制台在独立窗口中操作。",
+            self.font,
+        ));
+        col.add_child(
+            Container::new(self.stateful_action_button(
+                "打开 Remote Desktop 控制台",
+                SettingsAction::OpenRdpHostControl,
+                false,
+                true,
+            ))
+            .with_margin_top(12.0)
+            .finish(),
+        );
+        self.flat_section(col.finish())
+    }
+
+    fn about_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            "检查 Wormhole 桌面版更新；与 command bridge 的 check_desktop_update 命令一致。",
+            self.font,
+        ));
+        if let Some(status) = &self.update_status {
+            col.add_child(
+                ui_text::mono(
+                    format!("当前版本: {}", status.current_version),
+                    self.font,
+                )
+                .with_color(theme::muted())
+                .finish(),
+            );
+            if let Some(latest) = status.latest_version.as_deref() {
+                col.add_child(
+                    Container::new(
+                        ui_text::mono(format!("最新版本: {latest}"), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(6.0)
+                    .finish(),
+                );
+            }
+            if let Some(url) = status.manifest_url.as_deref() {
+                col.add_child(
+                    Container::new(
+                        ui_text::mono(format!("更新源: {url}"), self.font)
+                            .with_color(theme::placeholder())
+                            .finish(),
+                    )
+                    .with_margin_top(6.0)
+                    .finish(),
+                );
+            }
+            if let Some(notes) = status.notes.as_deref().filter(|notes| !notes.is_empty()) {
+                col.add_child(
+                    Container::new(
+                        ui_text::body(notes.to_string(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(8.0)
+                    .finish(),
+                );
+            }
+        }
+        if !self.update_message.is_empty() {
+            col.add_child(status_line(
+                self.update_message.clone(),
+                self.font,
+                self.update_tone,
+            ));
+        }
+        let mut actions = vec![self.stateful_action_button(
+            if self.update_busy {
+                "正在检查…"
+            } else {
+                "检查更新"
+            },
+            SettingsAction::CheckDesktopUpdate,
+            self.update_busy,
+            true,
+        )];
+        if let Some(url) = self
+            .update_status
+            .as_ref()
+            .and_then(|status| status.download_url.clone())
+        {
+            actions.push(self.stateful_action_button(
+                "打开下载",
+                SettingsAction::OpenUpdateDownload(url),
+                false,
+                false,
+            ));
+        }
+        col.add_child(
+            Container::new(self.inline_action_row(actions))
                 .with_vertical_margin(8.0)
                 .finish(),
         );
@@ -1800,6 +1998,9 @@ impl TypedActionView for SettingsView {
             SettingsAction::OpenClusterManagement => {
                 ctx.emit(SettingsEvent::OpenClusterManagement);
             }
+            SettingsAction::OpenRdpHostControl => {
+                ctx.emit(SettingsEvent::OpenRdpHostControl);
+            }
             SettingsAction::ToggleRelaySection => {
                 self.relay_expanded = !self.relay_expanded;
                 ctx.notify();
@@ -2039,6 +2240,20 @@ impl TypedActionView for SettingsView {
                     },
                 );
             }
+            SettingsAction::CheckDesktopUpdate => self.check_desktop_update(ctx),
+            SettingsAction::OpenUpdateDownload(url) => {
+                match open_external_url(url) {
+                    Ok(()) => {
+                        self.update_message = "已在系统浏览器打开下载链接。".into();
+                        self.update_tone = StatusTone::Success;
+                    }
+                    Err(error) => {
+                        self.update_message = format!("打开下载链接失败: {error}");
+                        self.update_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            }
         }
     }
 }
@@ -2163,8 +2378,17 @@ mod tests {
         );
         assert_eq!(
             settings_pages_in_group("系统"),
-            vec![SettingsPage::VirtualMachine, SettingsPage::Plugins]
+            vec![
+                SettingsPage::VirtualMachine,
+                SettingsPage::RdpHost,
+                SettingsPage::Display,
+                SettingsPage::Plugins,
+                SettingsPage::About,
+            ]
         );
+        assert!(SettingsPage::RdpHost.matches_query("隐私屏"));
+        assert!(SettingsPage::Display.matches_query("ipad"));
+        assert!(SettingsPage::About.matches_query("检查更新"));
     }
 
     #[test]

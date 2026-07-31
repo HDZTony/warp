@@ -909,7 +909,7 @@ fn format_host_body(ui: &HostControlUi) -> String {
     } else {
         "不可用"
     };
-    let logon = if cfg!(windows) {
+    let logon = if cfg!(windows) || cfg!(target_os = "macos") {
         if ui.settings.windows_logon_task {
             if ui.logon_task_installed {
                 "已启用（已注册）"
@@ -920,7 +920,7 @@ fn format_host_body(ui: &HostControlUi) -> String {
             "关闭"
         }
     } else {
-        "仅 Windows"
+        "本平台使用 XDG/systemd（见设置说明）"
     };
     let service = if cfg!(windows) {
         if ui.settings.windows_service_mode {
@@ -959,8 +959,15 @@ fn format_host_body(ui: &HostControlUi) -> String {
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or("（未设置 — 聚焦后输入 Node ID/别名）");
+    let logon_label = if cfg!(target_os = "macos") {
+        "登录 LaunchAgent"
+    } else if cfg!(windows) {
+        "登录计划任务"
+    } else {
+        "登录自启"
+    };
     format!(
-        "本机 Node ID\n{}\n\n无人值守：{}\n启动自监听：{}\n访问密码：{}\n\nFPS：{}  监视器：{}\n画质：{} ({})  编码：{}\nVRAM：{}\n隐私屏：{}\nTOTP：{}  密钥：{}\n登录计划任务：{}\nWindows 服务模式：{}\n麦克风注入：{}\nPrint Drop 对端：{}\n\n聚焦「访问密码 / Print Drop」后键盘输入；Enter 保存设置。\n当前聚焦：{}\n\n{}",
+        "本机 Node ID\n{}\n\n无人值守：{}\n启动自监听：{}\n访问密码：{}\n\nFPS：{}  监视器：{}\n画质：{} ({})  编码：{}\nVRAM：{}\n隐私屏：{}\nTOTP：{}  密钥：{}\n{logon_label}：{logon}\nWindows 服务模式：{service}\n麦克风注入：{}\nPrint Drop 对端：{}\n\n聚焦「访问密码 / Print Drop」后键盘输入；Enter 保存设置。\n当前聚焦：{}\n\n{}",
         ui.node_id,
         if ui.settings.unattended_enabled {
             "已启用"
@@ -990,12 +997,13 @@ fn format_host_body(ui: &HostControlUi) -> String {
             "关"
         },
         totp_secret,
-        logon,
-        service,
         ui.mic_sink_label,
         print_peer,
         field_label(ui.active_field),
         ui.status,
+        logon_label = logon_label,
+        logon = logon,
+        service = service,
     )
 }
 
@@ -1263,17 +1271,24 @@ impl View for RdpHostControlView {
                     v.generate_totp();
                 },
             ));
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 let v = self.clone_refs();
                 host_actions = host_actions.with_child(link_label(
-                    "切换登录计划任务",
+                    if cfg!(target_os = "macos") {
+                        "切换登录自启（LaunchAgent）"
+                    } else {
+                        "切换登录计划任务"
+                    },
                     self.font,
                     false,
                     move || {
                         v.toggle_logon_task();
                     },
                 ));
+            }
+            #[cfg(windows)]
+            {
                 let v = self.clone_refs();
                 host_actions = host_actions.with_child(link_label(
                     "切换 Windows 服务模式",

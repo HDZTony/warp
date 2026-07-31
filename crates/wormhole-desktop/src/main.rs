@@ -181,7 +181,7 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     let _gui_instance_lock = acquire_gui_instance_or_exit();
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let tray = {
         use wormhole_desktop_tray::TrayController;
         Arc::new(TrayController::spawn("Wormhole")?)
@@ -195,7 +195,7 @@ fn main() -> Result<()> {
     ))?;
     let core = CoreHandle::new(desktop_runtime, tokio);
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         use std::sync::atomic::{AtomicBool, Ordering};
         use wormhole_desktop_tray::QuitHook;
@@ -252,7 +252,7 @@ fn main() -> Result<()> {
 
     let callbacks = {
         let mut callbacks = AppCallbacks::default();
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         {
             let coordinator_for_close = coordinator.clone();
             callbacks.on_should_close_window = Some(Box::new(move |window_id, ctx| {
@@ -300,7 +300,7 @@ fn main() -> Result<()> {
     }
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let tray_for_shell = tray.clone();
 
     #[cfg(unix)]
@@ -359,7 +359,7 @@ fn main() -> Result<()> {
                     view_ctx,
                     core_for_shell,
                     coordinator_for_shell,
-                    #[cfg(any(windows, target_os = "linux"))]
+                    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                     tray_for_shell,
                 )
             },
