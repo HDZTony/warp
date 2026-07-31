@@ -39,13 +39,17 @@ use wormhole_desktop_core::cluster_commands::{
     NODE_PRESENCE_HANDSHAKE_FAILED, NODE_PRESENCE_SIGNED_IN,
 };
 use wormhole_desktop_core::device_remarks::load_device_remarks;
-use wormhole_desktop_core::toolbox_ui::{toolbox_list_tools, ToolExecutorKind, ToolSummary};
+use wormhole_desktop_core::toolbox_ui::{
+    is_user_app_capability, toolbox_list_tools, user_app_supports_file, CatalogUserAppSummary,
+    ToolExecutorKind, ToolSummary, WorkspaceUserAppManifest, workspace_user_app_catalog_install,
+    workspace_user_app_catalog_list, workspace_user_app_list, WorkspaceUserAppCatalogInstallParams,
+};
 use wormhole_desktop_core::workspace_ui::{
     workspace_app_preference, workspace_approve_provision_job,
     workspace_approve_provision_job_with_candidate, workspace_list_provision_jobs,
     workspace_list_workers, workspace_probe_vm_candidates, workspace_save_app_preference,
-    WorkspaceProvisionJob, WorkspaceProvisionRequest, WorkspaceProvisionStage,
-    WorkspaceVmCandidate, WorkspaceWorker,
+    WorkspaceExecutionMode, WorkspaceProvisionJob, WorkspaceProvisionRequest,
+    WorkspaceProvisionStage, WorkspaceVmCandidate, WorkspaceWorker,
 };
 
 use std::collections::{BTreeMap, HashMap};
@@ -128,6 +132,8 @@ pub struct DevicesView {
     selected_share_file: Option<String>,
     workspace_workers: Vec<WorkspaceWorker>,
     workspace_tools: Vec<ToolSummary>,
+    workspace_user_apps: Vec<WorkspaceUserAppManifest>,
+    workspace_catalog_user_apps: Vec<CatalogUserAppSummary>,
     workspace_vm_candidates: Vec<WorkspaceVmCandidate>,
     workspace_jobs: Vec<WorkspaceProvisionJob>,
     workspace_remote_job: Option<WorkspaceProvisionJob>,
@@ -226,6 +232,8 @@ impl DevicesView {
             selected_share_file: None,
             workspace_workers: Vec::new(),
             workspace_tools: Vec::new(),
+            workspace_user_apps: Vec::new(),
+            workspace_catalog_user_apps: Vec::new(),
             workspace_vm_candidates: Vec::new(),
             workspace_jobs: Vec::new(),
             workspace_remote_job: None,
@@ -832,6 +840,8 @@ impl DevicesView {
                 let state = core.runtime().state.clone();
                 let workers = workspace_list_workers(&state).await;
                 let tools = toolbox_list_tools(&state).await;
+                let local_user_apps = workspace_user_app_list(&state).await;
+                let catalog_user_apps = workspace_user_app_catalog_list(&state).await;
                 let jobs = workspace_list_provision_jobs(&state).await;
                 let candidates = workspace_probe_vm_candidates().await;
                 let remote = if let Some((node_id, job_id)) = remote_job {
@@ -844,11 +854,20 @@ impl DevicesView {
                 } else {
                     None
                 };
-                (workers, tools, jobs, candidates, remote)
+                (
+                    workers,
+                    tools,
+                    local_user_apps,
+                    catalog_user_apps,
+                    jobs,
+                    candidates,
+                    remote,
+                )
             },
             |view, output, ctx| {
                 view.workspace_loading = false;
-                let (workers, tools, jobs, candidates, remote) = output;
+                let (workers, tools, local_user_apps, catalog_user_apps, jobs, candidates, remote) =
+                    output;
                 match workers {
                     Ok(workers) => view.workspace_workers = workers,
                     Err(error) => {
@@ -865,6 +884,14 @@ impl DevicesView {
                         view.workspace_tools.clear();
                         view.set_workspace_progress(format!("读取工具目录失败: {error}"));
                     }
+                }
+                match local_user_apps {
+                    Ok(apps) => view.workspace_user_apps = apps,
+                    Err(_) => view.workspace_user_apps.clear(),
+                }
+                match catalog_user_apps {
+                    Ok(apps) => view.workspace_catalog_user_apps = apps,
+                    Err(_) => view.workspace_catalog_user_apps.clear(),
                 }
                 if let Ok(jobs) = jobs {
                     if jobs.iter().any(|job| {
@@ -938,7 +965,8 @@ impl DevicesView {
             return;
         };
         if workspace_worker_supports_app(worker, &self.workspace_selected_app) {
-            self.workspace_status = format!("{} · 隔离工具运行器已就绪", worker.hostname);
+            let mode = workspace_worker_mode_label(worker, &self.workspace_selected_app);
+            self.workspace_status = format!("{} · {} 已就绪", worker.hostname, mode);
         } else {
             self.workspace_status = format!(
                 "{} 在线，但镜像未提供 {}",
@@ -964,8 +992,19 @@ impl DevicesView {
         params.requested_app = Some(self.workspace_selected_app.clone());
         let entry_name = entry.name.clone();
         self.share_file_busy = true;
+        let mode_hint = self
+            .selected_share_entry()
+            .and_then(|e| e.version_author.as_deref())
+            .and_then(|author| self.workspace_worker_for_author(author))
+            .map(|worker| workspace_worker_mode_label(worker, &self.workspace_selected_app))
+            .unwrap_or_else(|| "远程运行器".into());
         self.set_workspace_progress(format!(
-            "正在远程虚拟机的隔离运行器中打开 {entry_name}…"
+            "正在{mode_hint}中打开 {entry_name}…{}",
+            if mode_hint.contains("Host-Native") {
+                "（会占用来源电脑桌面焦点与键鼠；Wayland 首次需在来源机点「共享整屏」）"
+            } else {
+                ""
+            }
         ));
         let core = self.core.clone();
         ctx.spawn(
@@ -1133,7 +1172,13 @@ impl DevicesView {
 
     fn select_workspace_app(&mut self, app: String, ctx: &mut ViewContext<Self>) {
         let app = workspace_canonical_tool_id(&app);
-        if self.workspace_catalog_tool(&app).is_none() {
+        let known = self.workspace_catalog_tool(&app).is_some()
+            || is_user_app_capability(&app)
+            || self
+                .workspace_user_apps
+                .iter()
+                .any(|m| m.app_id.eq_ignore_ascii_case(&app));
+        if !known {
             self.set_workspace_progress("此远程虚拟机不支持该文件的打开方式");
             ctx.notify();
             return;
@@ -1206,6 +1251,22 @@ impl DevicesView {
 
     fn workspace_install_and_open(&mut self, app: String, ctx: &mut ViewContext<Self>) {
         let app = workspace_canonical_tool_id(&app);
+        if is_user_app_capability(&app) {
+            let Some(catalog) = self
+                .workspace_catalog_user_apps
+                .iter()
+                .find(|item| item.app_id.eq_ignore_ascii_case(&app) && item.package_ready)
+                .cloned()
+            else {
+                self.set_workspace_progress(
+                    "用户程序不在本机目录中：请先在来源 Linux 电脑的「设置 → 虚拟机」安装或导入",
+                );
+                ctx.notify();
+                return;
+            };
+            self.workspace_install_user_app_and_open(catalog.app_id, catalog.version, ctx);
+            return;
+        }
         if self.workspace_catalog_tool(&app).is_none() {
             return;
         }
@@ -1240,8 +1301,70 @@ impl DevicesView {
         }
     }
 
+    fn workspace_install_user_app_and_open(
+        &mut self,
+        app_id: String,
+        version: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.workspace_selected_app = app_id.clone();
+        self.update_workspace_status_from_selection();
+        self.set_workspace_progress(format!("正在安装用户程序 {app_id}…"));
+        let core = self.core.clone();
+        let file_name = self
+            .selected_share_entry()
+            .map(|entry| entry.name.clone())
+            .unwrap_or_default();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let installed = workspace_user_app_catalog_install(
+                    &state,
+                    WorkspaceUserAppCatalogInstallParams {
+                        app_id: app_id.clone(),
+                        version,
+                        promote: true,
+                    },
+                )
+                .await?;
+                if !file_name.is_empty() {
+                    workspace_save_app_preference(&state, &file_name, &app_id).await?;
+                }
+                Ok::<_, String>(installed)
+            },
+            |view, result, ctx| {
+                match result {
+                    Ok(result) => {
+                        let name = result.manifest.display_name.clone();
+                        if let Some(warning) = result.promote_warning {
+                            view.set_workspace_progress(format!(
+                                "已安装 {name}，但未写入 worker installed_apps：{warning}"
+                            ));
+                        } else {
+                            view.set_workspace_progress(format!("已安装 {name}，正在打开…"));
+                        }
+                        if let Some(manifest) = view
+                            .workspace_user_apps
+                            .iter_mut()
+                            .find(|app| app.app_id == result.manifest.app_id)
+                        {
+                            *manifest = result.manifest.clone();
+                        } else {
+                            view.workspace_user_apps.push(result.manifest);
+                        }
+                        view.close_workspace_app_picker(ctx);
+                        view.workspace_open_selected(ctx);
+                    }
+                    Err(error) => {
+                        view.set_workspace_progress(format!("安装用户程序失败: {error}"));
+                        ctx.notify();
+                    }
+                }
+            },
+        );
+    }
+
     fn workspace_installed_apps_for_file(&self, file_name: &str) -> Vec<String> {
-        let catalog_for_file = self.workspace_catalog_tools_for_file(file_name);
         let Some(author) = self
             .selected_share_entry()
             .and_then(|entry| entry.version_author.as_deref())
@@ -1251,16 +1374,52 @@ impl DevicesView {
         let Some(worker) = self.workspace_worker_for_author(author) else {
             return Vec::new();
         };
-        catalog_for_file
-            .into_iter()
-            .filter(|tool| {
-                workspace_worker_supports_app(
-                    worker,
-                    &workspace_canonical_tool_id(&tool.descriptor.id),
-                )
-            })
-            .map(|tool| workspace_canonical_tool_id(&tool.descriptor.id))
-            .collect()
+        let mut out = Vec::new();
+        for tool in self.workspace_catalog_tools_for_file(file_name) {
+            let id = workspace_canonical_tool_id(&tool.descriptor.id);
+            if workspace_worker_supports_app(worker, &id) && !out.iter().any(|e| e == &id) {
+                out.push(id);
+            }
+        }
+        for app in &self.workspace_user_apps {
+            if !user_app_supports_file(&app.extensions, file_name) {
+                continue;
+            }
+            if workspace_worker_supports_app(worker, &app.app_id)
+                && !out.iter().any(|e| e.eq_ignore_ascii_case(&app.app_id))
+            {
+                out.push(app.app_id.clone());
+            }
+        }
+        for image in &worker.images {
+            for installed in &image.installed_apps {
+                if !is_user_app_capability(installed) {
+                    continue;
+                }
+                if out.iter().any(|e| e.eq_ignore_ascii_case(installed)) {
+                    continue;
+                }
+                if let Some(local) = self
+                    .workspace_user_apps
+                    .iter()
+                    .find(|app| app.app_id.eq_ignore_ascii_case(installed))
+                {
+                    if !user_app_supports_file(&local.extensions, file_name) {
+                        continue;
+                    }
+                } else if let Some(catalog) = self
+                    .workspace_catalog_user_apps
+                    .iter()
+                    .find(|app| app.app_id.eq_ignore_ascii_case(installed))
+                {
+                    if !user_app_supports_file(&catalog.extensions, file_name) {
+                        continue;
+                    }
+                }
+                out.push(installed.clone());
+            }
+        }
+        out
     }
 
     fn workspace_catalog_tools_for_file(&self, file_name: &str) -> Vec<&ToolSummary> {
@@ -1295,21 +1454,57 @@ impl DevicesView {
     }
 
     fn workspace_app_label(&self, app: &str) -> String {
-        self.workspace_catalog_tool(app)
-            .map(|tool| tool.descriptor.name.clone())
-            .unwrap_or_else(|| {
-                if app.is_empty() {
-                    "未选择程序".into()
-                } else {
-                    app.to_string()
-                }
-            })
+        if let Some(tool) = self.workspace_catalog_tool(app) {
+            return tool.descriptor.name.clone();
+        }
+        if let Some(local) = self
+            .workspace_user_apps
+            .iter()
+            .find(|item| item.app_id.eq_ignore_ascii_case(app))
+        {
+            return local.display_name.clone();
+        }
+        if let Some(catalog) = self
+            .workspace_catalog_user_apps
+            .iter()
+            .find(|item| item.app_id.eq_ignore_ascii_case(app))
+        {
+            return catalog.display_name.clone();
+        }
+        if app.is_empty() {
+            "未选择程序".into()
+        } else {
+            app.to_string()
+        }
     }
 
     fn workspace_app_desc(&self, app: &str) -> String {
-        self.workspace_catalog_tool(app)
-            .map(|tool| tool.descriptor.description.clone())
-            .unwrap_or_default()
+        if let Some(tool) = self.workspace_catalog_tool(app) {
+            return tool.descriptor.description.clone();
+        }
+        if let Some(local) = self
+            .workspace_user_apps
+            .iter()
+            .find(|item| item.app_id.eq_ignore_ascii_case(app))
+        {
+            let exts = if local.extensions.is_empty() {
+                "任意扩展名".into()
+            } else {
+                local.extensions.join(", ")
+            };
+            return format!("用户程序 · {exts}");
+        }
+        if let Some(catalog) = self
+            .workspace_catalog_user_apps
+            .iter()
+            .find(|item| item.app_id.eq_ignore_ascii_case(app))
+        {
+            return format!("用户程序目录 · {}", catalog.visibility);
+        }
+        if is_user_app_capability(app) {
+            return "来源电脑已登记的用户程序".into();
+        }
+        String::new()
     }
 
     pub fn open_node_from_chat(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
@@ -5233,6 +5428,17 @@ impl DevicesView {
             .with_margin_top(8.0)
             .finish(),
         );
+        if let Some(hint) = self.workspace_picker_host_native_hint(&file_name) {
+            dialog.add_child(
+                Container::new(
+                    ui_text::body(hint, self.font)
+                        .with_color(theme::warn())
+                        .finish(),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        }
         dialog.add_child(
             Container::new(
                 ui_text::mono(file_name.clone(), self.mono)
@@ -5358,7 +5564,7 @@ impl DevicesView {
                 .finish(),
             );
         } else {
-            let matches: Vec<String> = self
+            let mut matches: Vec<String> = self
                 .workspace_tools
                 .iter()
                 .filter(|tool| {
@@ -5371,6 +5577,31 @@ impl DevicesView {
                 })
                 .map(|tool| workspace_canonical_tool_id(&tool.descriptor.id))
                 .collect();
+            for app in &self.workspace_user_apps {
+                let haystack = format!("{} {}", app.display_name, app.app_id).to_ascii_lowercase();
+                if haystack.contains(&query)
+                    && user_app_supports_file(&app.extensions, &file_name)
+                    && !matches
+                        .iter()
+                        .any(|id| id.eq_ignore_ascii_case(&app.app_id))
+                {
+                    matches.push(app.app_id.clone());
+                }
+            }
+            for app in &self.workspace_catalog_user_apps {
+                if !app.package_ready {
+                    continue;
+                }
+                let haystack = format!("{} {}", app.display_name, app.app_id).to_ascii_lowercase();
+                if haystack.contains(&query)
+                    && user_app_supports_file(&app.extensions, &file_name)
+                    && !matches
+                        .iter()
+                        .any(|id| id.eq_ignore_ascii_case(&app.app_id))
+                {
+                    matches.push(app.app_id.clone());
+                }
+            }
             if matches.is_empty() {
                 search_results.add_child(
                     Container::new(
@@ -5865,6 +6096,56 @@ fn workspace_worker_supports_app(worker: &WorkspaceWorker, app: &str) -> bool {
             .iter()
             .any(|installed| workspace_capability_matches(installed, &app))
     })
+}
+
+fn workspace_worker_execution_mode_for_app(
+    worker: &WorkspaceWorker,
+    app: &str,
+) -> Option<WorkspaceExecutionMode> {
+    let app = workspace_canonical_tool_id(app);
+    worker.images.iter().find_map(|image| {
+        let matches = if app == "default" {
+            !image.installed_apps.is_empty()
+        } else {
+            image
+                .installed_apps
+                .iter()
+                .any(|installed| workspace_capability_matches(installed, &app))
+        };
+        matches.then(|| image.execution_mode.clone())
+    })
+}
+
+fn workspace_worker_mode_label(worker: &WorkspaceWorker, app: &str) -> String {
+    match workspace_worker_execution_mode_for_app(worker, app) {
+        Some(WorkspaceExecutionMode::HostNative) => "Host-Native（本机桌面）".into(),
+        Some(WorkspaceExecutionMode::VmGuest) => "隔离虚拟机".into(),
+        None => "远程运行器".into(),
+    }
+}
+
+impl DevicesView {
+    fn workspace_picker_host_native_hint(&self, file_name: &str) -> Option<String> {
+        let author = self
+            .selected_share_entry()
+            .and_then(|entry| entry.version_author.as_deref())?;
+        let worker = self.workspace_worker_for_author(author)?;
+        let app = if self.workspace_selected_app.is_empty() {
+            self.recommended_workspace_app(file_name)
+        } else {
+            self.workspace_selected_app.clone()
+        };
+        match workspace_worker_execution_mode_for_app(worker, &app) {
+            Some(WorkspaceExecutionMode::HostNative) => Some(
+                "当前将走 Host-Native：程序在来源 Ubuntu 本机桌面打开，会抢占该机键盘鼠标焦点。Wayland 首次推流需在来源机系统对话框点「共享整屏」（可勾选记住）；失败时检查 xdg-desktop-portal ScreenCast / grim。"
+                    .into(),
+            ),
+            Some(WorkspaceExecutionMode::VmGuest) => Some(
+                "当前将走隔离虚拟机（VmGuest）：不占用主机桌面焦点。".into(),
+            ),
+            None => None,
+        }
+    }
 }
 
 fn default_share_browse_path() -> String {

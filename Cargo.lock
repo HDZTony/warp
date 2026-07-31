@@ -4898,6 +4898,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "byteorder",
+ "cpal 0.15.3",
  "display-core",
  "ffmpeg-next",
  "hostname",
