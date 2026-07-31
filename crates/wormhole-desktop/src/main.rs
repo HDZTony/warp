@@ -195,6 +195,44 @@ fn main() -> Result<()> {
     ))?;
     let core = CoreHandle::new(desktop_runtime, tokio);
 
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use wormhole_desktop_tray::QuitHook;
+
+        // Tray Quit must not depend on the UI poll loop: minimized windows can
+        // stall GPU present and starve warpui, so run shutdown on a dedicated
+        // thread as soon as the menu item is chosen.
+        let quitting = Arc::new(AtomicBool::new(false));
+        let core_for_tray_quit = core.clone();
+        let quit_hook: QuitHook = Arc::new(move || {
+            if quitting.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let core = core_for_tray_quit.clone();
+            let _ = std::thread::Builder::new()
+                .name("wormhole-tray-quit".into())
+                .spawn(move || {
+                    tracing::info!("tray Quit: shutting down outside UI poll loop");
+                    let runtime = core.runtime();
+                    match tokio::runtime::Runtime::new() {
+                        Ok(rt) => {
+                            if let Err(err) =
+                                rt.block_on(shutdown_desktop(&runtime.state, &runtime.ctx))
+                            {
+                                tracing::warn!("tray quit shutdown: {err:#}");
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("tray quit runtime: {err}");
+                        }
+                    }
+                    std::process::exit(0);
+                });
+        });
+        tray.set_quit_hook(quit_hook);
+    }
+
     let coordinator = Arc::new(Mutex::new(CoordinatorState::new(data_dir.clone())));
     {
         let coordinator = coordinator.clone();

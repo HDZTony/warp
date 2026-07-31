@@ -983,6 +983,13 @@ impl EventLoop {
 
         let window = downcast_window(window.as_ref());
 
+        // Do not build/present frames while minimized or hidden. Present can block
+        // the UI thread on Windows; LiveElement timers would otherwise spin and
+        // prevent tray Quit from being processed.
+        if window.should_skip_redraw() {
+            return;
+        }
+
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if crate::windowing::winit::linux::take_encountered_bad_match_from_dri3_fence_from_fd() {
             log::warn!("Encountered a DRI3FenceFromFd error, forcing use of the NVIDIA GPU and recreating resources...");

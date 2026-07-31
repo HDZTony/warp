@@ -6,7 +6,10 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use wormhole_desktop_core::toolbox_ui::{
     toolbox_cancel_install, toolbox_install_tool, toolbox_launch_tool, toolbox_list_tools,
-    ToolCategory, ToolExecutorKind, ToolInstallStage, ToolSourceKind, ToolSummary,
+    workspace_user_app_catalog_install, workspace_user_app_catalog_list, workspace_user_app_import,
+    workspace_user_app_list, workspace_user_app_publish, CatalogUserAppSummary, ToolCategory,
+    ToolExecutorKind, ToolInstallStage, ToolSourceKind, ToolSummary, WorkspaceUserAppCatalogInstallParams,
+    WorkspaceUserAppImportParams, WorkspaceUserAppManifest, WorkspaceUserAppPublishParams,
 };
 
 use crate::ui::core_handle::CoreHandle;
@@ -30,6 +33,13 @@ pub enum ToolboxAction {
     SearchEdit(TextFieldEditAction),
     ActivateSearch,
     BlurSearch,
+    RefreshUserApps,
+    ImportPathEdit(TextFieldEditAction),
+    ActivateImportPath,
+    BlurImportPath,
+    ImportLocal,
+    PublishLocal { app_id: String, visibility: String },
+    InstallCatalog { app_id: String, version: String },
 }
 
 pub struct ToolboxView {
@@ -46,6 +56,12 @@ pub struct ToolboxView {
     search_field: TextFieldState,
     search_focused: bool,
     caret_blink: CaretBlink,
+    local_user_apps: Vec<WorkspaceUserAppManifest>,
+    catalog_user_apps: Vec<CatalogUserAppSummary>,
+    import_path: String,
+    import_path_field: TextFieldState,
+    import_path_focused: bool,
+    user_apps_busy: bool,
 }
 
 impl ToolboxView {
@@ -66,9 +82,51 @@ impl ToolboxView {
             search_field: TextFieldState::new(),
             search_focused: false,
             caret_blink: CaretBlink::default(),
+            local_user_apps: Vec::new(),
+            catalog_user_apps: Vec::new(),
+            import_path: String::new(),
+            import_path_field: TextFieldState::new(),
+            import_path_focused: false,
+            user_apps_busy: false,
         };
         view.refresh(ctx);
+        view.refresh_user_apps(ctx);
         view
+    }
+
+    fn refresh_user_apps(&mut self, ctx: &mut ViewContext<Self>) {
+        self.user_apps_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let local = workspace_user_app_list(&state).await;
+                let catalog = workspace_user_app_catalog_list(&state).await;
+                (local, catalog)
+            },
+            |view, output, ctx| {
+                view.user_apps_busy = false;
+                match output.0 {
+                    Ok(apps) => view.local_user_apps = apps,
+                    Err(error) => {
+                        view.message = format!("读取本机用户程序失败: {error}");
+                        view.message_tone = StatusTone::Danger;
+                    }
+                }
+                match output.1 {
+                    Ok(apps) => view.catalog_user_apps = apps,
+                    Err(error) => {
+                        // Catalog requires login; keep local list usable.
+                        if view.message.is_empty() {
+                            view.message = format!("用户程序目录暂不可用: {error}");
+                            view.message_tone = StatusTone::Placeholder;
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
@@ -621,6 +679,185 @@ impl ToolboxView {
             },
         );
     }
+
+    fn user_apps_section(&self) -> Box<dyn Element> {
+        let mut section = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        section.add_child(
+            Container::new(section_hint(
+                "Linux 用户程序：本机导入后可用于 Host-Native / VmGuest；可发布到控制面目录（所有人 / 联系人 / 指定人）。",
+                self.font,
+            ))
+            .with_margin_top(SECTION_GAP)
+            .finish(),
+        );
+        let mut toolbar = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        toolbar.add_child(self.action_button(
+            if self.user_apps_busy {
+                "同步中…".into()
+            } else {
+                "同步用户程序".into()
+            },
+            ToolboxAction::RefreshUserApps,
+            self.user_apps_busy,
+            false,
+        ));
+        section.add_child(
+            Container::new(toolbar.finish())
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint(
+                "导入路径（本机文件/目录/.AppImage/.deb）：",
+                self.font,
+            ))
+            .with_margin_top(10.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(self.import_path_box())
+                .with_margin_top(6.0)
+                .finish(),
+        );
+        section.add_child(
+            Container::new(self.action_button(
+                "导入到本机".into(),
+                ToolboxAction::ImportLocal,
+                self.user_apps_busy || self.import_path.trim().is_empty(),
+                true,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        if self.local_user_apps.is_empty() {
+            section.add_child(
+                Container::new(section_hint("本机尚未导入用户程序。", self.font))
+                    .with_margin_top(10.0)
+                    .finish(),
+            );
+        } else {
+            for app in &self.local_user_apps {
+                let mut row = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                row.add_child(
+                    Expanded::new(
+                        1.0,
+                        status_line(
+                            format!("{} ({})", app.display_name, app.app_id),
+                            self.font,
+                            StatusTone::Neutral,
+                        ),
+                    )
+                    .finish(),
+                );
+                row.add_child(self.action_button(
+                    "发布·所有人".into(),
+                    ToolboxAction::PublishLocal {
+                        app_id: app.app_id.clone(),
+                        visibility: "public".into(),
+                    },
+                    self.user_apps_busy,
+                    false,
+                ));
+                row.add_child(self.action_button(
+                    "发布·联系人".into(),
+                    ToolboxAction::PublishLocal {
+                        app_id: app.app_id.clone(),
+                        visibility: "contacts".into(),
+                    },
+                    self.user_apps_busy,
+                    false,
+                ));
+                section.add_child(
+                    Container::new(row.finish())
+                        .with_margin_top(8.0)
+                        .finish(),
+                );
+            }
+        }
+        section.add_child(
+            Container::new(section_hint("可下载的用户程序目录：", self.font))
+                .with_margin_top(SECTION_GAP)
+                .finish(),
+        );
+        if self.catalog_user_apps.is_empty() {
+            section.add_child(
+                Container::new(section_hint(
+                    "目录为空，或当前账号无权查看（需登录）。",
+                    self.font,
+                ))
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        } else {
+            for app in &self.catalog_user_apps {
+                let mut row = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                row.add_child(
+                    Expanded::new(
+                        1.0,
+                        status_line(
+                            format!(
+                                "{} · {} · {}",
+                                app.display_name, app.visibility, app.version
+                            ),
+                            self.font,
+                            StatusTone::Neutral,
+                        ),
+                    )
+                    .finish(),
+                );
+                row.add_child(self.action_button(
+                    "安装".into(),
+                    ToolboxAction::InstallCatalog {
+                        app_id: app.app_id.clone(),
+                        version: app.version.clone(),
+                    },
+                    self.user_apps_busy,
+                    true,
+                ));
+                section.add_child(
+                    Container::new(row.finish())
+                        .with_margin_top(8.0)
+                        .finish(),
+                );
+            }
+        }
+        section.finish()
+    }
+
+    fn import_path_box(&self) -> Box<dyn Element> {
+        let field = render_search_field_with_caret(
+            &self.import_path,
+            &self.import_path_field.marked_text,
+            "例如 /home/user/Apps/MyViewer.AppImage",
+            self.font,
+            self.import_path_focused,
+            false,
+            self.caret_blink.visible,
+            self.import_path_field.cursor,
+        );
+        let input = TextFieldInput::builder(field, |ctx, action| {
+            ctx.dispatch_typed_action(ToolboxAction::ImportPathEdit(action));
+        })
+        .focused(self.import_path_focused)
+        .ime_preedit(!self.import_path_field.marked_text.is_empty())
+        .on_keydown(move |ctx, keystroke| {
+            if keystroke.key == "escape" {
+                ctx.dispatch_typed_action(ToolboxAction::BlurImportPath);
+                return DispatchEventResult::StopPropagation;
+            }
+            DispatchEventResult::PropagateToParent
+        })
+        .finish();
+        wrap_text_field_focus_on_click(input, |ctx| {
+            ctx.dispatch_typed_action(ToolboxAction::ActivateImportPath);
+        })
+    }
 }
 
 impl Entity for ToolboxView {
@@ -724,6 +961,7 @@ impl View for ToolboxView {
             );
         }
         col.add_child(list.finish());
+        col.add_child(self.user_apps_section());
         col.finish()
     }
 }
@@ -785,6 +1023,147 @@ impl TypedActionView for ToolboxView {
                 }
                 ctx.notify();
             }
+            ToolboxAction::RefreshUserApps => self.refresh_user_apps(ctx),
+            ToolboxAction::ActivateImportPath => {
+                self.import_path_focused = true;
+                self.search_focused = false;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ToolboxAction::BlurImportPath => {
+                self.import_path_focused = false;
+                self.import_path_field.clear_marked();
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ToolboxAction::ImportPathEdit(edit) => {
+                self.import_path_field.apply(&mut self.import_path, edit);
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ToolboxAction::ImportLocal => {
+                let path = self.import_path.trim().to_string();
+                if path.is_empty() {
+                    return;
+                }
+                self.user_apps_busy = true;
+                self.message = "正在导入用户程序…".into();
+                self.message_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        workspace_user_app_import(
+                            &state,
+                            WorkspaceUserAppImportParams {
+                                path,
+                                display_name: None,
+                                app_id: None,
+                                entrypoint: None,
+                                extensions: Vec::new(),
+                                promote: true,
+                            },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.user_apps_busy = false;
+                        match output {
+                            Ok(app) => {
+                                view.message = format!("已导入 {}", app.display_name);
+                                view.message_tone = StatusTone::Success;
+                                view.refresh_user_apps(ctx);
+                            }
+                            Err(error) => {
+                                view.message = format!("导入失败: {error}");
+                                view.message_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            ToolboxAction::PublishLocal { app_id, visibility } => {
+                let app_id = app_id.clone();
+                let visibility = visibility.clone();
+                self.user_apps_busy = true;
+                self.message = format!("正在发布 {app_id}…");
+                self.message_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        workspace_user_app_publish(
+                            &state,
+                            WorkspaceUserAppPublishParams {
+                                app_id,
+                                version: "1".into(),
+                                visibility,
+                                allowed_user_ids: Vec::new(),
+                            },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.user_apps_busy = false;
+                        match output {
+                            Ok(app) => {
+                                view.message = format!(
+                                    "已发布 {}（{}）",
+                                    app.display_name, app.visibility
+                                );
+                                view.message_tone = StatusTone::Success;
+                                view.refresh_user_apps(ctx);
+                            }
+                            Err(error) => {
+                                view.message = format!("发布失败: {error}");
+                                view.message_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            ToolboxAction::InstallCatalog { app_id, version } => {
+                let app_id = app_id.clone();
+                let version = version.clone();
+                self.user_apps_busy = true;
+                self.message = format!("正在安装 {app_id}…");
+                self.message_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        workspace_user_app_catalog_install(
+                            &state,
+                            WorkspaceUserAppCatalogInstallParams {
+                                app_id,
+                                version,
+                                promote: true,
+                            },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.user_apps_busy = false;
+                        match output {
+                            Ok(app) => {
+                                view.message = format!("已安装 {}", app.display_name);
+                                view.message_tone = StatusTone::Success;
+                                view.refresh_user_apps(ctx);
+                            }
+                            Err(error) => {
+                                view.message = format!("安装失败: {error}");
+                                view.message_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
         }
     }
 }
@@ -795,7 +1174,7 @@ impl CaretBlinkHost for ToolboxView {
     }
 
     fn caret_input_focused(&self) -> bool {
-        self.search_focused
+        self.search_focused || self.import_path_focused
     }
 }
 

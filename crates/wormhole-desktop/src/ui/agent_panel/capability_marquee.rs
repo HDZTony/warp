@@ -1,4 +1,4 @@
-//! FF idle capability marquee (`.agent-capability-marquee` in `desktop-current.html`).
+//! AI idle capability marquee (`.agent-capability-marquee` in `desktop-current.html`).
 //!
 //! Shown only when no sidebar session is selected. Chips fill the composer draft
 //! via [`super::AgentPanelAction::ApplyCapabilityPrompt`].

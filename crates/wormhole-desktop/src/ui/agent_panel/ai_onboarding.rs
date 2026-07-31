@@ -1,6 +1,6 @@
-//! FF first-run recommendations / preference onboarding (`.ff-onboarding`).
+//! AI first-run recommendations / preference onboarding (`.ai-onboarding`).
 //!
-//! Catalog and copy match `desktop-current.html` `#ff-onboarding`.
+//! Catalog and copy match `desktop-current.html` `#ai-onboarding`.
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
@@ -11,7 +11,7 @@ use warpui::elements::{
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
-use wormhole_desktop_core::ff_onboarding_prefs::FfOnboardingSelections;
+use wormhole_desktop_core::ai_onboarding_prefs::AiOnboardingSelections;
 
 use super::AgentPanelAction;
 use crate::ui::theme;
@@ -25,13 +25,13 @@ const OPTION_MIN_HEIGHT: f32 = 44.0;
 const ACTION_BTN_HEIGHT: f32 = 44.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FfOnboardingGroup {
+pub enum AiOnboardingGroup {
     Career,
     Interests,
     Daily,
 }
 
-impl FfOnboardingGroup {
+impl AiOnboardingGroup {
     pub fn title(self) -> &'static str {
         match self {
             Self::Career => "职业",
@@ -54,205 +54,205 @@ impl FfOnboardingGroup {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct FfOnboardingOption {
+pub struct AiOnboardingOption {
     pub id: &'static str,
     pub label: &'static str,
 }
 
-pub const CAREER_OPTIONS: &[FfOnboardingOption] = &[
-    FfOnboardingOption {
+pub const CAREER_OPTIONS: &[AiOnboardingOption] = &[
+    AiOnboardingOption {
         id: "software-development",
         label: "软件与开发",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "design-creative",
         label: "设计与创意",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "product-operations",
         label: "产品与运营",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "data-research",
         label: "数据与研究",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "marketing-sales",
         label: "市场与销售",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "education",
         label: "教育",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "healthcare",
         label: "医疗与健康",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "finance-legal",
         label: "金融与法律",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "engineering-manufacturing",
         label: "工程与制造",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "construction-real-estate",
         label: "建筑与地产",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "media-culture",
         label: "媒体与文化",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "public-service",
         label: "公共服务",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "administration-hr",
         label: "行政与人力",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "service-retail",
         label: "服务与零售",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "agriculture-environment",
         label: "农业与环境",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "entrepreneurship-management",
         label: "创业与管理",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "freelance",
         label: "自由职业",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "student",
         label: "学生",
     },
 ];
 
-pub const INTEREST_OPTIONS: &[FfOnboardingOption] = &[
-    FfOnboardingOption {
+pub const INTEREST_OPTIONS: &[AiOnboardingOption] = &[
+    AiOnboardingOption {
         id: "technology",
         label: "科技数码",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "reading-writing",
         label: "阅读写作",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "film-music",
         label: "影视音乐",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "gaming",
         label: "游戏",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "photography",
         label: "摄影",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "fitness",
         label: "运动健康",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "travel",
         label: "旅行",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "making",
         label: "手工创作",
     },
 ];
 
-pub const DAILY_OPTIONS: &[FfOnboardingOption] = &[
-    FfOnboardingOption {
+pub const DAILY_OPTIONS: &[AiOnboardingOption] = &[
+    AiOnboardingOption {
         id: "coding-debugging",
         label: "编程与调试",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "learning",
         label: "学习新知识",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "content-creation",
         label: "内容创作",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "project-management",
         label: "项目管理",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "file-organization",
         label: "文件整理",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "collaboration",
         label: "团队协作",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "life-planning",
         label: "生活规划",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "information-search",
         label: "信息检索",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "cooking",
         label: "做饭与备餐",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "household-chores",
         label: "家务与整理",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "family-care",
         label: "育儿与家庭照护",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "shopping-errands",
         label: "购物与日常办事",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "exercise-health",
         label: "锻炼与健康管理",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "finance-budgeting",
         label: "记账与理财",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "social-communication",
         label: "社交与沟通",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "travel-planning",
         label: "通勤与出行规划",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "leisure-entertainment",
         label: "娱乐与休闲",
     },
-    FfOnboardingOption {
+    AiOnboardingOption {
         id: "appointments-reminders",
         label: "预约与提醒",
     },
 ];
 
-pub fn options_for(group: FfOnboardingGroup) -> &'static [FfOnboardingOption] {
+pub fn options_for(group: AiOnboardingGroup) -> &'static [AiOnboardingOption] {
     match group {
-        FfOnboardingGroup::Career => CAREER_OPTIONS,
-        FfOnboardingGroup::Interests => INTEREST_OPTIONS,
-        FfOnboardingGroup::Daily => DAILY_OPTIONS,
+        AiOnboardingGroup::Career => CAREER_OPTIONS,
+        AiOnboardingGroup::Interests => INTEREST_OPTIONS,
+        AiOnboardingGroup::Daily => DAILY_OPTIONS,
     }
 }
 
-pub fn status_text(selections: &FfOnboardingSelections) -> String {
+pub fn status_text(selections: &AiOnboardingSelections) -> String {
     let complete = selections.complete_group_count();
     if selections.all_groups_complete() {
         format!("已选择 {} 项，可以保存", selections.selected_count())
@@ -264,20 +264,20 @@ pub fn status_text(selections: &FfOnboardingSelections) -> String {
 }
 
 fn group_selected<'a>(
-    selections: &'a FfOnboardingSelections,
-    group: FfOnboardingGroup,
+    selections: &'a AiOnboardingSelections,
+    group: AiOnboardingGroup,
 ) -> &'a [String] {
     match group {
-        FfOnboardingGroup::Career => &selections.career,
-        FfOnboardingGroup::Interests => &selections.interests,
-        FfOnboardingGroup::Daily => &selections.daily,
+        AiOnboardingGroup::Career => &selections.career,
+        AiOnboardingGroup::Interests => &selections.interests,
+        AiOnboardingGroup::Daily => &selections.daily,
     }
 }
 
 fn option_chip(
     font: FamilyId,
-    group: FfOnboardingGroup,
-    option: &FfOnboardingOption,
+    group: AiOnboardingGroup,
+    option: &AiOnboardingOption,
     selected: bool,
 ) -> Box<dyn Element> {
     let mouse: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
@@ -298,7 +298,7 @@ fn option_chip(
 struct HoverableChip {
     mouse: MouseStateHandle,
     font: FamilyId,
-    group: FfOnboardingGroup,
+    group: AiOnboardingGroup,
     id: String,
     label: String,
     selected: bool,
@@ -412,7 +412,7 @@ impl HoverableChip {
 
         EventHandler::new(hoverable)
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(AgentPanelAction::ToggleFfOnboardingOption {
+                ctx.dispatch_typed_action(AgentPanelAction::ToggleAiOnboardingOption {
                     group,
                     id: id.clone(),
                 });
@@ -424,8 +424,8 @@ impl HoverableChip {
 
 fn render_group(
     font: FamilyId,
-    group: FfOnboardingGroup,
-    selections: &FfOnboardingSelections,
+    group: AiOnboardingGroup,
+    selections: &AiOnboardingSelections,
 ) -> Box<dyn Element> {
     let selected = group_selected(selections, group);
     let chips: Vec<Box<dyn Element>> = options_for(group)
@@ -532,11 +532,11 @@ fn action_button(
         .finish()
 }
 
-/// Full-bleed FF onboarding overlay (covers agent shell including sidebar).
+/// Full-bleed AI onboarding overlay (covers agent shell including sidebar).
 pub fn render(
     font: FamilyId,
     mono: FamilyId,
-    selections: &FfOnboardingSelections,
+    selections: &AiOnboardingSelections,
     scroll: ClippedScrollStateHandle,
 ) -> Box<dyn Element> {
     let submit_enabled = selections.all_groups_complete();
@@ -547,13 +547,13 @@ pub fn render(
         .with_main_axis_size(MainAxisSize::Min);
 
     col.add_child(
-        Text::new("FF · 首次设置".to_string(), mono, 11.0)
+        Text::new("AI · 首次设置".to_string(), mono, 11.0)
             .with_color(theme::accent_cool())
             .finish(),
     );
     col.add_child(
         Container::new(
-            Text::new("让 FF 更懂你的日常".to_string(), font, 34.0)
+            Text::new("让 AI 更懂你的日常".to_string(), font, 34.0)
                 .with_color(theme::text())
                 .finish(),
         )
@@ -563,7 +563,7 @@ pub fn render(
     col.add_child(
         Container::new(
             Text::new(
-                "选择你愿意分享的内容，可多选。FF 会据此调整任务推荐与回答侧重点，偏好会同步保存到当前账号。"
+                "选择你愿意分享的内容，可多选。AI 会据此调整任务推荐与回答侧重点，偏好会同步保存到当前账号。"
                     .to_string(),
                 font,
                 14.0,
@@ -576,7 +576,7 @@ pub fn render(
         .finish(),
     );
 
-    for group in FfOnboardingGroup::all() {
+    for group in AiOnboardingGroup::all() {
         col.add_child(render_group(font, group, selections));
     }
 
@@ -603,7 +603,7 @@ pub fn render(
                         "暂时跳过",
                         false,
                         true,
-                        AgentPanelAction::SkipFfOnboarding,
+                        AgentPanelAction::SkipAiOnboarding,
                     ))
                     .with_child(
                         ConstrainedBox::new(warpui::elements::Empty::new().finish())
@@ -613,10 +613,10 @@ pub fn render(
                     )
                     .with_child(action_button(
                         font,
-                        "保存并进入 FF",
+                        "保存并进入 AI",
                         true,
                         submit_enabled,
-                        AgentPanelAction::SubmitFfOnboarding,
+                        AgentPanelAction::SubmitAiOnboarding,
                     ))
                     .finish(),
             )
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn status_text_progresses() {
-        let empty = FfOnboardingSelections::empty();
+        let empty = AiOnboardingSelections::empty();
         assert!(status_text(&empty).contains("每一类"));
         let mut s = empty;
         s.career.push("student".into());

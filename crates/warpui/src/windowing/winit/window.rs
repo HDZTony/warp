@@ -1154,6 +1154,22 @@ impl Window {
         }
     }
 
+    /// Whether the GPU present path should be skipped for this window.
+    ///
+    /// Minimized / hidden swapchains on Windows can block or time out inside
+    /// `get_current_texture`. Combined with `LiveElement` repaint timers that
+    /// rebuild the scene before present, that starves the winit event loop so
+    /// tray Quit / Terminate never run. Skip present until the window is shown
+    /// again; restore still receives `RedrawRequested`.
+    pub fn should_skip_redraw(&self) -> bool {
+        should_skip_window_redraw(
+            self.inner
+                .borrow()
+                .as_ref()
+                .map(|inner| (inner.window.is_minimized(), inner.window.is_visible())),
+        )
+    }
+
     /// Sets whether or not the window is visible.
     ///
     /// The definition of "visibility" depends on the platform. On X11 this is referring to the
@@ -1723,6 +1739,25 @@ impl platform::WindowContext for Window {
     }
 }
 
+/// Pure predicate for [`Window::should_skip_redraw`].
+///
+/// `minimized` / `visible` mirror winit's `Option` returns so unit tests can
+/// cover the skip policy without a real window.
+pub(crate) fn should_skip_window_redraw(
+    state: Option<(Option<bool>, Option<bool>)>,
+) -> bool {
+    let Some((minimized, visible)) = state else {
+        return true;
+    };
+    if minimized == Some(true) {
+        return true;
+    }
+    if visible == Some(false) {
+        return true;
+    }
+    false
+}
+
 /// An extension trait to add helpful methods to [`PhysicalSize`].
 trait PhysicalSizeExt {
     fn to_vec2f(&self) -> Vector2F;
@@ -1744,4 +1779,29 @@ fn get_monitor_logical_bounds(monitor: &MonitorHandle) -> RectF {
         Vector2F::new(logical_position.x, logical_position.y),
         Vector2F::new(logical_size.width, logical_size.height),
     )
+}
+
+#[cfg(test)]
+mod redraw_skip_tests {
+    use super::should_skip_window_redraw;
+
+    #[test]
+    fn skips_when_minimized() {
+        assert!(should_skip_window_redraw(Some((Some(true), Some(true)))));
+    }
+
+    #[test]
+    fn skips_when_hidden() {
+        assert!(should_skip_window_redraw(Some((Some(false), Some(false)))));
+    }
+
+    #[test]
+    fn draws_when_visible_and_not_minimized() {
+        assert!(!should_skip_window_redraw(Some((Some(false), Some(true)))));
+    }
+
+    #[test]
+    fn skips_when_inner_window_missing() {
+        assert!(should_skip_window_redraw(None));
+    }
 }

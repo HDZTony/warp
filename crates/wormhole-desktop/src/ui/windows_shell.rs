@@ -60,8 +60,14 @@ pub fn register_main_shell_window(window_id: WindowId, coordinator: &Arc<Mutex<C
     }
 }
 
+/// Exit the desktop app after an explicit tray Quit (or equivalent).
+///
+/// Uses [`TerminationMode::ForceTerminate`] so close-to-tray handlers cannot
+/// cancel the exit.
 pub fn quit_desktop<V: View>(ctx: &mut ViewContext<V>) {
-    ctx.terminate_app(TerminationMode::Cancellable, None);
+    // Tray Quit is an explicit user confirmation — do not allow close-to-tray
+    // or other cancellable handlers to keep the process alive.
+    ctx.terminate_app(TerminationMode::ForceTerminate, None);
 }
 
 #[cfg(test)]

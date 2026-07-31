@@ -1,7 +1,7 @@
 mod capability_marquee;
 mod composer_add;
 mod composer_menus;
-mod ff_onboarding;
+mod ai_onboarding;
 mod project_create_modal;
 mod project_delete_modal;
 pub mod sidebar;
@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use composer_add::{ComposerAttachment, FilesModalState, ADD_POPOVER_INSET_LEFT, DEMO_FILES};
 use composer_menus::{access_label, composer_model_chip_label};
-use ff_onboarding::FfOnboardingGroup;
+use ai_onboarding::AiOnboardingGroup;
 use pathfinder_color::ColorU;
 use project_create_modal::{ProjectCreateState, ProjectCreateStep};
 use project_delete_modal::ProjectDeleteState;
@@ -35,10 +35,10 @@ use wormhole_desktop_core::agent_plugins_catalog::{self, AgentPluginListItem};
 use wormhole_desktop_core::agent_provider_commands::{
     self, AgentModelChoiceDto, SelectAgentModelParams,
 };
-use wormhole_desktop_core::ff_onboarding_prefs::{
-    self, FfOnboardingSelections, LOCAL_GUEST_ACCOUNT_ID,
+use wormhole_desktop_core::ai_onboarding_prefs::{
+    self, AiOnboardingSelections, LOCAL_GUEST_ACCOUNT_ID,
 };
-use wormhole_desktop_core::ff_onboarding_sync;
+use wormhole_desktop_core::ai_onboarding_sync;
 use wormhole_desktop_core::state::resolve_agent_workspace_cwd;
 use wormhole_desktop_core::warp_embed_prefs::{
     self, AgentAccessMode, AgentModelRate, PreferredAgent, WarpEmbedPrefs,
@@ -114,13 +114,13 @@ pub enum AgentPanelAction {
     ApplyCapabilityPrompt(String),
     /// Persistently hide the idle capability marquee.
     DismissCapabilityMarquee,
-    /// Toggle a chip on the FF first-run preference page.
-    ToggleFfOnboardingOption {
-        group: FfOnboardingGroup,
+    /// Toggle a chip on the AI first-run preference page.
+    ToggleAiOnboardingOption {
+        group: AiOnboardingGroup,
         id: String,
     },
-    SkipFfOnboarding,
-    SubmitFfOnboarding,
+    SkipAiOnboarding,
+    SubmitAiOnboarding,
     FocusInput,
     NewConversation,
     LaunchTerminal,
@@ -306,11 +306,11 @@ pub struct AgentPanelView {
     hide_capability_marquee: bool,
     /// Out-of-process Bevy 2D Agent pet (`warp-embed.json` `agent_pet_enabled`).
     agent_pet_enabled: bool,
-    /// FF first-run preference overlay (`.ff-onboarding`).
-    ff_onboarding_visible: bool,
-    ff_onboarding_account: String,
-    ff_onboarding_draft: FfOnboardingSelections,
-    ff_onboarding_scroll: ClippedScrollStateHandle,
+    /// AI first-run preference overlay (`.ai-onboarding`).
+    ai_onboarding_visible: bool,
+    ai_onboarding_account: String,
+    ai_onboarding_draft: AiOnboardingSelections,
+    ai_onboarding_scroll: ClippedScrollStateHandle,
 }
 
 impl AgentPanelView {
@@ -324,9 +324,9 @@ impl AgentPanelView {
         let agent_pet_enabled = prefs.agent_pet_enabled;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         let data_dir = core.data_dir();
-        let ff_account = Self::resolve_ff_onboarding_account(&core);
-        let ff_onboarding_visible =
-            !ff_onboarding_prefs::is_completed(&data_dir, &ff_account);
+        let ai_account = Self::resolve_ai_onboarding_account(&core);
+        let ai_onboarding_visible =
+            !ai_onboarding_prefs::is_completed(&data_dir, &ai_account);
         let archived_ids = sidebar::load_archived_ids(&data_dir);
         let (projects, expanded_project_ids) = sidebar::load_projects_state(&data_dir);
         let mut view = Self {
@@ -405,40 +405,40 @@ impl AgentPanelView {
             marquee_chip_hovers: capability_marquee::ChipHoverBank::new(),
             hide_capability_marquee,
             agent_pet_enabled,
-            ff_onboarding_visible,
-            ff_onboarding_account: ff_account,
-            ff_onboarding_draft: FfOnboardingSelections::empty(),
-            ff_onboarding_scroll: ClippedScrollStateHandle::default(),
+            ai_onboarding_visible,
+            ai_onboarding_account: ai_account,
+            ai_onboarding_draft: AiOnboardingSelections::empty(),
+            ai_onboarding_scroll: ClippedScrollStateHandle::default(),
         };
         view.refresh_model_choices(ctx);
-        view.schedule_ff_onboarding_sync(ctx);
+        view.schedule_ai_onboarding_sync(ctx);
         view
     }
 
-    fn resolve_ff_onboarding_account(core: &CoreHandle) -> String {
+    fn resolve_ai_onboarding_account(core: &CoreHandle) -> String {
         let user_id = core.block_on(async {
             cloud_auth_status(core.app_state())
                 .await
                 .ok()
                 .and_then(|s| s.user_id)
         });
-        ff_onboarding_prefs::normalize_account_id(user_id.as_deref())
+        ai_onboarding_prefs::normalize_account_id(user_id.as_deref())
     }
 
-    fn sync_ff_onboarding_account(&mut self, ctx: &mut ViewContext<Self>) {
-        let account = Self::resolve_ff_onboarding_account(&self.core);
-        if account != self.ff_onboarding_account {
-            self.ff_onboarding_account = account.clone();
-            self.ff_onboarding_draft = FfOnboardingSelections::empty();
-            self.ff_onboarding_visible =
-                !ff_onboarding_prefs::is_completed(&self.core.data_dir(), &account);
+    fn sync_ai_onboarding_account(&mut self, ctx: &mut ViewContext<Self>) {
+        let account = Self::resolve_ai_onboarding_account(&self.core);
+        if account != self.ai_onboarding_account {
+            self.ai_onboarding_account = account.clone();
+            self.ai_onboarding_draft = AiOnboardingSelections::empty();
+            self.ai_onboarding_visible =
+                !ai_onboarding_prefs::is_completed(&self.core.data_dir(), &account);
         }
-        self.schedule_ff_onboarding_sync(ctx);
+        self.schedule_ai_onboarding_sync(ctx);
     }
 
     /// Pull server prefs for signed-in accounts; hide overlay if already completed remotely.
-    fn schedule_ff_onboarding_sync(&self, ctx: &mut ViewContext<Self>) {
-        let account = self.ff_onboarding_account.clone();
+    fn schedule_ai_onboarding_sync(&self, ctx: &mut ViewContext<Self>) {
+        let account = self.ai_onboarding_account.clone();
         if account == LOCAL_GUEST_ACCOUNT_ID {
             return;
         }
@@ -446,37 +446,37 @@ impl AgentPanelView {
         let account_for_check = account.clone();
         ctx.spawn(
             async move {
-                ff_onboarding_sync::sync_ff_onboarding(core.app_state(), &account).await
+                ai_onboarding_sync::sync_ai_onboarding(core.app_state(), &account).await
             },
             move |view, output, ctx| {
                 match output {
                     Ok(record) => {
-                        if view.ff_onboarding_account != account_for_check {
+                        if view.ai_onboarding_account != account_for_check {
                             return;
                         }
                         let next_visible = !record.completed;
-                        if view.ff_onboarding_visible == next_visible {
+                        if view.ai_onboarding_visible == next_visible {
                             return;
                         }
-                        view.ff_onboarding_visible = next_visible;
+                        view.ai_onboarding_visible = next_visible;
                         if record.completed {
-                            view.ff_onboarding_draft = FfOnboardingSelections::empty();
+                            view.ai_onboarding_draft = AiOnboardingSelections::empty();
                         }
                         ctx.notify();
                     }
                     Err(err) => {
-                        tracing::warn!("FF onboarding sync failed: {err}");
+                        tracing::warn!("AI onboarding sync failed: {err}");
                     }
                 }
             },
         );
     }
 
-    fn toggle_ff_onboarding_option(&mut self, group: FfOnboardingGroup, id: &str) {
+    fn toggle_ai_onboarding_option(&mut self, group: AiOnboardingGroup, id: &str) {
         let list = match group {
-            FfOnboardingGroup::Career => &mut self.ff_onboarding_draft.career,
-            FfOnboardingGroup::Interests => &mut self.ff_onboarding_draft.interests,
-            FfOnboardingGroup::Daily => &mut self.ff_onboarding_draft.daily,
+            AiOnboardingGroup::Career => &mut self.ai_onboarding_draft.career,
+            AiOnboardingGroup::Interests => &mut self.ai_onboarding_draft.interests,
+            AiOnboardingGroup::Daily => &mut self.ai_onboarding_draft.daily,
         };
         if let Some(pos) = list.iter().position(|x| x == id) {
             list.remove(pos);
@@ -485,71 +485,71 @@ impl AgentPanelView {
         }
     }
 
-    fn skip_ff_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
+    fn skip_ai_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
         let data_dir = self.core.data_dir();
-        let account = self.ff_onboarding_account.clone();
-        match ff_onboarding_prefs::complete_onboarding(
+        let account = self.ai_onboarding_account.clone();
+        match ai_onboarding_prefs::complete_onboarding(
             &data_dir,
             &account,
             true,
-            FfOnboardingSelections::empty(),
+            AiOnboardingSelections::empty(),
         ) {
             Ok(record) => {
-                self.ff_onboarding_visible = false;
-                self.ff_onboarding_draft = FfOnboardingSelections::empty();
+                self.ai_onboarding_visible = false;
+                self.ai_onboarding_draft = AiOnboardingSelections::empty();
                 if account != LOCAL_GUEST_ACCOUNT_ID {
                     let core = self.core.clone();
                     ctx.spawn(
                         async move {
-                            ff_onboarding_sync::push_completed(core.app_state(), &record).await
+                            ai_onboarding_sync::push_completed(core.app_state(), &record).await
                         },
                         |_view, output, _ctx| {
                             if let Err(err) = output {
-                                tracing::warn!("FF onboarding skip push failed: {err}");
+                                tracing::warn!("AI onboarding skip push failed: {err}");
                             }
                         },
                     );
                 }
             }
             Err(err) => {
-                tracing::warn!("failed to persist FF onboarding skip: {err}");
+                tracing::warn!("failed to persist AI onboarding skip: {err}");
             }
         }
         ctx.notify();
     }
 
-    fn submit_ff_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.ff_onboarding_draft.all_groups_complete() {
+    fn submit_ai_onboarding(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.ai_onboarding_draft.all_groups_complete() {
             return;
         }
         let data_dir = self.core.data_dir();
-        let account = self.ff_onboarding_account.clone();
-        let selections = self.ff_onboarding_draft.clone();
-        match ff_onboarding_prefs::complete_onboarding(
+        let account = self.ai_onboarding_account.clone();
+        let selections = self.ai_onboarding_draft.clone();
+        match ai_onboarding_prefs::complete_onboarding(
             &data_dir,
             &account,
             false,
             selections,
         ) {
             Ok(record) => {
-                self.ff_onboarding_visible = false;
-                self.ff_onboarding_draft = FfOnboardingSelections::empty();
+                self.ai_onboarding_visible = false;
+                self.ai_onboarding_draft = AiOnboardingSelections::empty();
                 if account != LOCAL_GUEST_ACCOUNT_ID {
                     let core = self.core.clone();
                     ctx.spawn(
                         async move {
-                            ff_onboarding_sync::push_completed(core.app_state(), &record).await
+                            ai_onboarding_sync::push_completed(core.app_state(), &record).await
                         },
                         |_view, output, _ctx| {
                             if let Err(err) = output {
-                                tracing::warn!("FF onboarding submit push failed: {err}");
+                                tracing::warn!("AI onboarding submit push failed: {err}");
                             }
                         },
                     );
                 }
             }
             Err(err) => {
-                tracing::warn!("failed to persist FF onboarding: {err}");
+                tracing::warn!("failed to persist AI onboarding: {err}");
             }
         }
         ctx.notify();
@@ -831,7 +831,7 @@ impl AgentPanelView {
         }
         self.visible = visible;
         if visible {
-            self.sync_ff_onboarding_account(ctx);
+            self.sync_ai_onboarding_account(ctx);
             if let Ok(mut panel) = self.state.lock() {
                 panel.input_focused = true;
                 panel.sidebar_search_focused = false;
@@ -3946,12 +3946,12 @@ impl View for AgentPanelView {
                 sidebar_hover.as_deref(),
             ));
         }
-        if self.ff_onboarding_visible {
-            root_stack.add_child(ff_onboarding::render(
+        if self.ai_onboarding_visible {
+            root_stack.add_child(ai_onboarding::render(
                 self.font,
                 self.mono,
-                &self.ff_onboarding_draft,
-                self.ff_onboarding_scroll.clone(),
+                &self.ai_onboarding_draft,
+                self.ai_onboarding_scroll.clone(),
             ));
         }
 
@@ -4084,12 +4084,12 @@ impl TypedActionView for AgentPanelView {
                 self.apply_capability_prompt(prompt.clone(), ctx)
             }
             AgentPanelAction::DismissCapabilityMarquee => self.dismiss_capability_marquee(ctx),
-            AgentPanelAction::ToggleFfOnboardingOption { group, id } => {
-                self.toggle_ff_onboarding_option(*group, id);
+            AgentPanelAction::ToggleAiOnboardingOption { group, id } => {
+                self.toggle_ai_onboarding_option(*group, id);
                 ctx.notify();
             }
-            AgentPanelAction::SkipFfOnboarding => self.skip_ff_onboarding(ctx),
-            AgentPanelAction::SubmitFfOnboarding => self.submit_ff_onboarding(ctx),
+            AgentPanelAction::SkipAiOnboarding => self.skip_ai_onboarding(ctx),
+            AgentPanelAction::SubmitAiOnboarding => self.submit_ai_onboarding(ctx),
             AgentPanelAction::FocusInput => {
                 if let Ok(mut panel) = self.state.lock() {
                     if !panel.busy {
@@ -4373,14 +4373,14 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DismissCapabilityMarquee => {
                 AccessibilityContent::new_without_help("以后不再显示", WarpA11yRole::ButtonRole)
             }
-            AgentPanelAction::ToggleFfOnboardingOption { .. } => {
+            AgentPanelAction::ToggleAiOnboardingOption { .. } => {
                 AccessibilityContent::new_without_help("切换偏好选项", WarpA11yRole::CheckboxRole)
             }
-            AgentPanelAction::SkipFfOnboarding => {
+            AgentPanelAction::SkipAiOnboarding => {
                 AccessibilityContent::new_without_help("暂时跳过首次设置", WarpA11yRole::ButtonRole)
             }
-            AgentPanelAction::SubmitFfOnboarding => {
-                AccessibilityContent::new_without_help("保存并进入 FF", WarpA11yRole::ButtonRole)
+            AgentPanelAction::SubmitAiOnboarding => {
+                AccessibilityContent::new_without_help("保存并进入 AI", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::SelectProject(_) | AgentPanelAction::SelectSession(_) => {
                 AccessibilityContent::new_without_help("选择侧栏项", WarpA11yRole::MenuItemRole)
@@ -4629,8 +4629,8 @@ mod tests {
     }
 
     #[test]
-    fn ff_onboarding_submit_requires_all_groups() {
-        let mut draft = FfOnboardingSelections::empty();
+    fn ai_onboarding_submit_requires_all_groups() {
+        let mut draft = AiOnboardingSelections::empty();
         assert!(!draft.all_groups_complete());
         draft.career.push("student".into());
         draft.interests.push("gaming".into());
