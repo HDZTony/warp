@@ -2,6 +2,7 @@ pub mod agent_threads_sidebar;
 pub mod attach_panel;
 pub mod bubble;
 pub mod calls_panel;
+pub mod channel_create_panel;
 pub mod compose;
 pub mod contacts_panel;
 pub mod header;

@@ -28,7 +28,8 @@ use wormhole_desktop_core::chat_commands::{
     StartChatConversationParams,
 };
 use wormhole_desktop_core::chat_contacts::{
-    chat_contacts_list_manual, merge_contact_rows, ContactDto, ContactSource,
+    aggregate_cluster_contacts_by_account, chat_contacts_list_manual, merge_contact_rows,
+    ContactDto, ContactSource,
 };
 use wormhole_desktop_core::chat_rtc_call::{
     load_video_device_prefs, load_voice_device_prefs, save_video_device_prefs,
@@ -187,32 +188,24 @@ impl CallsPanelView {
                     .node_if_ready()
                     .map(|n| n.endpoint_id().to_string())
                     .unwrap_or_default();
-                let mut cluster_rows = Vec::new();
                 let mut cluster_id = None;
-                if let Some(status) = cluster {
+                let cluster_rows = if let Some(status) = cluster {
                     cluster_id = status.cluster_id.clone();
-                    for node in status.nodes {
-                        let endpoint = node
-                            .chat_endpoint_id
-                            .clone()
-                            .unwrap_or_else(|| node.node_id.clone());
-                        if endpoint.is_empty() || endpoint == local_endpoint {
-                            continue;
-                        }
-                        let title = display_name_with_remark(
-                            remarks.get(&node.node_id).map(String::as_str),
-                            || format!("{} · {}", node.os, node.hostname),
-                        );
-                        cluster_rows.push(ContactDto {
-                            id: format!("cluster:{endpoint}"),
-                            display_name: title,
-                            wormhole_id: endpoint,
-                            email: String::new(),
-                            source: ContactSource::Cluster,
-                            can_chat: true,
-                        });
-                    }
-                }
+                    let local_user_id = status
+                        .nodes
+                        .iter()
+                        .find(|node| node.node_id == status.local_node_id)
+                        .and_then(|node| node.user_id.clone());
+                    aggregate_cluster_contacts_by_account(
+                        &status.nodes,
+                        &status.local_node_id,
+                        local_user_id.as_deref(),
+                        &local_endpoint,
+                        &remarks,
+                    )
+                } else {
+                    Vec::new()
+                };
                 let contacts = merge_contact_rows(cluster_rows, manual)
                     .into_iter()
                     .filter(|c| c.can_chat)
