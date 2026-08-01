@@ -1,4 +1,5 @@
-//! Tab-bar account avatar + balance popover (HTML `.hud-avatar-*` / `.hud-balance-*`).
+//! Tab-bar AI microphone + output popover (HTML `.hud-avatar-btn.is-ai-mic` / `.ai-output-*`).
+//! Purchase / redeem modals remain for Settings → Account.
 
 use pathfinder_color::ColorU;
 use warpui::elements::Fill;
@@ -13,16 +14,22 @@ use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::app_shell::{AppShellAction, RedeemTab};
-use crate::ui::desktop_prefs::{format_balance_display, format_redeem_amount, RedeemHistoryEntry};
+use crate::ui::desktop_prefs::{format_redeem_amount, RedeemHistoryEntry};
+use crate::ui::icons;
 use crate::ui::panel_primitives::{status_line, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
     render_field_with_caret, wrap_text_field_focus_on_click, TextFieldInput,
 };
 use crate::ui::theme;
+use crate::ui::window_chrome::CHROME_ROW_HEIGHT;
 use crate::ui_text;
 
-pub const AVATAR_SIZE: f32 = 34.0;
-pub const PANEL_WIDTH: f32 = 260.0;
+pub const AVATAR_SIZE: f32 = 36.0;
+pub const AI_PANEL_WIDTH: f32 = 360.0;
+/// HTML `.hud-avatar-slot` horizontal padding; keeps mic beside caption buttons.
+const MIC_SLOT_PAD_X: f32 = 8.0;
+/// HTML `.is-ai-mic::after` inset; only applied while listening / panel open.
+const MIC_GLOW_PAD: f32 = 4.0;
 
 const REDEEM_MODAL_WIDTH: f32 = 480.0;
 const REDEEM_JOIN_BTN_HEIGHT: f32 = 34.0;
@@ -30,33 +37,44 @@ const REDEEM_ACTION_BTN_HEIGHT: f32 = 36.0;
 const REDEEM_HISTORY_MAX_HEIGHT: f32 = 280.0;
 const PURCHASE_MODAL_WIDTH: f32 = 560.0;
 const QR_SIZE: f32 = 128.0;
+const AI_BODY_MAX_HEIGHT: f32 = 280.0;
+const MIC_ICON_SIZE: f32 = 19.0;
 
-/// First two letters of the email local-part (before `@`), uppercased.
-///
-/// Empty / missing email falls back to `"WH"`. A single-character local-part is
-/// padded by repeating that character.
-pub fn email_initials(email: Option<&str>) -> String {
-    let local = email
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.split('@').next().unwrap_or(value).trim())
-        .filter(|value| !value.is_empty());
-    let Some(local) = local else {
-        return "WH".to_string();
-    };
-    let mut chars = local.chars().flat_map(|ch| ch.to_uppercase());
-    match (chars.next(), chars.next()) {
-        (Some(a), Some(b)) => format!("{a}{b}"),
-        (Some(a), None) => format!("{a}{a}"),
-        (None, _) => "WH".to_string(),
-    }
+/// Kind of a line in the HUD AI output panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AiOutputKind {
+    User,
+    Action,
+    System,
 }
 
-pub fn avatar_initials(authenticated: bool, email: Option<&str>) -> String {
-    if !authenticated {
-        return "?".to_string();
+#[derive(Clone, Debug)]
+pub struct AiOutputLine {
+    pub kind: AiOutputKind,
+    pub text: String,
+}
+
+impl AiOutputLine {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self {
+            kind: AiOutputKind::User,
+            text: text.into(),
+        }
     }
-    email_initials(email)
+
+    pub fn action(text: impl Into<String>) -> Self {
+        Self {
+            kind: AiOutputKind::Action,
+            text: text.into(),
+        }
+    }
+
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            kind: AiOutputKind::System,
+            text: text.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -68,13 +86,31 @@ pub struct PurchaseProductUi {
     pub qr_loaded: bool,
 }
 
-pub fn build_avatar_slot(
-    authenticated: bool,
-    email: Option<&str>,
+/// Top-bar AI mic (HTML `.hud-avatar-btn.is-ai-mic`).
+///
+/// Slot fills [`CHROME_ROW_HEIGHT`] and centers the 36px control so it shares the
+/// same horizontal centerline as the window caption buttons.
+pub fn build_ai_mic_slot(
+    listening: bool,
     panel_open: bool,
+    stt_available: bool,
     font: FamilyId,
 ) -> Box<dyn Element> {
-    let initials = avatar_initials(authenticated, email);
+    let _ = font;
+    let mic_color = if !stt_available {
+        theme::muted()
+    } else if listening {
+        theme::accent_cool()
+    } else {
+        theme::accent()
+    };
+    let border_fill = if !stt_available {
+        theme::border()
+    } else if listening || panel_open {
+        theme::accent_cool()
+    } else {
+        theme::accent()
+    };
 
     let circle = Container::new(
         ConstrainedBox::new(
@@ -82,11 +118,11 @@ pub fn build_avatar_slot(
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_alignment(MainAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Max)
-                .with_child(
-                    ui_text::body(initials, font)
-                        .with_color(theme::accent())
-                        .finish(),
-                )
+                .with_child(icons::icon(
+                    "chat-compose-mic.svg",
+                    MIC_ICON_SIZE,
+                    mic_color,
+                ))
                 .finish(),
         )
         .with_width(AVATAR_SIZE)
@@ -98,143 +134,165 @@ pub fn build_avatar_slot(
         .finish(),
     )
     .with_background(theme::panel_elevated())
-    .with_border(Border::all(1.0).with_border_fill(if panel_open {
-        theme::accent_cool()
-    } else {
-        theme::border()
-    }))
+    .with_border(Border::all(1.0).with_border_fill(border_fill))
     .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.0)))
     .finish();
 
-    let btn = EventHandler::new(circle)
-        .on_left_mouse_down(move |ctx, _, _| {
-            if authenticated {
-                ctx.dispatch_typed_action(AppShellAction::ToggleAvatarPanel);
-            } else {
-                ctx.dispatch_typed_action(AppShellAction::OpenLogin);
-            }
-            DispatchEventResult::StopPropagation
-        })
-        .finish();
+    // Glow ring only while active (HTML `::after`); idle stays exact 36×36.
+    let ringed = if stt_available && (listening || panel_open) {
+        Container::new(circle)
+            .with_border(Border::all(1.0).with_border_fill(theme::accent_cool_bg(90)))
+            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.0)))
+            .with_uniform_padding(MIC_GLOW_PAD)
+            .finish()
+    } else {
+        circle
+    };
 
-    // Match HTML `.hud-avatar-slot`: padding only, no left divider line.
-    Container::new(
-        ConstrainedBox::new(btn)
-            .with_width(AVATAR_SIZE)
-            .with_height(AVATAR_SIZE)
-            .with_min_width(AVATAR_SIZE)
-            .with_min_height(AVATAR_SIZE)
-            .finish(),
+    let btn = if stt_available {
+        EventHandler::new(ringed)
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(AppShellAction::ToggleAiMic);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    } else {
+        EventHandler::new(ringed)
+            .on_left_mouse_down(|ctx, _, _| {
+                // Still open panel to show the unavailable reason.
+                ctx.dispatch_typed_action(AppShellAction::OpenAiPanel);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    };
+
+    // HTML `.hud-avatar-slot`: height 100% + align-items center beside caption buttons.
+    ConstrainedBox::new(
+        Align::new(
+            Container::new(btn)
+                .with_horizontal_padding(MIC_SLOT_PAD_X)
+                .finish(),
+        )
+        .finish(),
     )
-    .with_horizontal_padding(8.0)
+    .with_height(CHROME_ROW_HEIGHT)
     .finish()
 }
 
-pub fn build_avatar_panel(
-    device_id: Option<&str>,
-    balance_credits: i64,
-    balance_amount_yuan: Option<&str>,
-    busy: bool,
-    balance_feedback: Option<&str>,
+/// Popover under the mic: user questions + agent action lines.
+pub fn build_ai_output_panel(
+    status: &str,
+    lines: &[AiOutputLine],
+    scroll: &ClippedScrollStateHandle,
     font: FamilyId,
     mono: FamilyId,
 ) -> Box<dyn Element> {
-    let balance_text = if busy {
-        "同步中…".to_string()
-    } else {
-        format_balance_display(balance_amount_yuan, balance_credits)
-    };
-    let user_label = device_id.unwrap_or("未登录").to_string();
-
     let mut panel = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_size(MainAxisSize::Min);
 
-    let mut head = Flex::column()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_main_axis_size(MainAxisSize::Min);
-    head.add_child(
-        ui_text::body("Wormhole 账户", font)
-            .with_color(theme::text())
-            .finish(),
-    );
-    head.add_child(
-        Container::new(
-            ui_text::mono(user_label, mono)
-                .with_color(theme::muted())
+    let head = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_child(
+            ui_text::body("AI 输出", font)
+                .with_color(theme::text())
                 .finish(),
         )
-        .with_vertical_margin(4.0)
-        .finish(),
-    );
+        .with_child(
+            ui_text::cluster_ctrl(status.to_string(), mono)
+                .with_color(theme::success())
+                .finish(),
+        );
     panel.add_child(
         Container::new(head.finish())
-            .with_padding_bottom(12.0)
-            .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+            .with_padding_bottom(4.0)
             .finish(),
     );
 
-    let balance_row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_main_axis_size(MainAxisSize::Max)
-        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-        .with_child(
-            ui_text::cluster_ctrl("账户余额".to_string(), mono)
-                .with_color(theme::muted())
-                .finish(),
-        )
-        .with_child(
-            ui_text::cluster_label(balance_text, mono)
+    let mut body_col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min);
+    if lines.is_empty() {
+        body_col.add_child(
+            ui_text::body("等待语音输入。", font)
                 .with_color(theme::text())
                 .finish(),
         );
-    panel.add_child(
-        Container::new(balance_row.finish())
-            .with_vertical_margin(14.0)
-            .finish(),
-    );
-
-    let mut actions = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_main_axis_size(MainAxisSize::Max);
-    actions.add_child(
-        Expanded::new(
-            1.0,
-            balance_action_button("购买", true, font, AppShellAction::PurchaseBalance),
-        )
-        .finish(),
-    );
-    actions.add_child(
-        Container::new(Flex::column().finish())
-            .with_horizontal_margin(8.0)
-            .finish(),
-    );
-    actions.add_child(
-        Expanded::new(
-            1.0,
-            balance_action_button("兑换", false, font, AppShellAction::OpenRedeemModal),
-        )
-        .finish(),
-    );
-    panel.add_child(
-        ConstrainedBox::new(actions.finish())
-            .with_width(PANEL_WIDTH)
-            .with_height(36.0)
-            .finish(),
-    );
-
-    if let Some(msg) = balance_feedback {
-        panel.add_child(
-            Container::new(status_line(msg.to_string(), font, StatusTone::Neutral))
-                .with_vertical_margin(10.0)
+        body_col.add_child(
+            Container::new(
+                ui_text::body(
+                    "点击麦克风后，AI 会把识别与处理结果显示在这里。",
+                    font,
+                )
+                .with_color(theme::muted())
                 .finish(),
+            )
+            .with_margin_top(6.0)
+            .finish(),
         );
+    } else {
+        for line in lines {
+            let (prefix, color) = match line.kind {
+                AiOutputKind::User => ("用户", theme::accent_cool()),
+                AiOutputKind::Action => ("操作", theme::accent()),
+                AiOutputKind::System => ("系统", theme::muted()),
+            };
+            body_col.add_child(
+                Container::new(
+                    Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_child(
+                            ui_text::cluster_ctrl(prefix.to_string(), mono)
+                                .with_color(color)
+                                .finish(),
+                        )
+                        .with_child(
+                            ui_text::body(line.text.clone(), font)
+                                .with_color(theme::text())
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_padding_bottom(10.0)
+                .finish(),
+            );
+        }
     }
+
+    let body = Container::new(
+        ClippedScrollable::vertical(
+            scroll.clone(),
+            ConstrainedBox::new(body_col.finish())
+                .with_width(AI_PANEL_WIDTH - 40.0)
+                .finish(),
+            ScrollbarWidth::None,
+            Fill::None,
+            Fill::None,
+            Fill::None,
+        )
+        .finish(),
+    )
+    .with_uniform_padding(10.0)
+    .with_background(theme::canvas())
+    .with_border(Border::all(1.0).with_border_fill(theme::border()))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
+    .finish();
+
+    panel.add_child(
+        ConstrainedBox::new(body)
+            .with_width(AI_PANEL_WIDTH - 32.0)
+            .with_max_height(AI_BODY_MAX_HEIGHT)
+            .with_height(AI_BODY_MAX_HEIGHT.min(180.0 + lines.len() as f32 * 48.0))
+            .finish(),
+    );
 
     EventHandler::new(
         Container::new(
             ConstrainedBox::new(panel.finish())
-                .with_width(PANEL_WIDTH)
+                .with_width(AI_PANEL_WIDTH)
                 .finish(),
         )
         .with_uniform_padding(16.0)
@@ -481,54 +539,6 @@ fn purchase_product_card(
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish()
-}
-
-fn balance_action_button(
-    label: &str,
-    primary: bool,
-    font: FamilyId,
-    action: AppShellAction,
-) -> Box<dyn Element> {
-    let (border, bg, color) = if primary {
-        (
-            theme::accent_cool(),
-            theme::accent_cool_bg(24),
-            theme::accent_cool(),
-        )
-    } else {
-        (
-            theme::border_bright(),
-            ColorU::new(0, 0, 0, 0),
-            theme::text(),
-        )
-    };
-    EventHandler::new(
-        Container::new(
-            ConstrainedBox::new(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_main_axis_alignment(MainAxisAlignment::Center)
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_child(
-                        ui_text::body(label.to_string(), font)
-                            .with_color(color)
-                            .finish(),
-                    )
-                    .finish(),
-            )
-            .with_height(36.0)
-            .finish(),
-        )
-        .with_background(bg)
-        .with_border(Border::all(1.0).with_border_fill(border))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-        .finish(),
-    )
-    .on_left_mouse_down(move |ctx, _, _| {
-        ctx.dispatch_typed_action(action.clone());
-        DispatchEventResult::StopPropagation
-    })
-    .finish()
 }
 
 pub fn build_redeem_modal(
@@ -1173,30 +1183,13 @@ fn redeem_button(
 }
 
 #[cfg(test)]
-mod email_initials_tests {
-    use super::{avatar_initials, email_initials};
+mod ai_output_line_tests {
+    use super::{AiOutputKind, AiOutputLine};
 
     #[test]
-    fn email_initials_takes_two_letters_from_local_part() {
-        assert_eq!(email_initials(Some("ab@example.com")), "AB");
-        assert_eq!(email_initials(Some("hello@x.com")), "HE");
-    }
-
-    #[test]
-    fn email_initials_pads_single_char() {
-        assert_eq!(email_initials(Some("a@b.c")), "AA");
-    }
-
-    #[test]
-    fn email_initials_falls_back_when_missing() {
-        assert_eq!(email_initials(None), "WH");
-        assert_eq!(email_initials(Some("")), "WH");
-        assert_eq!(email_initials(Some("   ")), "WH");
-    }
-
-    #[test]
-    fn avatar_initials_guest_is_question_mark() {
-        assert_eq!(avatar_initials(false, Some("ab@x.com")), "?");
-        assert_eq!(avatar_initials(true, Some("ab@x.com")), "AB");
+    fn ai_output_line_kinds() {
+        assert_eq!(AiOutputLine::user("你好").kind, AiOutputKind::User);
+        assert_eq!(AiOutputLine::action("开始同步").kind, AiOutputKind::Action);
+        assert_eq!(AiOutputLine::system("不可用").kind, AiOutputKind::System);
     }
 }

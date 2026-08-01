@@ -35,6 +35,7 @@ pub struct ChatShellState {
     pub sidebar_menu_open: bool,
     pub contacts_open: bool,
     pub contacts_add_open: bool,
+    pub channel_open: bool,
     pub calls_open: bool,
     /// `overview` | `picker` | `settings` | `privacy` | `confirm`
     pub calls_subview: String,
@@ -81,6 +82,7 @@ impl Default for ChatShellState {
             sidebar_menu_open: false,
             contacts_open: false,
             contacts_add_open: false,
+            channel_open: false,
             calls_open: false,
             calls_subview: "overview".into(),
             calls_menu_open: false,
@@ -141,6 +143,10 @@ impl ChatShellState {
         self.contacts_add_open = false;
     }
 
+    pub fn close_channel(&mut self) {
+        self.channel_open = false;
+    }
+
     pub fn close_calls(&mut self) {
         self.calls_open = false;
         self.calls_menu_open = false;
@@ -150,13 +156,22 @@ impl ChatShellState {
     pub fn open_contacts(&mut self) {
         self.close_overlays();
         self.close_calls();
+        self.close_channel();
         self.contacts_open = true;
         self.contacts_add_open = false;
+    }
+
+    pub fn open_channel(&mut self) {
+        self.close_overlays();
+        self.close_contacts();
+        self.close_calls();
+        self.channel_open = true;
     }
 
     pub fn open_calls(&mut self) {
         self.close_overlays();
         self.close_contacts();
+        self.close_channel();
         self.calls_open = true;
         self.calls_subview = "overview".into();
         self.calls_menu_open = false;

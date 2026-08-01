@@ -176,6 +176,10 @@ pub enum AgentPanelAction {
     ToggleToolLineExpand { line_index: usize },
     /// Queue draft for send after the current turn finishes (Codex follow-up while busy).
     QueueFollowUp,
+    /// Toggle push-to-talk: first click starts OS dictation, second stops and sends.
+    ToggleVoicePtt,
+    /// Stop on-device TTS playback.
+    StopTts,
     CopySelection,
     ClearAndUnfocus,
     ToggleComposerFocus,
@@ -190,6 +194,11 @@ struct PanelState {
     daemon_running: bool,
     draft: String,
     busy: bool,
+    /// Agent toggle dictation is active.
+    voice_recording: bool,
+    /// From `voice_status().stt_available` — when false, mic chip is disabled.
+    voice_stt_available: bool,
+    voice_stt_hint: String,
     mode: InteractionMode,
     lines: Arc<Vec<TranscriptLine>>,
     chat_messages: Vec<AgentLlmChatMessage>,
@@ -338,6 +347,9 @@ impl AgentPanelView {
                 daemon_running: false,
                 draft: String::new(),
                 busy: false,
+                voice_recording: false,
+                voice_stt_available: true,
+                voice_stt_hint: String::new(),
                 mode: InteractionMode::Chat,
                 lines: Arc::new(Vec::new()),
                 chat_messages: Vec::new(),
@@ -2586,6 +2598,23 @@ impl AgentPanelView {
     }
 
     fn refresh_status(&self, ctx: &mut ViewContext<Self>) {
+        let voice = wormhole_desktop_core::voice_status();
+        if let Ok(mut panel) = self.state.lock() {
+            panel.voice_stt_available = voice.stt_available;
+            panel.voice_stt_hint = voice
+                .stt_unavailable_reason
+                .clone()
+                .unwrap_or_default();
+            if !voice.stt_available
+                && !panel.voice_recording
+                && !panel.voice_stt_hint.is_empty()
+                && (panel.status.starts_with("正在检查")
+                    || panel.status.starts_with("语音输入不可用")
+                    || panel.status.is_empty())
+            {
+                panel.status = format!("语音输入不可用：{}", panel.voice_stt_hint);
+            }
+        }
         let shared = Arc::clone(&self.state);
         let core = self.core.clone();
         ctx.spawn(
@@ -2599,6 +2628,81 @@ impl AgentPanelView {
                 view.reload_sidebar_sessions(ctx);
             },
         );
+    }
+
+    fn toggle_voice_ptt(&mut self, ctx: &mut ViewContext<Self>) {
+        let (recording, stt_ok, stt_hint) = self
+            .state
+            .lock()
+            .map(|p| {
+                (
+                    p.voice_recording,
+                    p.voice_stt_available,
+                    p.voice_stt_hint.clone(),
+                )
+            })
+            .unwrap_or((false, false, String::new()));
+        if !recording {
+            if !stt_ok {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.status = if stt_hint.is_empty() {
+                        "语音输入不可用".into()
+                    } else {
+                        format!("语音输入不可用：{stt_hint}")
+                    };
+                }
+                self.bump();
+                ctx.notify();
+                return;
+            }
+            match wormhole_desktop_core::voice_dictation_start() {
+                Ok(()) => {
+                    if let Ok(mut panel) = self.state.lock() {
+                        panel.voice_recording = true;
+                        panel.status = "语音输入中…再点麦克风结束并发送".into();
+                    }
+                }
+                Err(err) => {
+                    if let Ok(mut panel) = self.state.lock() {
+                        panel.voice_recording = false;
+                        panel.status = err;
+                    }
+                }
+            }
+            self.bump();
+            ctx.notify();
+            return;
+        }
+        match wormhole_desktop_core::voice_dictation_stop() {
+            Ok(text) => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.voice_recording = false;
+                    panel.draft = text;
+                    panel.field_state.cursor = panel.draft.chars().count();
+                    panel.status = "语音已转写，正在发送…".into();
+                }
+                self.bump();
+                ctx.notify();
+                self.send_message(ctx);
+            }
+            Err(err) => {
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.voice_recording = false;
+                    panel.status = err;
+                }
+                self.bump();
+                ctx.notify();
+            }
+        }
+    }
+
+    fn speak_assistant_reply(text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let snippet: String = trimmed.chars().take(400).collect();
+        let _ = wormhole_desktop_core::voice_speak(&snippet);
     }
 
     fn send_message(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2755,6 +2859,7 @@ impl AgentPanelView {
                             result.backend,
                             &result.reply.content,
                         );
+                        Self::speak_assistant_reply(&result.reply.content);
                         panel.chat_messages.push(AgentLlmChatMessage {
                             role: "assistant".into(),
                             content: result.reply.content,
@@ -3145,6 +3250,8 @@ impl AgentPanelView {
         draft_empty: bool,
         access_mode: AgentAccessMode,
         model_rate: AgentModelRate,
+        voice_recording: bool,
+        voice_stt_available: bool,
     ) -> Box<dyn Element> {
         let access_chip = self.composer_labeled_chip(
             access_label(access_mode),
@@ -3163,10 +3270,30 @@ impl AgentPanelView {
             theme::muted(),
             Some(AgentPanelAction::ToggleAddMenu),
         );
+        let mic_color = if !voice_stt_available {
+            theme::muted()
+        } else if voice_recording {
+            theme::accent()
+        } else {
+            theme::muted()
+        };
+        let mic_action = if voice_stt_available {
+            Some(AgentPanelAction::ToggleVoicePtt)
+        } else {
+            None
+        };
+        let mic_btn = self.composer_icon_chip("chat-compose-mic.svg", mic_color, mic_action);
+        let stop_tts = self.composer_icon_chip(
+            "agent-stop-tts.svg",
+            theme::muted(),
+            Some(AgentPanelAction::StopTts),
+        );
         let bar = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(add_btn)
             .with_child(access_chip)
+            .with_child(mic_btn)
+            .with_child(stop_tts)
             .with_child(Expanded::new(1.0, Flex::row().finish()).finish())
             .with_child(model_chip)
             .with_child(self.stop_button(busy, draft_empty));
@@ -3615,6 +3742,8 @@ impl View for AgentPanelView {
         let marked = state.field_state.marked_text.clone();
         let cursor = state.field_state.cursor;
         let busy = state.busy;
+        let voice_recording = state.voice_recording;
+        let voice_stt_available = state.voice_stt_available;
         let elapsed_seconds = run_elapsed_seconds(state.run_started_at, SystemTime::now());
         let _mode = state.mode;
         let input_focused = state.input_focused;
@@ -3723,6 +3852,8 @@ impl View for AgentPanelView {
             draft.trim().is_empty(),
             access_mode,
             model_rate,
+            voice_recording,
+            voice_stt_available,
         ));
 
         let composer_inner = Container::new(composer_col.finish())
@@ -4079,6 +4210,14 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DismissComposerMenus => self.dismiss_composer_menus(ctx),
             AgentPanelAction::SelectMode(mode) => self.select_mode(*mode, ctx),
             AgentPanelAction::Send => self.send_message(ctx),
+            AgentPanelAction::ToggleVoicePtt => self.toggle_voice_ptt(ctx),
+            AgentPanelAction::StopTts => {
+                let _ = wormhole_desktop_core::voice_stop_speak();
+                if let Ok(mut panel) = self.state.lock() {
+                    panel.status = "已停止朗读".into();
+                }
+                ctx.notify();
+            }
             AgentPanelAction::PasteInput => self.paste_input(ctx),
             AgentPanelAction::ApplyCapabilityPrompt(prompt) => {
                 self.apply_capability_prompt(prompt.clone(), ctx)
@@ -4355,6 +4494,12 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::Send => {
                 AccessibilityContent::new_without_help("发送消息", WarpA11yRole::ButtonRole)
             }
+            AgentPanelAction::ToggleVoicePtt => {
+                AccessibilityContent::new_without_help("语音输入", WarpA11yRole::ButtonRole)
+            }
+            AgentPanelAction::StopTts => {
+                AccessibilityContent::new_without_help("停止朗读", WarpA11yRole::ButtonRole)
+            }
             AgentPanelAction::FocusInput => {
                 AccessibilityContent::new_without_help("聚焦输入框", WarpA11yRole::TextfieldRole)
             }
@@ -4530,6 +4675,9 @@ mod tests {
             daemon_running: false,
             draft: String::new(),
             busy: false,
+            voice_recording: false,
+            voice_stt_available: false,
+            voice_stt_hint: String::new(),
             mode: InteractionMode::Chat,
             lines: Arc::new(Vec::new()),
             chat_messages: Vec::new(),

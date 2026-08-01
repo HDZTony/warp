@@ -6,8 +6,8 @@ use display_server::iroh_transport::ViewerFrame;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
-    Align, ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex, Image,
-    ParentElement, Rect, Stack,
+    Align, ConstrainedBox, DispatchEventResult, EventHandler, Image, ParentElement, Rect,
+    SavePosition, Stack,
 };
 use warpui::fonts::{Cache as FontCache, FamilyId};
 use warpui::{
@@ -20,11 +20,11 @@ use warpui_core::keymap::Keystroke;
 use wormhole_desktop_rdp::{decode_frame, ExtrasStateHandle, RdpRuntime, SessionRole};
 
 use crate::rdp_extras_ui::{
-    self, apply_keystroke, render_auth_panel, spawn_audio_muted, spawn_audio_volume,
-    spawn_open_tunnel, spawn_run_terminal, spawn_send_file, ActiveField, ExtrasPanel,
-    ExtrasUiAction, ExtrasUiState, ViewerScale,
+    apply_chrome_action, apply_keystroke, chrome_handle_with_position, chrome_panel_with_position,
+    render_chrome_scrim, root_local_point, spawn_audio_muted, spawn_audio_volume, spawn_open_tunnel,
+    spawn_run_terminal, spawn_send_file, ActiveField, ExtrasPanel, ExtrasUiAction, ExtrasUiState,
+    ViewerScale, RDP_VIEWER_ROOT_POS,
 };
-use crate::ui_text;
 #[cfg(target_os = "macos")]
 use warpui_core::platform::file_picker::FilePickerConfiguration;
 
@@ -41,6 +41,43 @@ const MANUAL_DISCONNECT_STATUS: &str = "已断开";
 fn apply_passive_disconnect_status(status: &mut String, reason: &str) {
     if status.starts_with("已连接") {
         *status = reason.to_string();
+    }
+}
+
+/// Short product status for the viewer chrome. Dial still uses the full `peer`
+/// endpoint JSON; never dump it into the title bar.
+fn format_connected_status(peer: &str, width: u32, height: u32) -> String {
+    let short = short_peer_label(peer);
+    if width > 0 && height > 0 {
+        format!("已连接 · {short} · {width}×{height}")
+    } else {
+        format!("已连接 · {short}")
+    }
+}
+
+fn short_peer_label(peer: &str) -> String {
+    let trimmed = peer.trim();
+    let id = if trimmed.starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| {
+                v.get("id")
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
+    const KEEP: usize = 12;
+    let mut chars = id.chars();
+    let head: String = chars.by_ref().take(KEEP).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else if head.is_empty() {
+        "remote".into()
+    } else {
+        head
     }
 }
 
@@ -617,6 +654,7 @@ impl RdpViewerView {
                             if let Some(ui) = extras_ui.as_ref() {
                                 if let Ok(mut guard) = ui.lock() {
                                     guard.auth_prompt = true;
+                                    guard.chrome_open = true;
                                     guard.active_field = ActiveField::AuthPassword;
                                 }
                             }
@@ -625,7 +663,7 @@ impl RdpViewerView {
                     }
                 };
                 *session_id_slot.lock().expect("session lock") = Some(session_id.clone());
-                *status.lock().expect("status lock") = format!("已连接 · {peer}");
+                *status.lock().expect("status lock") = format_connected_status(&peer, 0, 0);
 
                 if let Some(ui) = extras_ui.as_ref() {
                     let (mon_count, mon_idx) = {
@@ -666,6 +704,7 @@ impl RdpViewerView {
                         &mut generation,
                         &data_dir,
                         extras_ui.as_ref(),
+                        Some((&status, &peer)),
                     )
                     .await;
                 }
@@ -679,6 +718,7 @@ impl RdpViewerView {
                                 &mut generation,
                                 &data_dir,
                                 extras_ui.as_ref(),
+                                Some((&status, &peer)),
                             )
                             .await;
                         }
@@ -712,6 +752,7 @@ impl RdpViewerView {
         generation: &mut u64,
         data_dir: &PathBuf,
         extras_ui: Option<&Arc<Mutex<ExtrasUiState>>>,
+        connected_status: Option<(&Arc<Mutex<String>>, &str)>,
     ) {
         let codec = match viewer_frame.codec.as_str() {
             "hevc" => CodecType::Hevc,
@@ -725,11 +766,24 @@ impl RdpViewerView {
         };
 
         *generation += 1;
-        if let Ok(mut guard) = frame.lock() {
+        let dims_changed = if let Ok(mut guard) = frame.lock() {
+            let changed = guard.width != width || guard.height != height || guard.generation == 0;
             guard.width = width;
             guard.height = height;
             guard.bytes = rgb.clone();
             guard.generation = *generation;
+            changed
+        } else {
+            true
+        };
+        if dims_changed {
+            if let Some((status, peer)) = connected_status {
+                if let Ok(mut s) = status.lock() {
+                    if s.starts_with("已连接") {
+                        *s = format_connected_status(peer, width, height);
+                    }
+                }
+            }
         }
         let push_vcam = extras_ui.and_then(|ui| {
             ui.lock()
@@ -932,83 +986,117 @@ impl View for RdpViewerView {
         let dispatch = self.clone_dispatch();
         let on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync> =
             Arc::new(move |action| dispatch.apply(action));
-        let toolbar = rdp_extras_ui::render_toolbar(
-            self.font,
-            self.show_extras_tools,
-            self.show_audio_controls,
-            true,
-            self.watch_only,
-            &self.extras_ui,
-            on_action.clone(),
-        );
-        let mut header_column = Flex::column()
-            .with_child(
-                ui_text::body(header_text, self.font)
-                    .with_color(ColorU::white())
+
+        let chrome_open = self
+            .extras_ui
+            .lock()
+            .map(|g| g.chrome_open)
+            .unwrap_or(false);
+
+        let mut stack = Stack::new();
+        stack.add_child(
+            SavePosition::new(
+                Rect::new()
+                    .with_background_color(ColorU::black())
                     .finish(),
+                RDP_VIEWER_ROOT_POS,
             )
-            .with_child(toolbar);
-        if let Some(label) = self.watermark_text.as_ref().filter(|s| !s.is_empty()) {
-            header_column = header_column.with_child(
-                ui_text::body(label.clone(), self.font)
-                    .with_color(ColorU::new(255, 255, 255, 90))
-                    .finish(),
+            .finish(),
+        );
+        stack.add_child(Align::new(surface).finish());
+
+        if chrome_open {
+            stack.add_child(render_chrome_scrim(on_action.clone()));
+            let (panel, panel_pos) = chrome_panel_with_position(
+                self.font,
+                self.mono_font,
+                header_text,
+                self.watermark_text.clone(),
+                self.show_extras_tools,
+                self.show_audio_controls,
+                self.watch_only,
+                &self.extras_ui,
+                on_action.clone(),
             );
-        }
-        if let Some(auth) = render_auth_panel(
-            self.font,
-            self.mono_font,
-            &self.extras_ui,
-            on_action.clone(),
-        ) {
-            header_column = header_column.with_child(auth);
-        }
-        if self.show_extras_tools {
-            if let Some(panel) =
-                rdp_extras_ui::render_panel(self.font, self.mono_font, &self.extras_ui, on_action)
-            {
-                header_column = header_column.with_child(panel);
-            }
+            stack.add_positioned_child(panel, panel_pos);
         }
 
-        let header = Container::new(header_column.finish())
-            .with_uniform_padding(8.)
-            .finish();
+        let (handle, handle_pos) =
+            chrome_handle_with_position(self.font, &self.extras_ui, on_action.clone());
+        stack.add_positioned_child(handle, handle_pos);
 
-        let column = Flex::column()
-            .with_child(header)
-            .with_child(Align::new(surface).finish())
-            .finish();
-
-        let body = if self.watch_only {
-            column
-        } else {
-            let input = self.input.clone();
-            let extras_ui = self.extras_ui.clone();
-            EventHandler::new(column)
-                .with_always_handle()
-                .on_keydown(move |ctx, _, keystroke| {
-                    let (has_panel, auth_prompt) = extras_ui
+        let extras_ui = self.extras_ui.clone();
+        let on_pointer = on_action.clone();
+        let mut root = EventHandler::new(stack.finish()).with_always_handle();
+        root = root
+            .on_mouse_dragged({
+                let extras_ui = extras_ui.clone();
+                let on_pointer = on_pointer.clone();
+                move |ctx, _, position| {
+                    let dragging = extras_ui
                         .lock()
-                        .map(|g| (g.panel.is_some(), g.auth_prompt))
-                        .unwrap_or((false, false));
-                    if has_panel || auth_prompt {
-                        ctx.dispatch_typed_action(RdpAction::ExtrasKeydown(keystroke.clone()));
-                        return DispatchEventResult::StopPropagation;
+                        .map(|g| g.chrome_drag_origin.is_some())
+                        .unwrap_or(false);
+                    if !dragging {
+                        return DispatchEventResult::PropagateToParent;
                     }
-                    let chord = keystroke_to_vk_chord(keystroke);
-                    if !chord.is_empty() {
-                        input.send_vk_chord(&chord);
-                    }
+                    let (x, y, (root_w, root_h)) = root_local_point(ctx, position);
+                    on_pointer(ExtrasUiAction::ChromeDragTo {
+                        x,
+                        y,
+                        root_w,
+                        root_h,
+                    });
                     DispatchEventResult::StopPropagation
-                })
-                .finish()
-        };
+                }
+            })
+            .on_left_mouse_up({
+                let extras_ui = extras_ui.clone();
+                move |ctx, _, position| {
+                    let dragging = extras_ui
+                        .lock()
+                        .map(|g| g.chrome_drag_origin.is_some())
+                        .unwrap_or(false);
+                    if !dragging {
+                        return DispatchEventResult::PropagateToParent;
+                    }
+                    let (x, y, (root_w, root_h)) = root_local_point(ctx, position);
+                    on_pointer(ExtrasUiAction::EndChromeDrag {
+                        x,
+                        y,
+                        root_w,
+                        root_h,
+                    });
+                    DispatchEventResult::StopPropagation
+                }
+            });
 
-        Stack::new()
-            .with_child(Rect::new().with_background_color(ColorU::black()).finish())
-            .with_child(body)
-            .finish()
+        if self.watch_only {
+            return root.finish();
+        }
+
+        let input = self.input.clone();
+        let extras_ui = self.extras_ui.clone();
+        root.on_keydown(move |ctx, _, keystroke| {
+            let (has_panel, auth_prompt, chrome_open) = extras_ui
+                .lock()
+                .map(|g| (g.panel.is_some(), g.auth_prompt, g.chrome_open))
+                .unwrap_or((false, false, false));
+            if has_panel || auth_prompt {
+                ctx.dispatch_typed_action(RdpAction::ExtrasKeydown(keystroke.clone()));
+                return DispatchEventResult::StopPropagation;
+            }
+            if chrome_open && keystroke.key == "escape" {
+                ctx.dispatch_typed_action(RdpAction::ExtrasUi(ExtrasUiAction::ToggleChrome));
+                return DispatchEventResult::StopPropagation;
+            }
+            let chord = keystroke_to_vk_chord(keystroke);
+            if !chord.is_empty() {
+                input.send_vk_chord(&chord);
+            }
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
     }
 }
 
@@ -1067,6 +1155,13 @@ impl RdpExtrasDispatch {
     }
 
     fn apply(&self, action: ExtrasUiAction) {
+        if let Ok(mut guard) = self.extras_ui.lock() {
+            if apply_chrome_action(&mut guard, &action) {
+                drop(guard);
+                self.bump();
+                return;
+            }
+        }
         match action {
             ExtrasUiAction::TogglePanel(panel) => {
                 if let Ok(mut guard) = self.extras_ui.lock() {
@@ -1075,6 +1170,9 @@ impl RdpExtrasDispatch {
                     } else {
                         Some(panel)
                     };
+                    if guard.panel.is_some() {
+                        guard.chrome_open = true;
+                    }
                     guard.active_field = match panel {
                         ExtrasPanel::File => ActiveField::FilePath,
                         ExtrasPanel::Tunnel => ActiveField::TunnelLocal,
@@ -1197,7 +1295,11 @@ impl RdpExtrasDispatch {
             ExtrasUiAction::ToggleFullscreen
             | ExtrasUiAction::Disconnect
             | ExtrasUiAction::CtrlAltDel
-            | ExtrasUiAction::Reconnect => {}
+            | ExtrasUiAction::Reconnect
+            | ExtrasUiAction::ToggleChrome
+            | ExtrasUiAction::BeginChromeDrag { .. }
+            | ExtrasUiAction::ChromeDragTo { .. }
+            | ExtrasUiAction::EndChromeDrag { .. } => {}
         }
     }
 
@@ -1309,6 +1411,23 @@ mod tests {
         apply_passive_disconnect_status(&mut status, PASSIVE_DISCONNECT_STATUS);
         assert_eq!(status, PASSIVE_DISCONNECT_STATUS);
         assert!(!status.starts_with("已连接"));
+    }
+
+    #[test]
+    fn connected_status_does_not_dump_endpoint_json() {
+        let peer = r#"{"id":"5a5d6797d5babcaa0502caa3d49d912714e98f92b6907db050c696f7ebc405b8","addrs":[{"Relay":"https://fashion-rec-backend.fly.dev:3340/"}]}"#;
+        let status = format_connected_status(peer, 1920, 1080);
+        assert!(status.starts_with("已连接 · "));
+        assert!(status.contains("1920×1080"));
+        assert!(!status.contains("addrs"));
+        assert!(!status.contains("Relay"));
+        assert!(status.contains("5a5d6797d5ba…") || status.contains("5a5d6797d5ba"));
+    }
+
+    #[test]
+    fn short_peer_label_truncates_bare_node_id() {
+        let label = short_peer_label("abcdef0123456789deadbeef");
+        assert_eq!(label, "abcdef012345…");
     }
 
     #[test]

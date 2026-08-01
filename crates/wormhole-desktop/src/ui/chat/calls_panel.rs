@@ -210,6 +210,7 @@ impl CallsPanelView {
                             email: String::new(),
                             source: ContactSource::Cluster,
                             can_chat: true,
+                            bootstrap_addrs: node.chat_bootstrap_addrs.clone(),
                         });
                     }
                 }
@@ -301,7 +302,7 @@ impl CallsPanelView {
                         peer: Some(peer_id.clone()),
                         peer_endpoint: Some(peer_id.clone()),
                         peer_display_name: Some(peer_name.clone()),
-                        peer_bootstrap_addrs: Vec::new(),
+                        peer_bootstrap_addrs: peer.bootstrap_addrs.clone(),
                     },
                 )
                 .await?;
@@ -365,7 +366,7 @@ impl CallsPanelView {
                         peer: Some(peer_id.clone()),
                         peer_endpoint: Some(peer_id.clone()),
                         peer_display_name: Some(peer_name.clone()),
-                        peer_bootstrap_addrs: Vec::new(),
+                        peer_bootstrap_addrs: peer.bootstrap_addrs.clone(),
                     },
                 )
                 .await?;

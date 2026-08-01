@@ -7,12 +7,13 @@ use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use wormhole_desktop_core::toolbox_ui::{
     toolbox_cancel_install, toolbox_install_tool, toolbox_launch_tool, toolbox_list_tools,
     workspace_user_app_catalog_install, workspace_user_app_catalog_list,
-    workspace_user_app_catalog_revoke, workspace_user_app_import, workspace_user_app_list,
-    workspace_user_app_publish, workspace_user_app_remove, parse_extension_list,
-    CatalogUserAppSummary, ToolCategory, ToolExecutorKind, ToolInstallStage, ToolSourceKind,
-    ToolSummary, WorkspaceUserAppCatalogInstallParams, WorkspaceUserAppCatalogRevokeParams,
-    WorkspaceUserAppIdParams, WorkspaceUserAppImportParams, WorkspaceUserAppManifest,
-    WorkspaceUserAppPublishParams,
+    workspace_user_app_catalog_revoke, workspace_user_app_catalog_update_acl,
+    workspace_user_app_import, workspace_user_app_list, workspace_user_app_publish,
+    workspace_user_app_remove, parse_extension_list, CatalogUserAppSummary, ToolCategory,
+    ToolExecutorKind, ToolInstallStage, ToolSourceKind, ToolSummary,
+    WorkspaceUserAppCatalogInstallParams, WorkspaceUserAppCatalogRevokeParams,
+    WorkspaceUserAppCatalogUpdateAclParams, WorkspaceUserAppIdParams,
+    WorkspaceUserAppImportParams, WorkspaceUserAppManifest, WorkspaceUserAppPublishParams,
 };
 
 use crate::ui::core_handle::CoreHandle;
@@ -65,6 +66,11 @@ pub enum ToolboxAction {
     InstallCatalog {
         app_id: String,
         version: String,
+    },
+    UpdateCatalogAcl {
+        app_id: String,
+        version: String,
+        visibility: String,
     },
     RevokeCatalog {
         app_id: String,
@@ -742,274 +748,244 @@ impl ToolboxView {
 
     fn user_apps_section(&self) -> Box<dyn Element> {
         let mut section = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        #[cfg(not(target_os = "linux"))]
-        {
-            section.add_child(
-                Container::new(section_hint(
-                    "Linux 用户程序在 Ubuntu Host-Native / VmGuest 机器上导入与发布。当前系统仅可浏览目录；安装后需在该 Linux worker 上 promote 才会出现在「远程虚拟机打开」。",
-                    self.font,
-                ))
-                .with_margin_top(SECTION_GAP)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(self.action_button(
-                    if self.user_apps_busy {
-                        "同步中…".into()
-                    } else {
-                        "同步用户程序目录".into()
-                    },
-                    ToolboxAction::RefreshUserApps,
-                    self.user_apps_busy,
-                    false,
-                ))
+        section.add_child(
+            Container::new(section_hint(
+                "用户程序：导入 Linux 程序包（bin / 目录 / .AppImage / .deb）后可发布到控制面，并在共享文件「远程虚拟机打开」中选用。下载范围可选所有人 / 联系人 / 指定人。真正打开发生在 Linux worker；本机非 Linux 时可能无法写入 worker installed_apps，但不影响发布。",
+                self.font,
+            ))
+            .with_margin_top(SECTION_GAP)
+            .finish(),
+        );
+        let mut toolbar = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        toolbar.add_child(self.action_button(
+            if self.user_apps_busy {
+                "同步中…".into()
+            } else {
+                "同步用户程序".into()
+            },
+            ToolboxAction::RefreshUserApps,
+            self.user_apps_busy,
+            false,
+        ));
+        section.add_child(
+            Container::new(toolbar.finish())
                 .with_margin_top(8.0)
                 .finish(),
-            );
-            section.add_child(self.catalog_user_apps_list());
-            return section.finish();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            section.add_child(
-                Container::new(section_hint(
-                    "Linux 用户程序：本机导入后可用于 Host-Native / VmGuest，并出现在共享文件「远程虚拟机打开」。可发布到控制面（所有人 / 联系人 / 指定人）。Host-Native 会占用本机桌面焦点；Wayland 首次推流需点「共享整屏」。",
-                    self.font,
-                ))
-                .with_margin_top(SECTION_GAP)
-                .finish(),
-            );
-            let mut toolbar = Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Max);
-            toolbar.add_child(self.action_button(
-                if self.user_apps_busy {
-                    "同步中…".into()
-                } else {
-                    "同步用户程序".into()
-                },
-                ToolboxAction::RefreshUserApps,
+        );
+        section.add_child(
+            Container::new(section_hint(
+                "导入路径（文件 / 目录 / .AppImage / .deb）：",
+                self.font,
+            ))
+            .with_margin_top(10.0)
+            .finish(),
+        );
+        let mut path_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        path_row.add_child(Expanded::new(1.0, self.import_path_box()).finish());
+        path_row.add_child(
+            Container::new(self.action_button(
+                "浏览…".into(),
+                ToolboxAction::BrowseImportPath,
                 self.user_apps_busy,
                 false,
-            ));
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(path_row.finish())
+                .with_margin_top(6.0)
+                .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint("显示名称（可选）", self.font))
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        section.add_child(
+            Container::new(self.meta_field_box(
+                &self.import_display_name,
+                &self.import_display_name_field,
+                "例如 My Viewer",
+                self.import_display_name_focused,
+                ToolboxAction::ImportDisplayNameEdit,
+                ToolboxAction::ActivateImportDisplayName,
+                ToolboxAction::BlurImportDisplayName,
+            ))
+            .with_margin_top(4.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint(
+                "关联扩展名（逗号分隔，留空=任意文件）",
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(self.meta_field_box(
+                &self.import_extensions,
+                &self.import_extensions_field,
+                "例如 png, jpg, svg",
+                self.import_extensions_focused,
+                ToolboxAction::ImportExtensionsEdit,
+                ToolboxAction::ActivateImportExtensions,
+                ToolboxAction::BlurImportExtensions,
+            ))
+            .with_margin_top(4.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint(
+                "入口（目录相对路径 / deb 安装后二进制名；bin/AppImage 可留空）",
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(self.meta_field_box(
+                &self.import_entrypoint,
+                &self.import_entrypoint_field,
+                "例如 bin/my-app 或 gimp",
+                self.import_entrypoint_focused,
+                ToolboxAction::ImportEntrypointEdit,
+                ToolboxAction::ActivateImportEntrypoint,
+                ToolboxAction::BlurImportEntrypoint,
+            ))
+            .with_margin_top(4.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint("发布版本号", self.font))
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        section.add_child(
+            Container::new(self.meta_field_box(
+                &self.publish_version,
+                &self.publish_version_field,
+                "1",
+                self.publish_version_focused,
+                ToolboxAction::ImportVersionEdit,
+                ToolboxAction::ActivateImportVersion,
+                ToolboxAction::BlurImportVersion,
+            ))
+            .with_margin_top(4.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(section_hint(
+                "指定人 user id（逗号分隔；发布·指定人 / 改权限·指定人时使用）",
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(self.meta_field_box(
+                &self.allowlist_ids,
+                &self.allowlist_ids_field,
+                "uuid-1, uuid-2",
+                self.allowlist_ids_focused,
+                ToolboxAction::AllowlistIdsEdit,
+                ToolboxAction::ActivateAllowlistIds,
+                ToolboxAction::BlurAllowlistIds,
+            ))
+            .with_margin_top(4.0)
+            .finish(),
+        );
+        section.add_child(
+            Container::new(self.action_button(
+                "导入到本机".into(),
+                ToolboxAction::ImportLocal,
+                self.user_apps_busy || self.import_path.trim().is_empty(),
+                true,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        if self.local_user_apps.is_empty() {
             section.add_child(
-                Container::new(toolbar.finish())
-                    .with_margin_top(8.0)
+                Container::new(section_hint("本机尚未导入用户程序。", self.font))
+                    .with_margin_top(10.0)
                     .finish(),
             );
-            section.add_child(
-                Container::new(section_hint(
-                    "导入路径（文件 / 目录 / .AppImage / .deb）：",
-                    self.font,
-                ))
-                .with_margin_top(10.0)
-                .finish(),
-            );
-            let mut path_row = Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_main_axis_size(MainAxisSize::Max);
-            path_row.add_child(Expanded::new(1.0, self.import_path_box()).finish());
-            path_row.add_child(
-                Container::new(self.action_button(
-                    "浏览…".into(),
-                    ToolboxAction::BrowseImportPath,
+        } else {
+            for app in &self.local_user_apps {
+                let mut row = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                let ext_label = if app.extensions.is_empty() {
+                    "任意扩展名".into()
+                } else {
+                    app.extensions.join(",")
+                };
+                row.add_child(
+                    Expanded::new(
+                        1.0,
+                        status_line(
+                            format!("{} ({}) · {}", app.display_name, app.app_id, ext_label),
+                            self.font,
+                            StatusTone::Neutral,
+                        ),
+                    )
+                    .finish(),
+                );
+                row.add_child(self.action_button(
+                    "发布·所有人".into(),
+                    ToolboxAction::PublishLocal {
+                        app_id: app.app_id.clone(),
+                        visibility: "public".into(),
+                    },
                     self.user_apps_busy,
                     false,
-                ))
-                .with_margin_left(8.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(path_row.finish())
-                    .with_margin_top(6.0)
-                    .finish(),
-            );
-            section.add_child(
-                Container::new(section_hint("显示名称（可选）", self.font))
-                    .with_margin_top(8.0)
-                    .finish(),
-            );
-            section.add_child(
-                Container::new(self.meta_field_box(
-                    &self.import_display_name,
-                    &self.import_display_name_field,
-                    "例如 My Viewer",
-                    self.import_display_name_focused,
-                    ToolboxAction::ImportDisplayNameEdit,
-                    ToolboxAction::ActivateImportDisplayName,
-                    ToolboxAction::BlurImportDisplayName,
-                ))
-                .with_margin_top(4.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(section_hint(
-                    "关联扩展名（逗号分隔，留空=任意文件）",
-                    self.font,
-                ))
-                .with_margin_top(8.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(self.meta_field_box(
-                    &self.import_extensions,
-                    &self.import_extensions_field,
-                    "例如 png, jpg, svg",
-                    self.import_extensions_focused,
-                    ToolboxAction::ImportExtensionsEdit,
-                    ToolboxAction::ActivateImportExtensions,
-                    ToolboxAction::BlurImportExtensions,
-                ))
-                .with_margin_top(4.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(section_hint(
-                    "入口（目录相对路径 / deb 安装后二进制名；bin/AppImage 可留空）",
-                    self.font,
-                ))
-                .with_margin_top(8.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(self.meta_field_box(
-                    &self.import_entrypoint,
-                    &self.import_entrypoint_field,
-                    "例如 bin/my-app 或 gimp",
-                    self.import_entrypoint_focused,
-                    ToolboxAction::ImportEntrypointEdit,
-                    ToolboxAction::ActivateImportEntrypoint,
-                    ToolboxAction::BlurImportEntrypoint,
-                ))
-                .with_margin_top(4.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(section_hint("发布版本号", self.font))
-                    .with_margin_top(8.0)
-                    .finish(),
-            );
-            section.add_child(
-                Container::new(self.meta_field_box(
-                    &self.publish_version,
-                    &self.publish_version_field,
-                    "1",
-                    self.publish_version_focused,
-                    ToolboxAction::ImportVersionEdit,
-                    ToolboxAction::ActivateImportVersion,
-                    ToolboxAction::BlurImportVersion,
-                ))
-                .with_margin_top(4.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(section_hint(
-                    "指定人 user id（逗号分隔；发布·指定人时使用）",
-                    self.font,
-                ))
-                .with_margin_top(8.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(self.meta_field_box(
-                    &self.allowlist_ids,
-                    &self.allowlist_ids_field,
-                    "uuid-1, uuid-2",
-                    self.allowlist_ids_focused,
-                    ToolboxAction::AllowlistIdsEdit,
-                    ToolboxAction::ActivateAllowlistIds,
-                    ToolboxAction::BlurAllowlistIds,
-                ))
-                .with_margin_top(4.0)
-                .finish(),
-            );
-            section.add_child(
-                Container::new(self.action_button(
-                    "导入到本机".into(),
-                    ToolboxAction::ImportLocal,
-                    self.user_apps_busy || self.import_path.trim().is_empty(),
-                    true,
-                ))
-                .with_margin_top(8.0)
-                .finish(),
-            );
-            if self.local_user_apps.is_empty() {
+                ));
+                row.add_child(self.action_button(
+                    "发布·联系人".into(),
+                    ToolboxAction::PublishLocal {
+                        app_id: app.app_id.clone(),
+                        visibility: "contacts".into(),
+                    },
+                    self.user_apps_busy,
+                    false,
+                ));
+                row.add_child(self.action_button(
+                    "发布·指定人".into(),
+                    ToolboxAction::PublishLocal {
+                        app_id: app.app_id.clone(),
+                        visibility: "allowlist".into(),
+                    },
+                    self.user_apps_busy || self.allowlist_ids.trim().is_empty(),
+                    false,
+                ));
+                row.add_child(self.action_button(
+                    "删除".into(),
+                    ToolboxAction::RemoveLocal(app.app_id.clone()),
+                    self.user_apps_busy,
+                    false,
+                ));
                 section.add_child(
-                    Container::new(section_hint("本机尚未导入用户程序。", self.font))
-                        .with_margin_top(10.0)
+                    Container::new(row.finish())
+                        .with_margin_top(8.0)
                         .finish(),
                 );
-            } else {
-                for app in &self.local_user_apps {
-                    let mut row = Flex::row()
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_main_axis_size(MainAxisSize::Max);
-                    let ext_label = if app.extensions.is_empty() {
-                        "任意扩展名".into()
-                    } else {
-                        app.extensions.join(",")
-                    };
-                    row.add_child(
-                        Expanded::new(
-                            1.0,
-                            status_line(
-                                format!("{} ({}) · {}", app.display_name, app.app_id, ext_label),
-                                self.font,
-                                StatusTone::Neutral,
-                            ),
-                        )
-                        .finish(),
-                    );
-                    row.add_child(self.action_button(
-                        "发布·所有人".into(),
-                        ToolboxAction::PublishLocal {
-                            app_id: app.app_id.clone(),
-                            visibility: "public".into(),
-                        },
-                        self.user_apps_busy,
-                        false,
-                    ));
-                    row.add_child(self.action_button(
-                        "发布·联系人".into(),
-                        ToolboxAction::PublishLocal {
-                            app_id: app.app_id.clone(),
-                            visibility: "contacts".into(),
-                        },
-                        self.user_apps_busy,
-                        false,
-                    ));
-                    row.add_child(self.action_button(
-                        "发布·指定人".into(),
-                        ToolboxAction::PublishLocal {
-                            app_id: app.app_id.clone(),
-                            visibility: "allowlist".into(),
-                        },
-                        self.user_apps_busy || self.allowlist_ids.trim().is_empty(),
-                        false,
-                    ));
-                    row.add_child(self.action_button(
-                        "删除".into(),
-                        ToolboxAction::RemoveLocal(app.app_id.clone()),
-                        self.user_apps_busy,
-                        false,
-                    ));
-                    section.add_child(
-                        Container::new(row.finish())
-                            .with_margin_top(8.0)
-                            .finish(),
-                    );
-                }
             }
-            section.add_child(self.catalog_user_apps_list());
-            section.finish()
         }
+        section.add_child(self.catalog_user_apps_list());
+        section.finish()
     }
 
     fn catalog_user_apps_list(&self) -> Box<dyn Element> {
         let mut section = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         section.add_child(
             Container::new(section_hint(
-                "可下载的用户程序目录（大包安装可能需数分钟，完成后可在「远程虚拟机打开」选用）：",
+                "可下载的用户程序目录（本机安装供 Linux worker 本地缓存；远程打开时目标 worker 也会按权限自动拉取）：",
                 self.font,
             ))
             .with_margin_top(SECTION_GAP)
@@ -1056,6 +1032,36 @@ impl ToolboxView {
                     },
                     self.user_apps_busy || !app.package_ready,
                     true,
+                ));
+                row.add_child(self.action_button(
+                    "改·所有人".into(),
+                    ToolboxAction::UpdateCatalogAcl {
+                        app_id: app.app_id.clone(),
+                        version: app.version.clone(),
+                        visibility: "public".into(),
+                    },
+                    self.user_apps_busy,
+                    false,
+                ));
+                row.add_child(self.action_button(
+                    "改·联系人".into(),
+                    ToolboxAction::UpdateCatalogAcl {
+                        app_id: app.app_id.clone(),
+                        version: app.version.clone(),
+                        visibility: "contacts".into(),
+                    },
+                    self.user_apps_busy,
+                    false,
+                ));
+                row.add_child(self.action_button(
+                    "改·指定人".into(),
+                    ToolboxAction::UpdateCatalogAcl {
+                        app_id: app.app_id.clone(),
+                        version: app.version.clone(),
+                        visibility: "allowlist".into(),
+                    },
+                    self.user_apps_busy || self.allowlist_ids.trim().is_empty(),
+                    false,
                 ));
                 row.add_child(self.action_button(
                     "撤回".into(),
@@ -1614,6 +1620,63 @@ impl TypedActionView for ToolboxView {
                             }
                             Err(error) => {
                                 view.message = format!("安装失败: {error}");
+                                view.message_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            ToolboxAction::UpdateCatalogAcl {
+                app_id,
+                version,
+                visibility,
+            } => {
+                let app_id = app_id.clone();
+                let version = version.clone();
+                let visibility = visibility.clone();
+                let allowed_user_ids = if visibility == "allowlist" {
+                    self.allowlist_ids
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                self.user_apps_busy = true;
+                self.message = format!("正在更新 {app_id}@{version} 下载权限…");
+                self.message_tone = StatusTone::Placeholder;
+                ctx.notify();
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        workspace_user_app_catalog_update_acl(
+                            &state,
+                            WorkspaceUserAppCatalogUpdateAclParams {
+                                app_id,
+                                version,
+                                visibility,
+                                allowed_user_ids,
+                            },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.user_apps_busy = false;
+                        match output {
+                            Ok(app) => {
+                                view.message = format!(
+                                    "已更新 {} 下载权限为 {}",
+                                    app.display_name, app.visibility
+                                );
+                                view.message_tone = StatusTone::Success;
+                                view.refresh_user_apps(ctx);
+                            }
+                            Err(error) => {
+                                view.message = format!("更新权限失败: {error}");
                                 view.message_tone = StatusTone::Danger;
                             }
                         }

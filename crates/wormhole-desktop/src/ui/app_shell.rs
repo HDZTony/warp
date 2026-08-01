@@ -4,10 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty, EventHandler,
-    Expanded, Fill, Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning,
-    ParentAnchor, ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
+    Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
+    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty,
+    EventHandler, Expanded, Fill, Flex, Hoverable, MainAxisSize, MouseStateHandle,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth,
+    Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -26,8 +27,8 @@ use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEn
 use crate::ui::devices_view::{DevicesEvent, DevicesView};
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
-    build_avatar_panel, build_avatar_slot, build_purchase_modal, build_redeem_modal,
-    PurchaseProductUi,
+    build_ai_mic_slot, build_ai_output_panel, build_purchase_modal, build_redeem_modal,
+    AiOutputLine, PurchaseProductUi,
 };
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
@@ -143,8 +144,9 @@ pub enum AppShellAction {
     ToggleMaximizeWindow,
     CloseWindow,
     OpenLogin,
-    ToggleAvatarPanel,
-    CloseAvatarPanel,
+    ToggleAiMic,
+    OpenAiPanel,
+    CloseAiPanel,
     PurchaseBalance,
     ClosePurchaseModal,
     RefreshCreditProducts,
@@ -183,7 +185,17 @@ pub struct AppShellView {
     mono: FamilyId,
     hud_nodes: usize,
     device_ready: bool,
-    avatar_panel_open: bool,
+    ai_panel_open: bool,
+    voice_listening: bool,
+    voice_stt_available: bool,
+    voice_stt_hint: String,
+    ai_status: String,
+    ai_output_lines: Vec<AiOutputLine>,
+    ai_output_scroll: ClippedScrollStateHandle,
+    ai_session_id: Option<String>,
+    ai_event_cursor: u64,
+    ai_polling: bool,
+    ai_poll_inflight: bool,
     balance_credits: i64,
     balance_amount_yuan: Option<String>,
     balance_busy: bool,
@@ -319,6 +331,12 @@ impl AppShellView {
                 SettingsEvent::OpenLogin => {
                     view.open_login_modal(ctx);
                 }
+                SettingsEvent::OpenPurchase => {
+                    view.purchase_balance(ctx);
+                }
+                SettingsEvent::OpenRedeem => {
+                    view.open_redeem_modal(ctx);
+                }
                 SettingsEvent::OpenClusterManagement => {
                     let warp_handle = view.warp.clone();
                     ctx.update_view(&warp_handle, |warp, ctx| {
@@ -402,7 +420,17 @@ impl AppShellView {
             mono,
             hud_nodes: 1,
             device_ready: false,
-            avatar_panel_open: false,
+            ai_panel_open: false,
+            voice_listening: false,
+            voice_stt_available: true,
+            voice_stt_hint: String::new(),
+            ai_status: "已就绪".into(),
+            ai_output_lines: Vec::new(),
+            ai_output_scroll: ClippedScrollStateHandle::new(),
+            ai_session_id: None,
+            ai_event_cursor: 0,
+            ai_polling: false,
+            ai_poll_inflight: false,
             balance_credits: 0,
             balance_amount_yuan: None,
             balance_busy: false,
@@ -436,6 +464,7 @@ impl AppShellView {
         };
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
+        view.refresh_voice_status();
         view.refresh_auth_status(ctx);
         view.start_event_listener(ctx);
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -1023,25 +1052,247 @@ impl AppShellView {
         );
     }
 
-    fn close_avatar_panel(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.avatar_panel_open {
-            self.avatar_panel_open = false;
+    fn refresh_voice_status(&mut self) {
+        let status = wormhole_desktop_core::voice_status();
+        self.voice_stt_available = status.stt_available;
+        self.voice_stt_hint = status
+            .stt_unavailable_reason
+            .clone()
+            .unwrap_or_default();
+        if !self.voice_stt_available && !self.voice_listening {
+            if !self.voice_stt_hint.is_empty() {
+                self.ai_status = format!("不可用");
+            }
+        }
+    }
+
+    fn close_ai_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.ai_panel_open {
+            self.ai_panel_open = false;
             ctx.notify();
         }
     }
 
-    fn toggle_avatar_panel(&mut self, ctx: &mut ViewContext<Self>) {
-        self.avatar_panel_open = !self.avatar_panel_open;
-        if !self.avatar_panel_open {
-            self.balance_feedback = None;
-        } else {
-            self.refresh_cloud_credit_balance(ctx);
+    fn open_ai_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        self.refresh_voice_status();
+        self.ai_panel_open = true;
+        if !self.voice_stt_available {
+            let hint = if self.voice_stt_hint.is_empty() {
+                "语音输入不可用".to_string()
+            } else {
+                format!("语音输入不可用：{}", self.voice_stt_hint)
+            };
+            self.ai_status = "不可用".into();
+            if self
+                .ai_output_lines
+                .last()
+                .map(|l| l.text.as_str())
+                != Some(hint.as_str())
+            {
+                self.ai_output_lines.push(AiOutputLine::system(hint));
+            }
         }
         ctx.notify();
     }
 
+    fn toggle_ai_mic(&mut self, ctx: &mut ViewContext<Self>) {
+        self.refresh_voice_status();
+        if !self.voice_stt_available {
+            self.open_ai_panel(ctx);
+            return;
+        }
+        if self.voice_listening {
+            self.stop_ai_dictation(ctx);
+        } else {
+            self.start_ai_dictation(ctx);
+        }
+    }
+
+    fn start_ai_dictation(&mut self, ctx: &mut ViewContext<Self>) {
+        match wormhole_desktop_core::voice_dictation_start() {
+            Ok(()) => {
+                self.voice_listening = true;
+                self.ai_panel_open = true;
+                self.ai_status = "听写中…".into();
+                self.ai_output_lines
+                    .push(AiOutputLine::system("正在听写，再点麦克风结束并执行。"));
+            }
+            Err(err) => {
+                self.voice_listening = false;
+                self.ai_panel_open = true;
+                self.ai_status = "失败".into();
+                self.ai_output_lines.push(AiOutputLine::system(err));
+            }
+        }
+        ctx.notify();
+    }
+
+    fn stop_ai_dictation(&mut self, ctx: &mut ViewContext<Self>) {
+        self.voice_listening = false;
+        match wormhole_desktop_core::voice_dictation_stop() {
+            Ok(text) => {
+                let trimmed = text.trim().to_string();
+                if trimmed.is_empty() {
+                    self.ai_status = "已就绪".into();
+                    self.ai_output_lines
+                        .push(AiOutputLine::system("未识别到语音内容。"));
+                    ctx.notify();
+                    return;
+                }
+                self.ai_panel_open = true;
+                self.ai_output_lines
+                    .push(AiOutputLine::user(format!("用户：{trimmed}")));
+                self.ai_status = "执行中…".into();
+                ctx.notify();
+                self.start_ai_agent_task(ctx, trimmed);
+            }
+            Err(err) => {
+                self.ai_panel_open = true;
+                self.ai_status = "失败".into();
+                self.ai_output_lines.push(AiOutputLine::system(err));
+                ctx.notify();
+            }
+        }
+    }
+
+    fn start_ai_agent_task(&mut self, ctx: &mut ViewContext<Self>, prompt: String) {
+        let core = self.core.clone();
+        self.ai_output_lines
+            .push(AiOutputLine::action(format!("开始执行：{prompt}")));
+        self.ai_polling = false;
+        self.ai_session_id = None;
+        self.ai_event_cursor = 0;
+        ctx.notify();
+        ctx.spawn(
+            async move {
+                let request = wormhole_desktop_core::AgentStartRequest {
+                    prompt,
+                    cwd: None,
+                };
+                wormhole_desktop_core::agent_start_session_with_codex_fallback(
+                    request,
+                    core.app_state(),
+                )
+                .await
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok(result) => {
+                        let id = result.session.id.clone();
+                        view.ai_session_id = Some(id.clone());
+                        view.ai_event_cursor = 0;
+                        view.ai_polling = true;
+                        view.ai_status = "执行中…".into();
+                        view.ai_output_lines.push(AiOutputLine::action(format!(
+                            "任务已启动 · session {id}"
+                        )));
+                        view.poll_ai_session_once(ctx);
+                    }
+                    Err(err) => {
+                        view.ai_status = "失败".into();
+                        view.ai_output_lines.push(AiOutputLine::system(err));
+                        view.ai_polling = false;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn poll_ai_session_once(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.ai_polling || self.ai_poll_inflight {
+            return;
+        }
+        let Some(session_id) = self.ai_session_id.clone() else {
+            return;
+        };
+        let cursor = self.ai_event_cursor;
+        let core = self.core.clone();
+        self.ai_poll_inflight = true;
+        ctx.spawn(
+            async move {
+                wormhole_desktop_core::agent_read_local_session_events(
+                    session_id,
+                    cursor,
+                    core.app_state(),
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.ai_poll_inflight = false;
+                match output {
+                    Ok(page) => {
+                        for event in page.events {
+                            let channel = event.channel.to_lowercase();
+                            let text = event.text.trim();
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let line = if channel.contains("user") {
+                                AiOutputLine::user(text.to_string())
+                            } else if channel.contains("command")
+                                || channel.contains("tool")
+                                || channel.contains("status")
+                            {
+                                AiOutputLine::action(format!("{channel}: {text}"))
+                            } else {
+                                AiOutputLine::action(text.to_string())
+                            };
+                            view.ai_output_lines.push(line);
+                        }
+                        view.ai_event_cursor = page.next_cursor;
+                        if matches!(page.status.as_str(), "completed" | "failed") {
+                            view.ai_polling = false;
+                            view.ai_status = if page.status == "completed" {
+                                "已完成".into()
+                            } else {
+                                "失败".into()
+                            };
+                            view.ai_output_lines.push(AiOutputLine::system(format!(
+                                "任务{}",
+                                page.status
+                            )));
+                            // Speak a short summary of the last action/assistant line.
+                            if let Some(last) = view
+                                .ai_output_lines
+                                .iter()
+                                .rev()
+                                .find(|l| matches!(l.kind, crate::ui::hud_avatar_panel::AiOutputKind::Action))
+                            {
+                                let snippet: String = last.text.chars().take(200).collect();
+                                let _ = wormhole_desktop_core::voice_speak(&snippet);
+                            }
+                        } else {
+                            view.schedule_ai_poll(ctx);
+                        }
+                    }
+                    Err(err) => {
+                        view.ai_polling = false;
+                        view.ai_status = "失败".into();
+                        view.ai_output_lines.push(AiOutputLine::system(err));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn schedule_ai_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.ai_polling {
+            return;
+        }
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            },
+            |view, _, ctx| {
+                view.poll_ai_session_once(ctx);
+            },
+        );
+    }
+
     fn purchase_balance(&mut self, ctx: &mut ViewContext<Self>) {
-        self.avatar_panel_open = false;
+        self.ai_panel_open = false;
         self.purchase_modal_open = true;
         self.purchase_feedback = None;
         ctx.notify();
@@ -1215,7 +1466,7 @@ impl AppShellView {
     }
 
     fn open_redeem_modal(&mut self, ctx: &mut ViewContext<Self>) {
-        self.avatar_panel_open = false;
+        self.ai_panel_open = false;
         self.redeem_modal_open = true;
         self.redeem_tab = RedeemTab::Redeem;
         self.redeem_feedback = None;
@@ -1382,7 +1633,7 @@ impl AppShellView {
                                 redeem.balance_credits,
                             ),
                         ));
-                        view.avatar_panel_open = true;
+                        // Keep balance feedback for Settings; AI panel stays closed after redeem.
                     }
                     Err(err) => {
                         view.redeem_feedback = Some(err);
@@ -1407,36 +1658,30 @@ impl AppShellView {
             let pressed = state.is_clicked();
             let (bg, text_color) = tab_button_colors(selected, hovered, pressed);
 
-            let bottom_accent = if selected {
-                theme::accent_cool()
-            } else {
-                ColorU::transparent_black()
-            };
+            // HTML `.tab-btn`: height 100% + align-items center (same centerline as mic / caption).
+            let icon_row = Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(icons::tab_button_content(
+                    tab, false, text_color, label, mono,
+                ))
+                .finish();
 
-            let content_height = icons::TAB_ICON_SIZE;
-            let bottom_border = 2.0;
-            let vertical_pad =
-                ((CHROME_ROW_HEIGHT - content_height - bottom_border) / 2.0).max(0.0);
-
-            let mut container = Container::new(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_main_axis_size(MainAxisSize::Min)
-                    .with_child(icons::tab_button_content(
-                        tab, false, text_color, label, mono,
-                    ))
-                    .finish(),
-            )
-            .with_vertical_padding(vertical_pad)
-            .with_horizontal_padding(14.0)
-            .with_background(bg)
-            .with_border(Border::bottom(2.0).with_border_fill(bottom_accent))
-            .with_border(Border::right(1.0).with_border_fill(theme::border()));
+            let mut body = Container::new(Align::new(icon_row).finish())
+                .with_horizontal_padding(14.0)
+                .with_background(bg)
+                .with_border(Border::right(1.0).with_border_fill(theme::border()));
             if keyboard_focused {
-                container =
-                    container.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+                body = body.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
+            } else if selected {
+                // Nested so right divider + bottom accent can use different fills.
+                body = Container::new(body.finish())
+                    .with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
             }
-            let button = container.finish();
+
+            let button = ConstrainedBox::new(body.finish())
+                .with_height(CHROME_ROW_HEIGHT)
+                .finish();
 
             if !hovered {
                 return button;
@@ -1475,7 +1720,7 @@ impl AppShellView {
 
     fn tab_bar(&self, app: &AppContext) -> Box<dyn Element> {
         let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         for tab in Self::visible_tabs() {
             row.add_child(self.tab_button(tab));
@@ -1517,10 +1762,10 @@ impl AppShellView {
 
         tab_row.add_child(Shrinkable::new(1.0, scrollable_tabs).finish());
         tab_row.add_child(Expanded::new(1.0, Empty::new().finish()).finish());
-        tab_row.add_child(build_avatar_slot(
-            self.auth_authenticated,
-            self.auth_email.as_deref(),
-            self.avatar_panel_open,
+        tab_row.add_child(build_ai_mic_slot(
+            self.voice_listening,
+            self.ai_panel_open,
+            self.voice_stt_available,
             self.font,
         ));
 
@@ -1662,7 +1907,7 @@ impl View for AppShellView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
         let login_modal_open = self.login_modal_open;
-        let avatar_panel_open = self.avatar_panel_open;
+        let ai_panel_open = self.ai_panel_open;
         let redeem_modal_open = self.redeem_modal_open;
         let purchase_modal_open = self.purchase_modal_open;
         let shell = Container::new(self.body(app))
@@ -1684,8 +1929,8 @@ impl View for AppShellView {
                         ctx.dispatch_typed_action(AppShellAction::ClosePurchaseModal);
                         return DispatchEventResult::StopPropagation;
                     }
-                    if avatar_panel_open {
-                        ctx.dispatch_typed_action(AppShellAction::CloseAvatarPanel);
+                    if ai_panel_open {
+                        ctx.dispatch_typed_action(AppShellAction::CloseAiPanel);
                         return DispatchEventResult::StopPropagation;
                     }
                 }
@@ -1714,15 +1959,11 @@ impl View for AppShellView {
         let zoom_factor = 1.0;
         let traffic_light_data = window_chrome::traffic_light_data(app, self.window_id);
 
-        if self.avatar_panel_open
-            && self.auth_authenticated
-            && !self.redeem_modal_open
-            && !self.purchase_modal_open
-        {
+        if self.ai_panel_open && !self.redeem_modal_open && !self.purchase_modal_open {
             stack.add_child(
                 EventHandler::new(Container::new(Flex::column().finish()).finish())
                     .on_left_mouse_down(|ctx, _, _| {
-                        ctx.dispatch_typed_action(AppShellAction::CloseAvatarPanel);
+                        ctx.dispatch_typed_action(AppShellAction::CloseAiPanel);
                         DispatchEventResult::StopPropagation
                     })
                     .finish(),
@@ -1732,12 +1973,10 @@ impl View for AppShellView {
                 .map(|data| data.width(zoom_factor) + 8.0)
                 .unwrap_or(8.0);
             stack.add_positioned_child(
-                build_avatar_panel(
-                    self.auth_device_id.as_deref(),
-                    self.balance_credits,
-                    self.balance_amount_yuan.as_deref(),
-                    self.balance_busy,
-                    self.balance_feedback.as_deref(),
+                build_ai_output_panel(
+                    &self.ai_status,
+                    &self.ai_output_lines,
+                    &self.ai_output_scroll,
                     self.font,
                     self.mono,
                 ),
@@ -1871,8 +2110,9 @@ impl TypedActionView for AppShellView {
                 self.open_login_modal(ctx);
                 ctx.notify();
             }
-            AppShellAction::ToggleAvatarPanel => self.toggle_avatar_panel(ctx),
-            AppShellAction::CloseAvatarPanel => self.close_avatar_panel(ctx),
+            AppShellAction::ToggleAiMic => self.toggle_ai_mic(ctx),
+            AppShellAction::OpenAiPanel => self.open_ai_panel(ctx),
+            AppShellAction::CloseAiPanel => self.close_ai_panel(ctx),
             AppShellAction::PurchaseBalance => self.purchase_balance(ctx),
             AppShellAction::ClosePurchaseModal => self.close_purchase_modal(ctx),
             AppShellAction::RefreshCreditProducts => self.refresh_credit_products(ctx),
@@ -1912,12 +2152,16 @@ impl TypedActionView for AppShellView {
             AppShellAction::OpenLogin => {
                 AccessibilityContent::new_without_help("打开登录", WarpA11yRole::ButtonRole)
             }
-            AppShellAction::ToggleAvatarPanel => AccessibilityContent::new_without_help(
-                "切换账户与余额面板",
+            AppShellAction::ToggleAiMic => AccessibilityContent::new_without_help(
+                "切换 AI 语音听写",
                 WarpA11yRole::ButtonRole,
             ),
-            AppShellAction::CloseAvatarPanel => AccessibilityContent::new_without_help(
-                "关闭账户与余额面板",
+            AppShellAction::OpenAiPanel => AccessibilityContent::new_without_help(
+                "打开 AI 输出面板",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::CloseAiPanel => AccessibilityContent::new_without_help(
+                "关闭 AI 输出面板",
                 WarpA11yRole::ButtonRole,
             ),
             AppShellAction::PurchaseBalance => {

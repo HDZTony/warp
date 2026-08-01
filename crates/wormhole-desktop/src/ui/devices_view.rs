@@ -41,8 +41,8 @@ use wormhole_desktop_core::cluster_commands::{
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 use wormhole_desktop_core::toolbox_ui::{
     is_user_app_capability, toolbox_list_tools, user_app_supports_file, CatalogUserAppSummary,
-    ToolExecutorKind, ToolSummary, WorkspaceUserAppManifest, workspace_user_app_catalog_install,
-    workspace_user_app_catalog_list, workspace_user_app_list, WorkspaceUserAppCatalogInstallParams,
+    ToolExecutorKind, ToolSummary, WorkspaceUserAppManifest, workspace_user_app_catalog_list,
+    workspace_user_app_list,
 };
 use wormhole_desktop_core::workspace_ui::{
     workspace_app_preference, workspace_approve_provision_job,
@@ -122,6 +122,7 @@ pub struct DevicesView {
     copy_invite_busy: bool,
     create_cluster_busy: bool,
     share_scroll: ClippedScrollStateHandle,
+    topology_scroll: ClippedScrollStateHandle,
     share_context_entry: Option<String>,
     share_context_pos: Option<(f32, f32)>,
     share_unshare_volume_id: Option<String>,
@@ -222,6 +223,7 @@ impl DevicesView {
             copy_invite_busy: false,
             create_cluster_busy: false,
             share_scroll: ClippedScrollStateHandle::new(),
+            topology_scroll: ClippedScrollStateHandle::new(),
             share_context_entry: None,
             share_context_pos: None,
             share_unshare_volume_id: None,
@@ -1252,19 +1254,28 @@ impl DevicesView {
     fn workspace_install_and_open(&mut self, app: String, ctx: &mut ViewContext<Self>) {
         let app = workspace_canonical_tool_id(&app);
         if is_user_app_capability(&app) {
-            let Some(catalog) = self
+            let local_ready = self
+                .workspace_user_apps
+                .iter()
+                .any(|item| item.app_id.eq_ignore_ascii_case(&app));
+            let catalog = self
                 .workspace_catalog_user_apps
                 .iter()
                 .find(|item| item.app_id.eq_ignore_ascii_case(&app) && item.package_ready)
-                .cloned()
-            else {
+                .cloned();
+            if !local_ready && catalog.is_none() {
                 self.set_workspace_progress(
-                    "用户程序不在本机目录中：请先在来源 Linux 电脑的「设置 → 虚拟机」安装或导入",
+                    "用户程序目录中无可用版本：请发布者在「设置 → 虚拟机」上传并设置下载权限，或确认当前账号在允许范围内",
                 );
                 ctx.notify();
                 return;
-            };
-            self.workspace_install_user_app_and_open(catalog.app_id, catalog.version, ctx);
+            }
+            // Do not install on the viewer host. The Linux worker pulls the package
+            // (ACL-checked) at session start via ensure_user_app_staged_for_session.
+            let app_id = catalog
+                .map(|item| item.app_id)
+                .unwrap_or_else(|| app.clone());
+            self.workspace_open_user_app_via_worker(app_id, ctx);
             return;
         }
         if self.workspace_catalog_tool(&app).is_none() {
@@ -1301,67 +1312,59 @@ impl DevicesView {
         }
     }
 
-    fn workspace_install_user_app_and_open(
-        &mut self,
-        app_id: String,
-        version: String,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn workspace_open_user_app_via_worker(&mut self, app_id: String, ctx: &mut ViewContext<Self>) {
         self.workspace_selected_app = app_id.clone();
         self.update_workspace_status_from_selection();
-        self.set_workspace_progress(format!("正在安装用户程序 {app_id}…"));
+        self.set_workspace_progress(format!(
+            "将由目标 Linux worker 按权限拉取用户程序 {app_id} 并打开…"
+        ));
+        let Some(entry) = self.selected_share_entry() else {
+            self.close_workspace_app_picker(ctx);
+            return;
+        };
+        let file_name = entry.name.clone();
+        let version_author = entry.version_author.clone();
         let core = self.core.clone();
-        let file_name = self
-            .selected_share_entry()
-            .map(|entry| entry.name.clone())
-            .unwrap_or_default();
+        let preference_app = app_id;
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let installed = workspace_user_app_catalog_install(
-                    &state,
-                    WorkspaceUserAppCatalogInstallParams {
-                        app_id: app_id.clone(),
-                        version,
-                        promote: true,
-                    },
-                )
-                .await?;
                 if !file_name.is_empty() {
-                    workspace_save_app_preference(&state, &file_name, &app_id).await?;
+                    workspace_save_app_preference(&state, &file_name, &preference_app).await?;
                 }
-                Ok::<_, String>(installed)
+                Ok::<_, String>(())
             },
             |view, result, ctx| {
-                match result {
-                    Ok(result) => {
-                        let name = result.manifest.display_name.clone();
-                        if let Some(warning) = result.promote_warning {
-                            view.set_workspace_progress(format!(
-                                "已安装 {name}，但未写入 worker installed_apps：{warning}"
-                            ));
-                        } else {
-                            view.set_workspace_progress(format!("已安装 {name}，正在打开…"));
-                        }
-                        if let Some(manifest) = view
-                            .workspace_user_apps
-                            .iter_mut()
-                            .find(|app| app.app_id == result.manifest.app_id)
-                        {
-                            *manifest = result.manifest.clone();
-                        } else {
-                            view.workspace_user_apps.push(result.manifest);
-                        }
-                        view.close_workspace_app_picker(ctx);
-                        view.workspace_open_selected(ctx);
-                    }
-                    Err(error) => {
-                        view.set_workspace_progress(format!("安装用户程序失败: {error}"));
-                        ctx.notify();
-                    }
+                if let Err(error) = result {
+                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
+                    ctx.notify();
                 }
             },
         );
+        self.close_workspace_app_picker(ctx);
+        if self.workspace_remote_job.as_ref().is_some_and(|job| {
+            job.stage == WorkspaceProvisionStage::Failed
+        }) {
+            self.workspace_retry_provision(ctx);
+            return;
+        }
+        if version_author.as_deref().is_none_or(str::is_empty) {
+            self.workspace_open_selected(ctx);
+            return;
+        }
+        let can_open = version_author.as_deref().is_some_and(|author| {
+            self.workspace_worker_for_author(author)
+                .is_some_and(|worker| {
+                    worker.available
+                        && worker.vm_ready
+                        && workspace_worker_supports_app(worker, &self.workspace_selected_app)
+                })
+        });
+        if can_open {
+            self.workspace_open_selected(ctx);
+        } else {
+            self.workspace_request_provision(ctx);
+        }
     }
 
     fn workspace_installed_apps_for_file(&self, file_name: &str) -> Vec<String> {
@@ -3854,10 +3857,7 @@ impl DevicesView {
                 );
             } else {
                 let local_id = cluster.local_node_id.clone();
-                let selected_id = self
-                    .selected_node_id
-                    .clone()
-                    .unwrap_or_else(|| local_id.clone());
+                let selected_id = self.selected_node_id.clone().unwrap_or_default();
                 let hovered_id = self.hovered_node_id.clone().unwrap_or_default();
                 let mut nodes = cluster.nodes.clone();
                 nodes.sort_by(|a, b| {
@@ -3874,19 +3874,16 @@ impl DevicesView {
                 col.add_child(
                     Expanded::new(
                         1.0,
-                        Container::new(
-                            ConstrainedBox::new(ClusterTopologyPanel::element(
-                                nodes,
-                                local_id,
-                                selected_id,
-                                hovered_id,
-                                hub_index,
-                                self.device_remarks.clone(),
-                                self.mono,
-                            ))
-                            .with_min_height(280.0)
-                            .finish(),
-                        )
+                        Container::new(ClusterTopologyPanel::element(
+                            nodes,
+                            local_id,
+                            selected_id,
+                            hovered_id,
+                            hub_index,
+                            self.device_remarks.clone(),
+                            self.mono,
+                            self.topology_scroll.clone(),
+                        ))
                         .with_background(theme::panel())
                         .finish(),
                     )
@@ -6371,8 +6368,24 @@ impl TypedActionView for DevicesView {
                 }
             }
             DevicesAction::ClearNodeHoverIf(node_id) => {
+                let mut changed = false;
                 if self.hovered_node_id.as_ref() == Some(node_id) {
                     self.hovered_node_id = None;
+                    changed = true;
+                }
+                // Leave the card → drop sticky selection so hover/selected cannot
+                // paint two accent rings at once. Keep selection while a context
+                // menu or delete modal is open for that node.
+                let menu_holds = self
+                    .device_context_menu
+                    .as_ref()
+                    .is_some_and(|(id, _, _)| id == node_id)
+                    || self.delete_modal_node_id.as_ref() == Some(node_id);
+                if !menu_holds && self.selected_node_id.as_ref() == Some(node_id) {
+                    self.selected_node_id = None;
+                    changed = true;
+                }
+                if changed {
                     ctx.notify();
                 }
             }

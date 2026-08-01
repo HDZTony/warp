@@ -18,7 +18,7 @@ use crate::ui::spinning_icon;
 use crate::ui::theme;
 
 pub const TAB_ICON_SIZE: f32 = 18.0;
-pub const DEVICE_ACTION_ICON_SIZE: f32 = 16.0;
+pub const DEVICE_ACTION_ICON_SIZE: f32 = 32.0;
 pub const SHARE_ICON_SIZE: f32 = 18.0;
 pub const SHARE_NAV_BTN_SIZE: f32 = 28.0;
 pub const SHARE_NAV_ICON_SIZE: f32 = 14.0;
@@ -149,7 +149,11 @@ pub fn chat_sidebar_search_icon(color: ColorU) -> Box<dyn Element> {
 }
 
 pub fn chat_sidebar_menu_icon(color: ColorU) -> Box<dyn Element> {
-    icon("chat-sidebar-menu.svg", 18.0, color)
+    icon("chat-sidebar-menu.svg", 20.0, color)
+}
+
+pub fn chat_sidebar_menu_row_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
+    icon(path, 20.0, color)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

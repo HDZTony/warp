@@ -193,8 +193,8 @@ fn model_choice_option(font: FamilyId, choice: &AgentModelChoiceDto) -> Box<dyn 
     let provider_id = choice.provider_id.clone();
     let model = choice.model.clone();
     let selected = choice.is_active;
-    let source_hint = if choice.source == "key_pool" {
-        "Key Pool（平台默认）"
+    let source_hint = if choice.source == "platform" {
+        "平台默认"
     } else {
         "自备 API Key"
     };
@@ -298,7 +298,7 @@ fn model_rate_option(font: FamilyId, rate: AgentModelRate, selected: bool) -> Bo
     .finish()
 }
 
-/// Model picker: Key Pool + BYOK choices; Key Pool also keeps rate tiers.
+/// Model picker: platform + BYOK choices; platform path also keeps rate tiers.
 pub fn render_model_menu(
     font: FamilyId,
     choices: &[AgentModelChoiceDto],
@@ -309,7 +309,7 @@ pub fn render_model_menu(
     if choices.is_empty() {
         col.add_child(
             Container::new(section_hint(
-                "登录后使用 Key Pool，或在设置 → Agent 填写自备 API Key。",
+                "登录后可使用平台模型，或在设置 → Agent 填写自备 API Key。",
                 font,
             ))
             .with_padding_left(14.0)
@@ -323,11 +323,11 @@ pub fn render_model_menu(
         }
     }
 
-    let key_pool_active = choices
+    let platform_active = choices
         .iter()
-        .any(|c| c.is_active && c.source == "key_pool");
-    if key_pool_active || choices.is_empty() {
-        col.add_child(popover_menu_header(font, "Key Pool 倍率"));
+        .any(|c| c.is_active && c.source == "platform");
+    if platform_active || choices.is_empty() {
+        col.add_child(popover_menu_header(font, "倍率"));
         for option in AgentModelRate::all() {
             col.add_child(model_rate_option(font, option, option == rate));
         }

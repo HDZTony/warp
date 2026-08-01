@@ -97,7 +97,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Account => ("ACCOUNT", "账号"),
             SettingsPage::Email => ("CONNECTORS", "邮箱"),
-            SettingsPage::Agent => ("AGENT", "Codex 供应商"),
+            SettingsPage::Agent => ("AGENT", "CODEX 供应商"),
             SettingsPage::Cluster => ("CLUSTER", "设置集群"),
             SettingsPage::Relay => ("P2P", "Relay"),
             SettingsPage::SharedPath => ("DATA", "共享文件存放位置"),
@@ -106,7 +106,7 @@ impl SettingsPage {
             SettingsPage::VirtualMachine => ("SYSTEM", "虚拟机"),
             SettingsPage::RdpHost => ("RDP", "远程桌面 Host"),
             SettingsPage::Display => ("DISPLAY", "虚拟显示器"),
-            SettingsPage::Plugins => ("PLUGIN", "bb-browser"),
+            SettingsPage::Plugins => ("PLUGIN", "市场与浏览器"),
             SettingsPage::About => ("APP", "版本与更新"),
         }
     }
@@ -146,10 +146,12 @@ impl SettingsPage {
             haystack.push_str(" email gmail outlook");
         }
         if self == SettingsPage::Agent {
-            haystack.push_str(" codex cursor mcp computer use llm api key");
+            haystack.push_str(
+                " codex llm api key byok kimi zai deepseek openai anthropic qwen minimax 供应商 provider",
+            );
         }
         if self == SettingsPage::VirtualMachine {
-            haystack.push_str(" 工具箱 toolbox runner");
+            haystack.push_str(" 工具箱 toolbox runner 用户程序 上传 指定人 allowlist");
         }
         if self == SettingsPage::RdpHost {
             haystack.push_str(" rdp host 无人值守 隐私屏 totp fps");
@@ -158,7 +160,9 @@ impl SettingsPage {
             haystack.push_str(" ipad display mirror extend 虚拟显示器");
         }
         if self == SettingsPage::Plugins {
-            haystack.push_str(" bb-browser chromium browser mcp plugin 插件");
+            haystack.push_str(
+                " bb-browser chromium browser mcp plugin 插件 插件市场 marketplace codex",
+            );
         }
         if self == SettingsPage::About {
             haystack.push_str(" update version 更新 检查更新 版本");
@@ -192,6 +196,8 @@ fn settings_pages_in_group(group: &str) -> Vec<SettingsPage> {
 pub enum SettingsEvent {
     AccountChanged { authenticated: bool },
     OpenLogin,
+    OpenPurchase,
+    OpenRedeem,
     OpenClusterManagement,
     OpenRdpHostControl,
     RestoreArchivedSession(String),
@@ -210,6 +216,8 @@ pub enum SettingsAction {
     Refresh,
     Login,
     Logout,
+    OpenPurchase,
+    OpenRedeem,
     RefreshAccount,
     RefreshEmailConnectors,
     ConnectEmail(String),
@@ -823,9 +831,7 @@ impl SettingsView {
         match self.selected_page {
             SettingsPage::Account => col.add_child(self.account_block()),
             SettingsPage::Email => col.add_child(self.email_connectors_block()),
-            SettingsPage::Agent => {
-                col.add_child(ChildView::new(&self.agent_providers).finish())
-            }
+            SettingsPage::Agent => col.add_child(ChildView::new(&self.agent_providers).finish()),
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
             SettingsPage::Relay => col.add_child(self.relay_block()),
             SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
@@ -1315,6 +1321,24 @@ impl SettingsView {
         col.add_child(
             Container::new(self.inline_action_row(auth_actions))
                 .with_vertical_margin(8.0)
+                .finish(),
+        );
+        let mut credit_actions = Vec::new();
+        credit_actions.push(self.stateful_action_button(
+            "购买",
+            SettingsAction::OpenPurchase,
+            self.auth_user_id.is_none(),
+            true,
+        ));
+        credit_actions.push(self.stateful_action_button(
+            "兑换",
+            SettingsAction::OpenRedeem,
+            self.auth_user_id.is_none(),
+            false,
+        ));
+        col.add_child(
+            Container::new(self.inline_action_row(credit_actions))
+                .with_vertical_margin(4.0)
                 .finish(),
         );
         self.flat_section(col.finish())
@@ -2054,6 +2078,12 @@ impl TypedActionView for SettingsView {
             SettingsAction::Login => {
                 ctx.emit(SettingsEvent::OpenLogin);
             }
+            SettingsAction::OpenPurchase => {
+                ctx.emit(SettingsEvent::OpenPurchase);
+            }
+            SettingsAction::OpenRedeem => {
+                ctx.emit(SettingsEvent::OpenRedeem);
+            }
             SettingsAction::Logout => {
                 self.auth_busy = true;
                 ctx.notify();
@@ -2361,8 +2391,12 @@ mod tests {
         assert!(SettingsPage::Plugins.matches_query("bb-browser"));
         assert!(SettingsPage::Agent.matches_query("codex"));
         assert!(!SettingsPage::Agent.matches_query("bb-browser"));
+        assert!(SettingsPage::Agent.matches_query("openai"));
+        assert!(SettingsPage::Plugins.matches_query("插件市场"));
         assert!(SettingsPage::VirtualMachine.matches_query("工具箱"));
         assert!(SettingsPage::VirtualMachine.matches_query("toolbox"));
+        assert!(SettingsPage::VirtualMachine.matches_query("用户程序"));
+        assert!(SettingsPage::VirtualMachine.matches_query("指定人"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert_eq!(
             settings_pages_in_group("常规"),

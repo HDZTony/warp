@@ -1,4 +1,5 @@
-//! Cluster device grid + topology overlay; card width follows container (HTML `minmax(200px, 1fr)`).
+//! Cluster device grid + topology overlay; card width follows container
+//! (`minmax(240px, 1fr)`-style auto-fill with scrollbar gutter).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -24,8 +25,8 @@ use crate::ui::cluster_layout::{
 const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
 const DEVICE_CHROME_INSET: f32 = 6.0;
 const DEVICE_DELETE_BTN: f32 = 26.0;
-const DEVICE_ACTION_BTN_SIZE: f32 = 32.0;
-const DEVICE_ACTION_GAP: f32 = 6.0;
+const DEVICE_ACTION_BTN_SIZE: f32 = 64.0;
+const DEVICE_ACTION_GAP: f32 = 8.0;
 
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
@@ -47,6 +48,7 @@ pub struct ClusterTopologyPanel {
     hub_index: usize,
     remarks: BTreeMap<String, String>,
     mono: FamilyId,
+    /// Owned by `DevicesView` so scroll position survives view rebuilds.
     scroll: ClippedScrollStateHandle,
     child: Box<dyn Element>,
     built_width: f32,
@@ -65,6 +67,7 @@ impl ClusterTopologyPanel {
         hub_index: usize,
         remarks: BTreeMap<String, String>,
         mono: FamilyId,
+        scroll: ClippedScrollStateHandle,
     ) -> Self {
         Self {
             nodes,
@@ -74,7 +77,7 @@ impl ClusterTopologyPanel {
             hub_index,
             remarks,
             mono,
-            scroll: ClippedScrollStateHandle::new(),
+            scroll,
             child: Flex::column().finish(),
             built_width: 0.0,
             built_columns: 0,
@@ -92,6 +95,7 @@ impl ClusterTopologyPanel {
         hub_index: usize,
         remarks: BTreeMap<String, String>,
         mono: FamilyId,
+        scroll: ClippedScrollStateHandle,
     ) -> Box<dyn Element> {
         Box::new(Self::new(
             nodes,
@@ -101,6 +105,7 @@ impl ClusterTopologyPanel {
             hub_index,
             remarks,
             mono,
+            scroll,
         ))
     }
 
@@ -140,20 +145,25 @@ impl ClusterTopologyPanel {
                 break;
             }
             for (col_idx, node) in nodes[start..end].iter().enumerate() {
+                // Only trailing gap — `with_horizontal_margin` doubled spacing and
+                // overflowed the row (last card clipped, gaps looked uneven).
                 let is_last_in_row = col_idx + 1 >= end - start;
-                row.add_child(
-                    Container::new(node_card(
-                        node,
-                        &local_node_id,
-                        &selected_node_id,
-                        &hovered_node_id,
-                        remarks.get(&node.node_id).map(String::as_str),
-                        card_w,
-                        self.mono,
-                    ))
-                    .with_horizontal_margin(if is_last_in_row { 0.0 } else { CARD_GAP })
-                    .finish(),
+                let card = node_card(
+                    node,
+                    &local_node_id,
+                    &selected_node_id,
+                    &hovered_node_id,
+                    remarks.get(&node.node_id).map(String::as_str),
+                    card_w,
+                    self.mono,
                 );
+                row.add_child(if is_last_in_row {
+                    card
+                } else {
+                    Container::new(card)
+                        .with_margin_right(CARD_GAP)
+                        .finish()
+                });
             }
             let is_last_row = row_idx + 1 >= row_count;
             grid.add_child(
@@ -644,12 +654,14 @@ fn node_card(
     col.add_child(clickable);
     col.add_child(actions_block);
 
-    let border_color = if selected {
-        theme::accent()
-    } else if hovered {
-        theme::accent_cool()
-    } else if is_local {
-        theme::accent()
+    // Selected and hovered share one ring; local identity is the badge, not a second
+    // permanent accent border (that looked like two cards selected at once).
+    let border_color = if selected || hovered {
+        if selected {
+            theme::accent()
+        } else {
+            theme::accent_cool()
+        }
     } else {
         theme::border()
     };

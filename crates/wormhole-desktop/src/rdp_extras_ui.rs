@@ -1,18 +1,36 @@
-//! RDP viewer top-bar extras: file send, tunnel, terminal, and live audio controls.
+//! RDP viewer chrome extras: edge-docked fold panel with toolbar, auth, and tools.
 
 use std::sync::{Arc, Mutex};
 
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
-    ConstrainedBox, Container, DispatchEventResult, EventHandler, Flex, MainAxisSize,
-    ParentElement, Text,
+    AnchorPair, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, EventHandler, Flex, MainAxisAlignment, MainAxisSize, OffsetPositioning,
+    OffsetType, ParentElement, ParentOffsetBounds, PositioningAxis, Radius, Rect, XAxisAnchor,
+    YAxisAnchor,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
 use warpui_core::keymap::Keystroke;
 use wormhole_desktop_rdp::RdpRuntime;
 
+use crate::ui::panel_primitives::HUD_RADIUS;
+use crate::ui::theme;
 use crate::ui_text;
+
+/// SavePosition id for the RDP viewer root (window-local chrome drag / snap).
+pub const RDP_VIEWER_ROOT_POS: &str = "wormhole-rdp-viewer-root";
+
+const CHROME_ALONG_MIN: f32 = 0.08;
+const CHROME_ALONG_MAX: f32 = 0.92;
+/// Pointer travel below this (px) counts as a click, not a dock drag.
+pub const CHROME_CLICK_SLOP_PX: f32 = 8.0;
+const CHROME_EDGE_INSET: f32 = 8.0;
+const CHROME_PANEL_INSET: f32 = 12.0;
+const CHROME_PANEL_MAX_W: f32 = 520.0;
+const CHROME_HANDLE_PAD_X: f32 = 10.0;
+const CHROME_HANDLE_PAD_Y: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtrasPanel {
@@ -58,6 +76,42 @@ pub enum ActiveField {
     AuthTotp,
 }
 
+/// Which window edge the chrome handle (and open panel) docks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChromeEdge {
+    Top,
+    #[default]
+    Right,
+    Bottom,
+    Left,
+}
+
+impl ChromeEdge {
+    /// Clamp along-edge ratio so the handle stays away from corners.
+    pub fn clamp_along(along: f32) -> f32 {
+        along.clamp(CHROME_ALONG_MIN, CHROME_ALONG_MAX)
+    }
+
+    /// Snap a point inside a `w`×`h` rect to the nearest edge and along-edge ratio.
+    pub fn snap(x: f32, y: f32, w: f32, h: f32) -> (Self, f32) {
+        let w = w.max(1.0);
+        let h = h.max(1.0);
+        let dist_left = x.max(0.0);
+        let dist_right = (w - x).max(0.0);
+        let dist_top = y.max(0.0);
+        let dist_bottom = (h - y).max(0.0);
+        if dist_left <= dist_right && dist_left <= dist_top && dist_left <= dist_bottom {
+            (Self::Left, Self::clamp_along(y / h))
+        } else if dist_right <= dist_top && dist_right <= dist_bottom {
+            (Self::Right, Self::clamp_along(y / h))
+        } else if dist_top <= dist_bottom {
+            (Self::Top, Self::clamp_along(x / w))
+        } else {
+            (Self::Bottom, Self::clamp_along(x / w))
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ExtrasUiState {
     pub panel: Option<ExtrasPanel>,
@@ -79,6 +133,16 @@ pub struct ExtrasUiState {
     pub peer_monitor_count: u32,
     pub peer_monitor_index: u32,
     pub mic_uplink_enabled: bool,
+    /// Folded chrome panel visibility (overlay; does not reserve layout height).
+    pub chrome_open: bool,
+    pub chrome_edge: ChromeEdge,
+    /// 0..1 position along the docked edge (clamped away from corners).
+    pub chrome_along: f32,
+    /// Window-local origin of the current handle press, if any.
+    pub chrome_drag_origin: Option<(f32, f32)>,
+    /// While dragging, free-float handle center as fractions of the viewer root.
+    pub chrome_float_nx: Option<f32>,
+    pub chrome_float_ny: Option<f32>,
 }
 
 impl ExtrasUiState {
@@ -88,6 +152,8 @@ impl ExtrasUiState {
             tunnel_remote: "127.0.0.1:3389".into(),
             terminal_cmd: "powershell".into(),
             audio_volume: 100,
+            chrome_along: 0.5,
+            chrome_edge: ChromeEdge::Right,
             ..Default::default()
         }
     }
@@ -101,6 +167,12 @@ impl ExtrasUiState {
             ActiveField::AuthPassword => &mut self.auth_password,
             ActiveField::AuthTotp => &mut self.auth_totp,
         }
+    }
+
+    pub fn clear_chrome_drag(&mut self) {
+        self.chrome_drag_origin = None;
+        self.chrome_float_nx = None;
+        self.chrome_float_ny = None;
     }
 }
 
@@ -120,6 +192,23 @@ pub enum ExtrasUiAction {
     ToggleVirtualCam,
     CyclePeerMonitor,
     ToggleMicUplink,
+    ToggleChrome,
+    BeginChromeDrag {
+        x: f32,
+        y: f32,
+    },
+    ChromeDragTo {
+        x: f32,
+        y: f32,
+        root_w: f32,
+        root_h: f32,
+    },
+    EndChromeDrag {
+        x: f32,
+        y: f32,
+        root_w: f32,
+        root_h: f32,
+    },
 }
 
 pub fn apply_keystroke(state: &Arc<Mutex<ExtrasUiState>>, keystroke: &Keystroke) -> bool {
@@ -135,6 +224,10 @@ pub fn apply_keystroke(state: &Arc<Mutex<ExtrasUiState>>, keystroke: &Keystroke)
         }
         "escape" => {
             guard.panel = None;
+            if !guard.auth_prompt {
+                guard.chrome_open = false;
+            }
+            guard.clear_chrome_drag();
         }
         key if key.len() == 1 => {
             if let Some(ch) = key.chars().next() {
@@ -144,6 +237,347 @@ pub fn apply_keystroke(state: &Arc<Mutex<ExtrasUiState>>, keystroke: &Keystroke)
         _ => {}
     }
     false
+}
+
+/// Apply chrome open / drag / snap actions. Returns true when state changed.
+pub fn apply_chrome_action(state: &mut ExtrasUiState, action: &ExtrasUiAction) -> bool {
+    match action {
+        ExtrasUiAction::ToggleChrome => {
+            if state.auth_prompt && state.chrome_open {
+                return false;
+            }
+            state.chrome_open = !state.chrome_open;
+            state.clear_chrome_drag();
+            true
+        }
+        ExtrasUiAction::BeginChromeDrag { x, y } => {
+            state.chrome_drag_origin = Some((*x, *y));
+            state.chrome_float_nx = None;
+            state.chrome_float_ny = None;
+            true
+        }
+        ExtrasUiAction::ChromeDragTo {
+            x,
+            y,
+            root_w,
+            root_h,
+        } => {
+            if state.chrome_drag_origin.is_none() {
+                return false;
+            }
+            let w = root_w.max(1.0);
+            let h = root_h.max(1.0);
+            state.chrome_float_nx = Some((*x / w).clamp(0.0, 1.0));
+            state.chrome_float_ny = Some((*y / h).clamp(0.0, 1.0));
+            true
+        }
+        ExtrasUiAction::EndChromeDrag {
+            x,
+            y,
+            root_w,
+            root_h,
+        } => {
+            let Some((ox, oy)) = state.chrome_drag_origin else {
+                return false;
+            };
+            let dx = *x - ox;
+            let dy = *y - oy;
+            let traveled = (dx * dx + dy * dy).sqrt();
+            state.clear_chrome_drag();
+            if traveled < CHROME_CLICK_SLOP_PX {
+                if !(state.auth_prompt && state.chrome_open) {
+                    state.chrome_open = !state.chrome_open;
+                }
+            } else {
+                let (edge, along) = ChromeEdge::snap(*x, *y, *root_w, *root_h);
+                state.chrome_edge = edge;
+                state.chrome_along = along;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn chrome_bg(open: bool) -> ColorU {
+    if open {
+        ColorU::new(20, 22, 28, 230)
+    } else {
+        ColorU::new(20, 22, 28, 160)
+    }
+}
+
+fn chrome_border(open: bool) -> ColorU {
+    if open {
+        theme::accent()
+    } else {
+        ColorU::new(theme::border().r, theme::border().g, theme::border().b, 180)
+    }
+}
+
+/// Docked or free-floating positioning for the chrome handle / panel.
+pub fn chrome_edge_positioning(
+    edge: ChromeEdge,
+    along: f32,
+    float_nx: Option<f32>,
+    float_ny: Option<f32>,
+    for_panel: bool,
+) -> OffsetPositioning {
+    let inset = if for_panel {
+        CHROME_PANEL_INSET
+    } else {
+        CHROME_EDGE_INSET
+    };
+    if let (Some(nx), Some(ny)) = (float_nx, float_ny) {
+        return OffsetPositioning::from_axes(
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(nx.clamp(0.0, 1.0)),
+                AnchorPair::new(XAxisAnchor::Left, XAxisAnchor::Middle),
+            ),
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(ny.clamp(0.0, 1.0)),
+                AnchorPair::new(YAxisAnchor::Top, YAxisAnchor::Middle),
+            ),
+        );
+    }
+    let along = ChromeEdge::clamp_along(along);
+    match edge {
+        ChromeEdge::Top => OffsetPositioning::from_axes(
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(along),
+                AnchorPair::new(XAxisAnchor::Left, XAxisAnchor::Middle),
+            ),
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Pixel(inset),
+                AnchorPair::new(YAxisAnchor::Top, YAxisAnchor::Top),
+            ),
+        ),
+        ChromeEdge::Bottom => OffsetPositioning::from_axes(
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(along),
+                AnchorPair::new(XAxisAnchor::Left, XAxisAnchor::Middle),
+            ),
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Pixel(-inset),
+                AnchorPair::new(YAxisAnchor::Bottom, YAxisAnchor::Bottom),
+            ),
+        ),
+        ChromeEdge::Left => OffsetPositioning::from_axes(
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Pixel(inset),
+                AnchorPair::new(XAxisAnchor::Left, XAxisAnchor::Left),
+            ),
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(along),
+                AnchorPair::new(YAxisAnchor::Top, YAxisAnchor::Middle),
+            ),
+        ),
+        ChromeEdge::Right => OffsetPositioning::from_axes(
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Pixel(-inset),
+                AnchorPair::new(XAxisAnchor::Right, XAxisAnchor::Right),
+            ),
+            PositioningAxis::relative_to_parent(
+                ParentOffsetBounds::WindowByPosition,
+                OffsetType::Percentage(along),
+                AnchorPair::new(YAxisAnchor::Top, YAxisAnchor::Middle),
+            ),
+        ),
+    }
+}
+
+fn swallow_pointer(child: Box<dyn Element>) -> Box<dyn Element> {
+    EventHandler::new(child)
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .on_left_mouse_up(|_, _, _| DispatchEventResult::StopPropagation)
+        .on_mouse_dragged(|_, _, _| DispatchEventResult::StopPropagation)
+        .on_scroll_wheel(|_, _, _, _| DispatchEventResult::StopPropagation)
+        .finish()
+}
+
+/// Semi-transparent edge handle: click toggles chrome; drag docks to nearest edge.
+pub fn render_chrome_handle(
+    font: FamilyId,
+    state: &Arc<Mutex<ExtrasUiState>>,
+    on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync>,
+) -> Box<dyn Element> {
+    let open = state.lock().map(|g| g.chrome_open).unwrap_or(false);
+    let label = if open { "收起" } else { "菜单" };
+    let pill = Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::Center)
+            .with_child(
+                ui_text::body(label.to_string(), font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .finish(),
+    )
+    .with_padding_left(CHROME_HANDLE_PAD_X)
+    .with_padding_right(CHROME_HANDLE_PAD_X)
+    .with_padding_top(CHROME_HANDLE_PAD_Y)
+    .with_padding_bottom(CHROME_HANDLE_PAD_Y)
+    .with_background(chrome_bg(open))
+    .with_border(Border::all(1.0).with_border_fill(chrome_border(open)))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+    .finish();
+
+    let a = on_action;
+    EventHandler::new(pill)
+        .on_left_mouse_down(move |ctx, _, position| {
+            let (ox, oy, _) = root_local_point(ctx, position);
+            a(ExtrasUiAction::BeginChromeDrag { x: ox, y: oy });
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
+}
+
+/// Resolve mouse position to viewer-root local coords + root size.
+pub fn root_local_point(ctx: &warpui::EventContext<'_>, position: Vector2F) -> (f32, f32, (f32, f32)) {
+    if let Some(root) = ctx.element_position_by_id(RDP_VIEWER_ROOT_POS) {
+        (
+            position.x() - root.origin().x(),
+            position.y() - root.origin().y(),
+            (root.width().max(1.0), root.height().max(1.0)),
+        )
+    } else {
+        (position.x(), position.y(), (1280.0, 720.0))
+    }
+}
+
+/// Chrome panel content: status + toolbar + optional auth / extras panels.
+pub fn render_chrome_panel(
+    font: FamilyId,
+    mono: FamilyId,
+    header_text: String,
+    watermark: Option<String>,
+    show_tools: bool,
+    show_audio: bool,
+    watch_only: bool,
+    state: &Arc<Mutex<ExtrasUiState>>,
+    on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync>,
+) -> Box<dyn Element> {
+    let toolbar = render_toolbar(
+        font,
+        show_tools,
+        show_audio,
+        true,
+        watch_only,
+        state,
+        on_action.clone(),
+    );
+    let mut column = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(
+            ui_text::body(header_text, font)
+                .with_color(ColorU::white())
+                .finish(),
+        )
+        .with_child(toolbar);
+    if let Some(label) = watermark.filter(|s| !s.is_empty()) {
+        column = column.with_child(
+            ui_text::body(label, font)
+                .with_color(ColorU::new(255, 255, 255, 90))
+                .finish(),
+        );
+    }
+    if let Some(auth) = render_auth_panel(font, mono, state, on_action.clone()) {
+        column = column.with_child(auth);
+    }
+    if show_tools {
+        if let Some(panel) = render_panel(font, mono, state, on_action) {
+            column = column.with_child(panel);
+        }
+    }
+    let panel = Container::new(
+        ConstrainedBox::new(column.finish())
+            .with_max_width(CHROME_PANEL_MAX_W)
+            .finish(),
+    )
+    .with_uniform_padding(10.0)
+    .with_background(ColorU::new(20, 22, 28, 220))
+    .with_border(Border::all(1.0).with_border_fill(chrome_border(true)))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS + 4.0)))
+    .finish();
+    swallow_pointer(panel)
+}
+
+/// Full-window scrim that closes chrome when clicked (above video, below panel).
+pub fn render_chrome_scrim(on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync>) -> Box<dyn Element> {
+    EventHandler::new(
+        Rect::new()
+            .with_background_color(ColorU::new(0, 0, 0, 1))
+            .finish(),
+    )
+    .on_left_mouse_down(move |_, _, _| {
+        on_action(ExtrasUiAction::ToggleChrome);
+        DispatchEventResult::StopPropagation
+    })
+    .finish()
+}
+
+/// Convenience: handle element + its [`OffsetPositioning`] for the current chrome state.
+pub fn chrome_handle_with_position(
+    font: FamilyId,
+    state: &Arc<Mutex<ExtrasUiState>>,
+    on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync>,
+) -> (Box<dyn Element>, OffsetPositioning) {
+    let (edge, along, float_nx, float_ny) = state
+        .lock()
+        .map(|g| {
+            (
+                g.chrome_edge,
+                g.chrome_along,
+                g.chrome_float_nx,
+                g.chrome_float_ny,
+            )
+        })
+        .unwrap_or((ChromeEdge::Right, 0.5, None, None));
+    let handle = render_chrome_handle(font, state, on_action);
+    let pos = chrome_edge_positioning(edge, along, float_nx, float_ny, false);
+    (handle, pos)
+}
+
+/// Convenience: open chrome panel + positioning (same edge as handle; not free-floating).
+pub fn chrome_panel_with_position(
+    font: FamilyId,
+    mono: FamilyId,
+    header_text: String,
+    watermark: Option<String>,
+    show_tools: bool,
+    show_audio: bool,
+    watch_only: bool,
+    state: &Arc<Mutex<ExtrasUiState>>,
+    on_action: Arc<dyn Fn(ExtrasUiAction) + Send + Sync>,
+) -> (Box<dyn Element>, OffsetPositioning) {
+    let (edge, along) = state
+        .lock()
+        .map(|g| (g.chrome_edge, g.chrome_along))
+        .unwrap_or((ChromeEdge::Right, 0.5));
+    let panel = render_chrome_panel(
+        font,
+        mono,
+        header_text,
+        watermark,
+        show_tools,
+        show_audio,
+        watch_only,
+        state,
+        on_action,
+    );
+    let pos = chrome_edge_positioning(edge, along, None, None, true);
+    (panel, pos)
 }
 
 pub fn link_label(
@@ -622,4 +1056,95 @@ fn parse_tunnel_remote(remote: &str) -> (String, u16) {
         return (host.to_string(), port);
     }
     (remote.to_string(), 3389)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_edge_snap_picks_nearest_side() {
+        let (edge, along) = ChromeEdge::snap(10.0, 200.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Left);
+        assert!((along - 200.0 / 600.0).abs() < 0.001);
+
+        let (edge, along) = ChromeEdge::snap(790.0, 300.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Right);
+        assert!((along - 0.5).abs() < 0.001);
+
+        let (edge, along) = ChromeEdge::snap(400.0, 5.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Top);
+        assert!((along - 0.5).abs() < 0.001);
+
+        let (edge, along) = ChromeEdge::snap(400.0, 595.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Bottom);
+        assert!((along - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn chrome_edge_snap_clamps_along_away_from_corners() {
+        let (edge, along) = ChromeEdge::snap(5.0, 1.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Top);
+        assert!((along - CHROME_ALONG_MIN).abs() < f32::EPSILON);
+
+        let (edge, along) = ChromeEdge::snap(795.0, 599.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Bottom);
+        assert!((along - CHROME_ALONG_MAX).abs() < f32::EPSILON);
+
+        let (edge, along) = ChromeEdge::snap(1.0, 300.0, 800.0, 600.0);
+        assert_eq!(edge, ChromeEdge::Left);
+        assert!((along - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn apply_chrome_action_click_toggles_open() {
+        let mut state = ExtrasUiState::new();
+        assert!(!state.chrome_open);
+        assert!(apply_chrome_action(
+            &mut state,
+            &ExtrasUiAction::BeginChromeDrag { x: 10.0, y: 10.0 }
+        ));
+        assert!(apply_chrome_action(
+            &mut state,
+            &ExtrasUiAction::EndChromeDrag {
+                x: 12.0,
+                y: 11.0,
+                root_w: 800.0,
+                root_h: 600.0,
+            }
+        ));
+        assert!(state.chrome_open);
+        assert!(state.chrome_drag_origin.is_none());
+    }
+
+    #[test]
+    fn apply_chrome_action_drag_snaps_edge() {
+        let mut state = ExtrasUiState::new();
+        assert!(apply_chrome_action(
+            &mut state,
+            &ExtrasUiAction::BeginChromeDrag { x: 400.0, y: 300.0 }
+        ));
+        assert!(apply_chrome_action(
+            &mut state,
+            &ExtrasUiAction::ChromeDragTo {
+                x: 20.0,
+                y: 300.0,
+                root_w: 800.0,
+                root_h: 600.0,
+            }
+        ));
+        assert!(state.chrome_float_nx.is_some());
+        assert!(apply_chrome_action(
+            &mut state,
+            &ExtrasUiAction::EndChromeDrag {
+                x: 20.0,
+                y: 300.0,
+                root_w: 800.0,
+                root_h: 600.0,
+            }
+        ));
+        assert_eq!(state.chrome_edge, ChromeEdge::Left);
+        assert!(state.chrome_float_nx.is_none());
+        assert!(!state.chrome_open);
+    }
 }

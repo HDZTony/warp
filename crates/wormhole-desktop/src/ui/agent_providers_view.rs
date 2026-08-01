@@ -1,6 +1,6 @@
 use warpui::elements::{
-    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
-    ParentElement, Radius,
+    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler,
+    Expanded, Flex, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -28,12 +28,14 @@ pub enum AgentProvidersAction {
     Activate(String),
     Delete(String),
     QueryUsage(String),
-    CycleByokPreset,
-    CycleByokModel,
+    CycleProvider,
+    CycleModel,
     FocusApiKey,
+    FocusBaseUrl,
     ApiKeyEdit(TextFieldEditAction),
-    SaveByok,
-    TestByok,
+    BaseUrlEdit(TextFieldEditAction),
+    SaveProvider,
+    TestProvider,
 }
 
 pub struct AgentProvidersView {
@@ -44,12 +46,16 @@ pub struct AgentProvidersView {
     llm_summary: String,
     status: String,
     busy: bool,
-    byok_presets: Vec<CodexProviderPreset>,
-    byok_preset_index: usize,
-    byok_model_index: usize,
+    /// All builtin presets including `control_plane`.
+    presets: Vec<CodexProviderPreset>,
+    preset_index: usize,
+    model_index: usize,
     api_key_draft: String,
     api_key_field: TextFieldState,
     api_key_focused: bool,
+    base_url_draft: String,
+    base_url_field: TextFieldState,
+    base_url_focused: bool,
 }
 
 fn byok_presets() -> Vec<CodexProviderPreset> {
@@ -57,6 +63,10 @@ fn byok_presets() -> Vec<CodexProviderPreset> {
         .into_iter()
         .filter(|p| p.id != "control_plane")
         .collect()
+}
+
+fn is_control_plane_id(id: &str) -> bool {
+    id == "control_plane"
 }
 
 impl AgentProvidersView {
@@ -68,80 +78,125 @@ impl AgentProvidersView {
             font,
             providers: Vec::new(),
             active_provider_id: None,
-            llm_summary: "加载 Codex 上游…".into(),
+            llm_summary: "正在加载供应商…".into(),
             status: String::new(),
             busy: false,
-            byok_presets: presets,
-            byok_preset_index: 0,
-            byok_model_index: 0,
+            presets,
+            preset_index: 0,
+            model_index: 0,
             api_key_draft: String::new(),
             api_key_field: TextFieldState::new(),
             api_key_focused: false,
+            base_url_draft: String::new(),
+            base_url_field: TextFieldState::new(),
+            base_url_focused: false,
         };
+        if let Some(preset) = view.current_preset() {
+            view.base_url_draft = preset.default_base_url.clone();
+        }
         view.refresh(ctx);
         view
     }
 
-    fn current_byok_preset(&self) -> Option<&CodexProviderPreset> {
-        self.byok_presets.get(self.byok_preset_index)
+    fn current_preset(&self) -> Option<&CodexProviderPreset> {
+        self.presets.get(self.preset_index)
     }
 
-    fn current_byok_model_id(&self) -> String {
-        let Some(preset) = self.current_byok_preset() else {
+    fn current_model_id(&self) -> String {
+        let Some(preset) = self.current_preset() else {
             return String::new();
         };
         preset
             .models
-            .get(self.byok_model_index)
+            .get(self.model_index)
             .map(|m| m.id.clone())
             .unwrap_or_else(|| preset.default_model.clone())
     }
 
-    fn cycle_byok_preset(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.byok_presets.is_empty() {
+    fn restore_drafts_for_preset(&mut self) {
+        let Some(preset) = self.current_preset().cloned() else {
             return;
-        }
-        self.byok_preset_index = (self.byok_preset_index + 1) % self.byok_presets.len();
-        self.byok_model_index = 0;
+        };
+        self.model_index = 0;
         self.api_key_draft.clear();
         self.api_key_field = TextFieldState::new();
-        if let Some(preset) = self.current_byok_preset() {
-            if let Some(existing) = self.providers.iter().find(|p| p.id == preset.id) {
-                // Keep draft empty; hint shown via list. User re-enters to rotate key.
-                let _ = existing;
+        self.api_key_focused = false;
+        if let Some(existing) = self.providers.iter().find(|p| p.id == preset.id) {
+            self.base_url_draft = if existing.base_url.trim().is_empty() {
+                preset.default_base_url.clone()
+            } else {
+                existing.base_url.clone()
+            };
+            if let Some(idx) = preset.models.iter().position(|m| m.id == existing.model) {
+                self.model_index = idx;
             }
+        } else {
+            self.base_url_draft = preset.default_base_url.clone();
+        }
+        self.base_url_field = TextFieldState::new();
+        self.base_url_focused = false;
+    }
+
+    fn cycle_provider(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.presets.is_empty() {
+            return;
+        }
+        self.preset_index = (self.preset_index + 1) % self.presets.len();
+        self.restore_drafts_for_preset();
+        if let Some(preset) = self.current_preset() {
+            self.status = format!("已切换到 {}", preset.name);
         }
         ctx.notify();
     }
 
-    fn cycle_byok_model(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(preset) = self.current_byok_preset() else {
+    fn cycle_model(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_preset() else {
             return;
         };
         if preset.models.is_empty() {
             return;
         }
-        self.byok_model_index = (self.byok_model_index + 1) % preset.models.len();
+        self.model_index = (self.model_index + 1) % preset.models.len();
         ctx.notify();
     }
 
-    fn save_byok(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(preset) = self.current_byok_preset().cloned() else {
-            self.status = "没有可用的上游预设".into();
+    fn save_provider(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_preset().cloned() else {
+            self.status = "没有可用的供应商预设".into();
             ctx.notify();
             return;
         };
         let api_key = self.api_key_draft.trim().to_string();
         if api_key.is_empty() {
-            self.status = "请填写 API Key".into();
-            ctx.notify();
-            return;
+            // Allow saving model/base_url updates when key already configured.
+            let has_existing = self
+                .providers
+                .iter()
+                .any(|p| p.id == preset.id && p.api_key_configured);
+            if !has_existing {
+                self.status = "请先填写当前供应商的 API Key".into();
+                ctx.notify();
+                return;
+            }
         }
-        let model = self.current_byok_model_id();
+        let model = self.current_model_id();
+        let base_url = {
+            let draft = self.base_url_draft.trim();
+            if draft.is_empty() {
+                preset.default_base_url.clone()
+            } else {
+                draft.to_string()
+            }
+        };
         self.busy = true;
         self.status = format!("正在保存 {}…", preset.name);
         ctx.notify();
         let core = self.core.clone();
+        let api_key_param = if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key)
+        };
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
@@ -149,9 +204,9 @@ impl AgentProvidersView {
                     &state,
                     ConfigureAgentLlmParams {
                         provider: Some(preset.id),
-                        api_key: Some(api_key),
+                        api_key: api_key_param,
                         model: Some(model),
-                        base_url: Some(preset.default_base_url),
+                        base_url: Some(base_url),
                     },
                 )
                 .await
@@ -160,10 +215,8 @@ impl AgentProvidersView {
                 view.busy = false;
                 match output {
                     Ok(cfg) => {
-                        view.status = format!(
-                            "已保存自备 Key：{} · {}（可在 Agent 模型菜单切换）",
-                            cfg.provider, cfg.model
-                        );
+                        view.status =
+                            format!("配置已安全保存 · {} · {}", cfg.provider, cfg.model);
                         view.api_key_draft.clear();
                         view.api_key_field = TextFieldState::new();
                         view.api_key_focused = false;
@@ -177,13 +230,21 @@ impl AgentProvidersView {
         );
     }
 
-    fn test_byok(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(preset) = self.current_byok_preset().cloned() else {
-            self.status = "没有可用的上游预设".into();
+    fn test_provider(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(preset) = self.current_preset().cloned() else {
+            self.status = "没有可用的供应商预设".into();
             ctx.notify();
             return;
         };
         let api_key = self.api_key_draft.trim().to_string();
+        let base_url = {
+            let draft = self.base_url_draft.trim();
+            if draft.is_empty() {
+                preset.default_base_url.clone()
+            } else {
+                draft.to_string()
+            }
+        };
         self.busy = true;
         self.status = format!("正在测试 {}…", preset.name);
         ctx.notify();
@@ -200,7 +261,7 @@ impl AgentProvidersView {
                         } else {
                             Some(api_key)
                         },
-                        base_url: Some(preset.default_base_url),
+                        base_url: Some(base_url),
                     }),
                 )
                 .await
@@ -216,11 +277,11 @@ impl AgentProvidersView {
         );
     }
 
-    fn byok_api_key_field(&self) -> Box<dyn Element> {
+    fn api_key_field_el(&self) -> Box<dyn Element> {
         let field = render_field_with_caret(
             &self.api_key_draft,
             &self.api_key_field.marked_text,
-            "粘贴 API Key（sk-…）",
+            "输入当前供应商的 API Key",
             self.font,
             self.api_key_focused,
             false,
@@ -238,64 +299,186 @@ impl AgentProvidersView {
         });
         Container::new(input)
             .with_uniform_padding(10.0)
-            .with_vertical_margin(6.0)
+            .with_vertical_margin(4.0)
             .with_background(theme::canvas())
             .with_border(Border::all(1.0).with_border_fill(if self.api_key_focused {
                 theme::accent_cool()
             } else {
                 theme::border()
             }))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
             .finish()
     }
 
-    fn byok_form_block(&self) -> Box<dyn Element> {
+    fn base_url_field_el(&self) -> Box<dyn Element> {
+        let field = render_field_with_caret(
+            &self.base_url_draft,
+            &self.base_url_field.marked_text,
+            "https://api.example.com/v1",
+            self.font,
+            self.base_url_focused,
+            false,
+            false,
+            self.base_url_field.cursor,
+        );
+        let input = TextFieldInput::builder(field, |ctx, action| {
+            ctx.dispatch_typed_action(AgentProvidersAction::BaseUrlEdit(action));
+        })
+        .focused(self.base_url_focused)
+        .ime_preedit(!self.base_url_field.marked_text.is_empty())
+        .finish();
+        let input = wrap_text_field_focus_on_click(input, |ctx| {
+            ctx.dispatch_typed_action(AgentProvidersAction::FocusBaseUrl);
+        });
+        Container::new(input)
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(4.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(if self.base_url_focused {
+                theme::accent_cool()
+            } else {
+                theme::border()
+            }))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
+            .finish()
+    }
+
+    fn form_field_shell(&self, label: &str, value: Box<dyn Element>) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("自备 API Key", self.font));
+        col.add_child(status_line(label.to_string(), self.font, StatusTone::Muted));
+        col.add_child(Container::new(value).with_margin_top(6.0).finish());
+        Container::new(col.finish())
+            .with_uniform_padding(2.0)
+            .finish()
+    }
+
+    fn selectable_value_el(
+        &self,
+        value: &str,
+        cycle_label: &str,
+        cycle: AgentProvidersAction,
+    ) -> Box<dyn Element> {
+        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        // Expanded keeps the value box finite inside Stretch columns / row grids.
+        row.add_child(Expanded::new(
+            1.0,
+            Container::new(
+                ui_text::body(value.to_string(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_uniform_padding(10.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
+            .finish(),
+        )
+        .finish());
+        row.add_child(
+            Container::new(self.action_button(cycle_label, cycle))
+                .with_margin_left(8.0)
+                .finish(),
+        );
+        row.finish()
+    }
+
+    fn provider_form_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("AGENT · CODEX 供应商", self.font));
         col.add_child(section_hint(
-            "默认使用 Key Pool（含 GPT）。填写自备 Key 后，对应模型会出现在 Agent 面板的模型菜单中。",
+            "参考 OpenCode 的 provider 配置：每个供应商独立保存 API Key、Base URL 和模型，切换后立即应用。密钥仅保存在本机并直连厂商。",
             self.font,
         ));
 
-        let preset_label = self
-            .current_byok_preset()
-            .map(|p| format!("{} · {}", p.name, p.default_base_url))
-            .unwrap_or_else(|| "无预设".into());
-        let model_label = self
-            .current_byok_preset()
-            .and_then(|p| p.models.get(self.byok_model_index))
+        let preset = self.current_preset();
+        let provider_label = preset
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "—".into());
+        let model_label = preset
+            .and_then(|p| p.models.get(self.model_index))
             .map(|m| m.label.clone())
-            .unwrap_or_else(|| self.current_byok_model_id());
+            .unwrap_or_else(|| self.current_model_id());
+        let base_url_display = if self.base_url_draft.trim().is_empty() {
+            preset
+                .map(|p| p.default_base_url.as_str())
+                .unwrap_or("—")
+        } else {
+            self.base_url_draft.trim()
+        };
+        let detail = format!("当前：{provider_label} · 模型 {model_label} · {base_url_display}");
 
-        col.add_child(status_line(
-            format!("上游：{preset_label}"),
-            self.font,
-            StatusTone::Muted,
-        ));
-        col.add_child(status_line(
-            format!("模型：{model_label}"),
-            self.font,
-            StatusTone::Muted,
-        ));
+        // Row 1: 供应商 | 模型（2×2 上半）— Expanded 避免 row 子项拿到无限宽。
+        let mut row1 = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        row1.add_child(
+            Expanded::new(
+                1.0,
+                self.form_field_shell(
+                    "供应商",
+                    self.selectable_value_el(
+                        &provider_label,
+                        "下一项",
+                        AgentProvidersAction::CycleProvider,
+                    ),
+                ),
+            )
+            .finish(),
+        );
+        row1.add_child(
+            Expanded::new(
+                1.0,
+                Container::new(self.form_field_shell(
+                    "模型",
+                    self.selectable_value_el(
+                        &model_label,
+                        "下一项",
+                        AgentProvidersAction::CycleModel,
+                    ),
+                ))
+                .with_margin_left(10.0)
+                .finish(),
+            )
+            .finish(),
+        );
+        col.add_child(Container::new(row1.finish()).with_margin_top(10.0).finish());
 
-        let mut cycle_row = Flex::row();
-        cycle_row.add_child(self.action_button("切换上游", AgentProvidersAction::CycleByokPreset));
-        cycle_row.add_child(
-            Container::new(self.action_button("切换模型", AgentProvidersAction::CycleByokModel))
+        // Row 2: Base URL | API Key（2×2 下半）
+        let mut row2 = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        row2.add_child(
+            Expanded::new(
+                1.0,
+                self.form_field_shell("Base URL", self.base_url_field_el()),
+            )
+            .finish(),
+        );
+        row2.add_child(
+            Expanded::new(
+                1.0,
+                Container::new(self.form_field_shell("API Key", self.api_key_field_el()))
+                    .with_margin_left(10.0)
+                    .finish(),
+            )
+            .finish(),
+        );
+        col.add_child(Container::new(row2.finish()).with_margin_top(10.0).finish());
+
+        let mut action_row = Flex::row();
+        action_row.add_child(self.action_button("保存配置", AgentProvidersAction::SaveProvider));
+        action_row.add_child(
+            Container::new(self.action_button("测试连接", AgentProvidersAction::TestProvider))
                 .with_margin_left(8.0)
                 .finish(),
         );
-        col.add_child(cycle_row.finish());
-        col.add_child(self.byok_api_key_field());
-
-        let mut save_row = Flex::row();
-        save_row.add_child(self.action_button("保存 Key", AgentProvidersAction::SaveByok));
-        save_row.add_child(
-            Container::new(self.action_button("测试连接", AgentProvidersAction::TestByok))
+        action_row.add_child(
+            Container::new(self.action_button("刷新", AgentProvidersAction::Refresh))
                 .with_margin_left(8.0)
                 .finish(),
         );
-        col.add_child(save_row.finish());
+        col.add_child(
+            Container::new(action_row.finish())
+                .with_margin_top(10.0)
+                .finish(),
+        );
+        col.add_child(status_line(detail, self.font, StatusTone::Muted));
         col.finish()
     }
 
@@ -317,18 +500,34 @@ impl AgentProvidersView {
                     Ok(list) => {
                         view.active_provider_id = list.active_provider_id.clone();
                         view.providers = list.providers;
+                        if let Some(active) = view.active_provider_id.clone() {
+                            // Prefer syncing the form to the active BYOK provider; platform
+                            // path is not listed in this settings UI.
+                            if !is_control_plane_id(&active) {
+                                if let Some(idx) = view.presets.iter().position(|p| p.id == active)
+                                {
+                                    view.preset_index = idx;
+                                    view.restore_drafts_for_preset();
+                                }
+                            }
+                        }
                         view.status = "供应商列表已刷新".into();
                     }
                     Err(error) => {
-                        view.status = format!("刷新供应商失败: {error}");
+                        view.status = format!("刷新失败：{error}");
                     }
                 }
                 view.llm_summary = match llm {
-                    Ok(cfg) => format!(
-                        "当前：{} · 模型 {} · {}",
-                        cfg.provider, cfg.model, cfg.base_url
-                    ),
-                    Err(err) => format!("LLM 配置错误: {err}"),
+                    Ok(cfg) if is_control_plane_id(&cfg.provider) => {
+                        format!("当前：平台模型 · {}", cfg.model)
+                    }
+                    Ok(cfg) => {
+                        format!(
+                            "当前：{} · {} · {} · BYOK 直连",
+                            cfg.provider, cfg.model, cfg.base_url
+                        )
+                    }
+                    Err(err) => format!("LLM 配置错误：{err}"),
                 };
                 view.busy = false;
                 ctx.notify();
@@ -349,7 +548,7 @@ impl AgentProvidersView {
             |view, output, ctx| {
                 view.busy = false;
                 view.status = match output {
-                    Ok(_) => "已切换供应商".into(),
+                    Ok(_) => "供应商已启用".into(),
                     Err(err) => err,
                 };
                 view.refresh(ctx);
@@ -370,7 +569,7 @@ impl AgentProvidersView {
             |view, output, ctx| {
                 view.busy = false;
                 view.status = match output {
-                    Ok(_) => "已删除供应商".into(),
+                    Ok(_) => "供应商已删除".into(),
                     Err(err) => err,
                 };
                 view.refresh(ctx);
@@ -419,7 +618,7 @@ impl AgentProvidersView {
         )
         .with_uniform_padding(8.0)
         .with_background(theme::accent_bg(28))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
         .with_border(Border::all(1.0).with_border_fill(theme::border()))
         .finish()
     }
@@ -436,20 +635,11 @@ impl View for AgentProvidersView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_title("AGENT · Codex 供应商", self.font));
-        col.add_child(section_hint(
-            "默认使用 control plane Key Pool（含 GPT）。自备 Key 后可在 Agent 模型菜单切换；不拦截 ccswitch://。",
-            self.font,
-        ));
         col.add_child(status_line(
             self.llm_summary.clone(),
             self.font,
             StatusTone::Muted,
         ));
-
-        let mut toolbar = Flex::row();
-        toolbar.add_child(self.action_button("刷新", AgentProvidersAction::Refresh));
-        col.add_child(toolbar.finish());
 
         if !self.status.is_empty() {
             let tone = provider_status_tone(&self.status);
@@ -457,34 +647,39 @@ impl View for AgentProvidersView {
         }
 
         col.add_child(
-            Container::new(self.byok_form_block())
-                .with_margin_top(12.0)
+            Container::new(self.provider_form_block())
+                .with_margin_top(8.0)
                 .with_margin_bottom(12.0)
                 .finish(),
         );
 
-        col.add_child(section_title("供应商列表", self.font));
-        if self.providers.is_empty() {
+        col.add_child(section_title("已配置供应商", self.font));
+        let byok_providers: Vec<_> = self
+            .providers
+            .iter()
+            .filter(|p| !is_control_plane_id(&p.id))
+            .collect();
+        if byok_providers.is_empty() {
             col.add_child(status_line(
-                "暂无供应商记录。登录后自动启用 Key Pool；也可上方填写自备 Key。",
+                "暂无自备供应商。在上方填写 API Key 并保存配置。",
                 self.font,
                 StatusTone::Placeholder,
             ));
         } else {
-            for provider in &self.providers {
+            for provider in byok_providers {
                 let active = provider.is_active;
+                let path = if provider.chat_completions_upstream {
+                    " · 本地代理"
+                } else {
+                    " · Responses 直连"
+                };
                 let line = truncate_middle(
                     &format!(
-                        "{}{} · {} · {}{}",
+                        "{}{} · {} · {}{path}",
                         provider.name,
                         if active { " [当前]" } else { "" },
                         provider.model,
                         provider.base_url,
-                        if provider.chat_completions_upstream {
-                            " · Chat 代理"
-                        } else {
-                            " · Responses 直连"
-                        }
                     ),
                     120,
                 );
@@ -503,7 +698,7 @@ impl View for AgentProvidersView {
                 if provider.usage_enabled {
                     let usage_id = provider.id.clone();
                     row.add_child(
-                        self.action_button("查询用量", AgentProvidersAction::QueryUsage(usage_id)),
+                        self.action_button("用量", AgentProvidersAction::QueryUsage(usage_id)),
                     );
                 }
                 let delete_id = provider.id.clone();
@@ -514,7 +709,7 @@ impl View for AgentProvidersView {
                         .with_uniform_padding(10.0)
                         .with_margin_top(6.0)
                         .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
                         .finish(),
                 );
             }
@@ -525,9 +720,19 @@ impl View for AgentProvidersView {
 }
 
 fn provider_status_tone(status: &str) -> StatusTone {
-    if status.contains("错误") || status.contains("失败") || status.contains("未找到") {
+    let lower = status.to_ascii_lowercase();
+    if lower.contains("fail")
+        || lower.contains("error")
+        || status.contains("失败")
+        || status.contains("错误")
+    {
         StatusTone::Danger
-    } else if status.contains("已") || status.contains("成功") || status.contains("就绪") {
+    } else if lower.contains("saved")
+        || lower.contains("success")
+        || lower.contains("refreshed")
+        || status.contains("成功")
+        || status.contains("已")
+    {
         StatusTone::Success
     } else {
         StatusTone::Neutral
@@ -539,32 +744,32 @@ fn format_usage_result(result: &agent_provider_commands::AgentUsageResultDto) ->
         return result
             .error
             .clone()
-            .unwrap_or_else(|| "用量查询失败".into());
+            .unwrap_or_else(|| "Usage query failed".into());
     }
     let Some(items) = result.data.as_ref().filter(|items| !items.is_empty()) else {
-        return "用量查询成功，但无数据".into();
+        return "Usage query succeeded (no data)".into();
     };
     let first = &items[0];
     if first.is_valid == Some(false) {
         return first
             .invalid_message
             .clone()
-            .unwrap_or_else(|| "用量无效".into());
+            .unwrap_or_else(|| "Usage invalid".into());
     }
     let mut parts = Vec::new();
     if let Some(plan) = &first.plan_name {
         parts.push(plan.clone());
     }
     if let (Some(remaining), Some(unit)) = (first.remaining, &first.unit) {
-        parts.push(format!("剩余 {remaining} {unit}"));
+        parts.push(format!("remaining {remaining} {unit}"));
     } else if let (Some(used), Some(total)) = (first.used, first.total) {
-        parts.push(format!("已用 {used} / {total}"));
+        parts.push(format!("used {used} / {total}"));
     }
     if let Some(extra) = &first.extra {
         parts.push(extra.clone());
     }
     if parts.is_empty() {
-        "用量查询成功".into()
+        "Usage query succeeded".into()
     } else {
         parts.join(" · ")
     }
@@ -572,12 +777,12 @@ fn format_usage_result(result: &agent_provider_commands::AgentUsageResultDto) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{provider_status_tone, StatusTone};
+    use super::{is_control_plane_id, provider_status_tone, StatusTone};
 
     #[test]
     fn provider_operation_status_has_explicit_tone() {
         assert_eq!(
-            provider_status_tone("刷新供应商失败: timeout"),
+            provider_status_tone("刷新失败：timeout"),
             StatusTone::Danger
         );
         assert_eq!(
@@ -585,6 +790,18 @@ mod tests {
             StatusTone::Success
         );
         assert_eq!(provider_status_tone("正在查询用量…"), StatusTone::Neutral);
+    }
+
+    #[test]
+    fn control_plane_is_hidden_from_settings_ui_helpers() {
+        assert!(is_control_plane_id("control_plane"));
+        assert!(!is_control_plane_id("zai"));
+        let byok: Vec<_> = super::byok_presets()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert!(!byok.iter().any(|id| id == "control_plane"));
+        assert!(byok.iter().any(|id| id == "zai"));
     }
 }
 
@@ -597,18 +814,28 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::Activate(id) => self.activate(id.clone(), ctx),
             AgentProvidersAction::Delete(id) => self.delete(id.clone(), ctx),
             AgentProvidersAction::QueryUsage(id) => self.query_usage(id.clone(), ctx),
-            AgentProvidersAction::CycleByokPreset => self.cycle_byok_preset(ctx),
-            AgentProvidersAction::CycleByokModel => self.cycle_byok_model(ctx),
+            AgentProvidersAction::CycleProvider => self.cycle_provider(ctx),
+            AgentProvidersAction::CycleModel => self.cycle_model(ctx),
             AgentProvidersAction::FocusApiKey => {
                 self.api_key_focused = true;
+                self.base_url_focused = false;
+                ctx.notify();
+            }
+            AgentProvidersAction::FocusBaseUrl => {
+                self.base_url_focused = true;
+                self.api_key_focused = false;
                 ctx.notify();
             }
             AgentProvidersAction::ApiKeyEdit(edit) => {
                 self.api_key_field.apply(&mut self.api_key_draft, edit);
                 ctx.notify();
             }
-            AgentProvidersAction::SaveByok => self.save_byok(ctx),
-            AgentProvidersAction::TestByok => self.test_byok(ctx),
+            AgentProvidersAction::BaseUrlEdit(edit) => {
+                self.base_url_field.apply(&mut self.base_url_draft, edit);
+                ctx.notify();
+            }
+            AgentProvidersAction::SaveProvider => self.save_provider(ctx),
+            AgentProvidersAction::TestProvider => self.test_provider(ctx),
         }
     }
 }

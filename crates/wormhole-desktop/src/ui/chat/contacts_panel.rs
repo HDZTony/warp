@@ -77,6 +77,7 @@ pub struct ContactsPanelView {
     add_focused: u8,
     status: String,
     status_tone: StatusTone,
+    opening: bool,
     last_open: bool,
 }
 
@@ -109,6 +110,7 @@ impl ContactsPanelView {
             add_focused: 0,
             status: String::new(),
             status_tone: StatusTone::Neutral,
+            opening: false,
             last_open: false,
         };
         view.poll_open(ctx);
@@ -128,9 +130,11 @@ impl ContactsPanelView {
                     .unwrap_or(false);
                 if open && !view.last_open {
                     view.last_open = true;
+                    view.opening = false;
                     view.reload(ctx);
                 } else if !open {
                     view.last_open = false;
+                    view.opening = false;
                 }
                 view.poll_open(ctx);
                 ctx.notify();
@@ -181,6 +185,7 @@ impl ContactsPanelView {
                             email: String::new(),
                             source: ContactSource::Cluster,
                             can_chat: true,
+                            bootstrap_addrs: node.chat_bootstrap_addrs.clone(),
                         });
                     }
                 }
@@ -188,7 +193,9 @@ impl ContactsPanelView {
             },
             |view, rows, ctx| {
                 view.contacts = rows;
-                view.status.clear();
+                if !view.opening {
+                    view.status.clear();
+                }
                 ctx.notify();
             },
         );
@@ -224,49 +231,75 @@ impl ContactsPanelView {
     }
 
     fn open_contact(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
+        if self.opening {
+            return;
+        }
         let Some(contact) = self.contacts.iter().find(|c| c.id == id).cloned() else {
             return;
         };
         if !contact.can_chat || contact.wormhole_id.is_empty() {
             self.status = "该联系人仅有邮箱，无法打开私聊。请补充 Wormhole ID。".into();
             self.status_tone = StatusTone::Warn;
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast(
+                    "该联系人仅有邮箱，无法打开私聊",
+                    StatusTone::Warn,
+                );
+            }
             ctx.notify();
             return;
+        }
+        self.opening = true;
+        self.status = "正在打开会话…".into();
+        self.status_tone = StatusTone::Neutral;
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.show_toast("正在打开会话…", StatusTone::Muted);
         }
         let core = self.core.clone();
         let peer = contact.wormhole_id.clone();
         let name = contact.display_name.clone();
+        let bootstrap = contact.bootstrap_addrs.clone();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
+                let app = runtime.ctx.as_ref();
                 chat_start_conversation(
-                    &runtime.ctx,
+                    app,
                     &runtime.state,
                     StartChatConversationParams {
                         backend: None,
                         peer: Some(peer.clone()),
                         peer_endpoint: Some(peer),
                         peer_display_name: Some(name),
-                        peer_bootstrap_addrs: Vec::new(),
+                        peer_bootstrap_addrs: bootstrap,
                     },
                 )
                 .await
             },
-            |view, result, ctx| match result {
-                Ok(conv) => {
-                    if let Ok(mut state) = view.shell_state.lock() {
-                        state.close_contacts();
+            |view, result, ctx| {
+                view.opening = false;
+                match result {
+                    Ok(conv) => {
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.close_contacts();
+                            state.show_toast("已打开会话", StatusTone::Success);
+                        }
+                        view.status.clear();
+                        ctx.emit(ContactsPanelEvent::OpenConversation(conv.id));
+                        ctx.notify();
                     }
-                    ctx.emit(ContactsPanelEvent::OpenConversation(conv.id));
-                    ctx.notify();
-                }
-                Err(err) => {
-                    view.status = err;
-                    view.status_tone = StatusTone::Danger;
-                    ctx.notify();
+                    Err(err) => {
+                        view.status = err.clone();
+                        view.status_tone = StatusTone::Danger;
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.show_toast(format!("无法打开会话: {err}"), StatusTone::Danger);
+                        }
+                        ctx.notify();
+                    }
                 }
             },
         );
+        ctx.notify();
     }
 
     fn submit_add(&mut self, ctx: &mut ViewContext<Self>) {
@@ -420,7 +453,9 @@ impl ContactsPanelView {
             )
             .finish()
         } else {
-            let mut list = Flex::column().with_main_axis_size(MainAxisSize::Min);
+            let mut list = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for c in rows {
                 list.add_child(self.contact_row(&c));
             }
@@ -517,6 +552,7 @@ impl ContactsPanelView {
 
     fn contact_row(&self, c: &ContactDto) -> Box<dyn Element> {
         let id = c.id.clone();
+        let dimmed = self.opening;
         let avatar = tg_avatar(
             c.display_name.chars().take(2).collect::<String>(),
             self.font,
@@ -525,7 +561,11 @@ impl ContactsPanelView {
         let mut copy = Flex::column().with_main_axis_size(MainAxisSize::Min);
         copy.add_child(
             ui_text::body(c.display_name.clone(), self.font)
-                .with_color(theme::text())
+                .with_color(if dimmed {
+                    theme::muted()
+                } else {
+                    theme::text()
+                })
                 .finish(),
         );
         let subtitle = if !c.wormhole_id.is_empty() {
@@ -543,9 +583,13 @@ impl ContactsPanelView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(avatar)
             .with_child(
-                Container::new(copy.finish())
-                    .with_padding_left(10.0)
-                    .finish(),
+                Expanded::new(
+                    1.0,
+                    Container::new(copy.finish())
+                        .with_padding_left(10.0)
+                        .finish(),
+                )
+                .finish(),
             )
             .finish();
         EventHandler::new(

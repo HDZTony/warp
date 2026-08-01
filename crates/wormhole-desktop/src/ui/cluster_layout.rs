@@ -6,10 +6,13 @@ use pathfinder_geometry::vector::{vec2f, Vector2F};
 pub const TOPO_PAD: f32 = 14.0;
 /// Matches `.device-grid { gap: 12px }`.
 pub const CARD_GAP: f32 = 12.0;
-/// Matches `minmax(200px, 1fr)`.
-pub const CARD_MIN_WIDTH: f32 = 200.0;
-/// Minimum `.device-body` content height (name + status + share count + action buttons).
-pub const BODY_MIN_HEIGHT: f32 = 108.0;
+/// Prefer wrapping before cramming five cards into a clipped row.
+/// Slightly above HTML `minmax(200px, 1fr)` so typical windows wrap earlier.
+pub const CARD_MIN_WIDTH: f32 = 240.0;
+/// Vertical scrollbar gutter reserved so the last column is not clipped.
+pub const SCROLLBAR_GUTTER: f32 = 14.0;
+/// Minimum `.device-body` content height (name + status + share count + 64px action buttons).
+pub const BODY_MIN_HEIGHT: f32 = 148.0;
 pub const BODY_PADDING_TOP: f32 = 10.0;
 pub const BODY_PADDING_BOTTOM: f32 = 12.0;
 pub const BODY_VERTICAL_PADDING: f32 = BODY_PADDING_TOP + BODY_PADDING_BOTTOM;
@@ -19,10 +22,10 @@ pub const CARD_BORDER: f32 = 1.0;
 pub const EDGE_INSET_FACTOR: f32 = 0.38;
 
 pub fn grid_inner_width(container_width: f32) -> f32 {
-    (container_width - TOPO_PAD * 2.0).max(1.0)
+    (container_width - TOPO_PAD * 2.0 - SCROLLBAR_GUTTER).max(1.0)
 }
 
-/// HTML `repeat(auto-fill, minmax(200px, 1fr))` column count.
+/// HTML-style `repeat(auto-fill, minmax(CARD_MIN_WIDTH, 1fr))` column count.
 pub fn grid_column_count(container_width: f32) -> usize {
     let inner = grid_inner_width(container_width);
     ((inner + CARD_GAP) / (CARD_MIN_WIDTH + CARD_GAP))
@@ -33,7 +36,9 @@ pub fn grid_column_count(container_width: f32) -> usize {
 pub fn grid_card_width(container_width: f32) -> f32 {
     let columns = grid_column_count(container_width).max(1) as f32;
     let inner = grid_inner_width(container_width);
-    (inner - CARD_GAP * (columns - 1.0).max(0.0)) / columns
+    let gaps = CARD_GAP * (columns - 1.0).max(0.0);
+    // Floor so float rounding never pushes the last column past the clip edge.
+    ((inner - gaps) / columns).floor().max(1.0)
 }
 
 pub fn thumb_height(card_width: f32) -> f32 {
@@ -97,8 +102,8 @@ mod tests {
 
     #[test]
     fn narrow_container_wraps_five_nodes_to_multiple_rows() {
-        // One column: 200 + 2*14 pad = 228; force ~1–2 columns with 5 nodes.
-        let width = 430.0; // inner ≈ 402 → floor((402+12)/(200+12)) = 1
+        // One column: 240 + 2*14 pad + gutter; force wrap with 5 nodes.
+        let width = 430.0; // inner ≈ 388 → floor((388+12)/(240+12)) = 1
         let columns = grid_column_count(width);
         assert!(columns < 5, "expected wrap, got {columns} columns");
         let size = vec2f(width, 800.0);
@@ -109,6 +114,24 @@ mod tests {
             "second-row anchor should be below first row: {} vs {}",
             wrapped.y(),
             first.y()
+        );
+    }
+
+    #[test]
+    fn typical_width_wraps_five_cards_before_clipping() {
+        // ~1100px content area used to squeeze five 200px cards and clip the last.
+        let width = 1100.0;
+        let columns = grid_column_count(width);
+        assert!(
+            columns <= 4,
+            "expected ≤4 columns so five cards wrap, got {columns}"
+        );
+        let total = columns as f32 * grid_card_width(width)
+            + (columns.saturating_sub(1) as f32) * CARD_GAP
+            + TOPO_PAD * 2.0;
+        assert!(
+            total + SCROLLBAR_GUTTER <= width + 0.5,
+            "row must fit inside container with scrollbar gutter: total={total} width={width}"
         );
     }
 
@@ -136,6 +159,20 @@ mod tests {
         assert_eq!(
             card_height(card_w),
             thumb_height(card_w) + BODY_MIN_HEIGHT + BODY_VERTICAL_PADDING + CARD_BORDER * 2.0
+        );
+    }
+
+    #[test]
+    fn row_width_fits_with_trailing_gaps_only() {
+        let width = 1100.0;
+        let columns = grid_column_count(width).max(1);
+        let card_w = grid_card_width(width);
+        let row = columns as f32 * card_w
+            + (columns.saturating_sub(1) as f32) * CARD_GAP
+            + TOPO_PAD * 2.0;
+        assert!(
+            row + SCROLLBAR_GUTTER <= width + 0.5,
+            "trailing-gap-only row must fit: row={row} width={width} cols={columns} card={card_w}"
         );
     }
 }

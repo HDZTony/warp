@@ -43,6 +43,7 @@ pub const TG_SIDEBAR_AVATAR: f32 = 46.0;
 /// Inner content width inside sidebar item horizontal padding (12px × 2 in 300px column).
 const CHAT_ITEM_INNER_WIDTH: f32 = 276.0;
 const CTX_MENU_WIDTH: f32 = 160.0;
+const SIDEBAR_COL_WIDTH: f32 = 300.0;
 
 fn presence_state(online: bool, raw: &str) -> String {
     if online || raw == "online" {
@@ -69,6 +70,7 @@ pub enum ChatSidebarAction {
     SearchEdit(TextFieldEditAction),
     FocusSearch,
     ActivateSearch,
+    BlurSearch,
     OpenContextMenu { id: String, x: f32, y: f32 },
     CloseContextMenu,
     ContextOpen,
@@ -76,6 +78,8 @@ pub enum ChatSidebarAction {
     ContextDelete,
     ToggleSidebarMenu,
     CloseSidebarMenu,
+    MenuHover(Option<&'static str>),
+    MenuBtnHover(bool),
     MenuNewGroup,
     MenuNewChannel,
     MenuContacts,
@@ -88,6 +92,7 @@ pub enum ChatSidebarEvent {
     Selected(String),
     OpenContacts,
     OpenCalls,
+    OpenChannel,
 }
 
 struct SidebarRow {
@@ -122,6 +127,8 @@ pub struct ChatSidebarView {
     status: String,
     scroll: ClippedScrollStateHandle,
     context_menu: Option<(String, f32, f32)>,
+    menu_hover: Option<&'static str>,
+    menu_btn_hover: bool,
     last_prefs_tick: u64,
     refresh_in_flight: bool,
     refresh_pending: bool,
@@ -155,6 +162,8 @@ impl ChatSidebarView {
             status: String::new(),
             scroll: ClippedScrollStateHandle::new(),
             context_menu: None,
+            menu_hover: None,
+            menu_btn_hover: false,
             last_prefs_tick: 0,
             refresh_in_flight: false,
             refresh_pending: false,
@@ -839,7 +848,7 @@ impl ChatSidebarView {
         let field = render_search_field_with_caret(
             &draft,
             &marked,
-            "搜索终端…",
+            "搜索",
             self.font,
             search_focused,
             false,
@@ -853,7 +862,7 @@ impl ChatSidebarView {
         .ime_preedit(!marked.is_empty())
         .on_keydown(move |ctx, keystroke| {
             if keystroke.key == "tab" || keystroke.key == "escape" {
-                ctx.dispatch_typed_action(ChatSidebarAction::FocusSearch);
+                ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
                 return DispatchEventResult::StopPropagation;
             }
             DispatchEventResult::PropagateToParent
@@ -984,31 +993,53 @@ impl ChatSidebarView {
     fn sidebar_menu_item(
         &self,
         label: &str,
+        icon_path: &'static str,
+        hover_key: &'static str,
         action: ChatSidebarAction,
-        enabled: bool,
     ) -> Box<dyn Element> {
-        let color = if enabled {
-            theme::text()
-        } else {
-            theme::muted()
-        };
-        let label = label.to_string();
+        let hovered = self.menu_hover == Some(hover_key);
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(icons::chat_sidebar_menu_row_icon(icon_path, theme::muted()))
+            .with_child(
+                Container::new(
+                    ui_text::chat_sidebar_name(label.to_string(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_margin_left(16.0)
+                .finish(),
+            )
+            .finish();
         EventHandler::new(
-            Container::new(
-                ui_text::body(label, self.font)
-                    .with_color(color)
+            ConstrainedBox::new(
+                Container::new(row)
+                    .with_padding_left(18.0)
+                    .with_padding_right(18.0)
+                    .with_background(if hovered {
+                        theme::accent_cool_bg(20)
+                    } else {
+                        ColorU::transparent_black()
+                    })
                     .finish(),
             )
-            .with_padding_left(12.0)
-            .with_padding_right(12.0)
-            .with_padding_top(10.0)
-            .with_padding_bottom(10.0)
+            .with_min_height(48.0)
             .finish(),
         )
+        .on_mouse_in(
+            move |ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::MenuHover(Some(hover_key)));
+                DispatchEventResult::PropagateToParent
+            },
+            None,
+        )
+        .on_mouse_out(move |ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::MenuHover(None));
+            DispatchEventResult::PropagateToParent
+        })
         .on_left_mouse_down(move |ctx, _, _| {
-            if enabled {
-                ctx.dispatch_typed_action(action.clone());
-            }
+            ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
         })
         .finish()
@@ -1020,40 +1051,80 @@ impl ChatSidebarView {
             .with_main_axis_size(MainAxisSize::Min);
         menu.add_child(self.sidebar_menu_item(
             "新建群组",
+            "chat-menu-new-group.svg",
+            "new-group",
             ChatSidebarAction::MenuNewGroup,
-            true,
         ));
         menu.add_child(self.sidebar_menu_item(
-            "新建频道（即将推出）",
+            "新建频道",
+            "chat-menu-new-channel.svg",
+            "new-channel",
             ChatSidebarAction::MenuNewChannel,
-            false,
         ));
         menu.add_child(self.sidebar_menu_item(
             "联系人",
+            "chat-menu-contacts.svg",
+            "contacts",
             ChatSidebarAction::MenuContacts,
-            true,
         ));
         menu.add_child(self.sidebar_menu_item(
             "通话",
+            "chat-menu-calls.svg",
+            "calls",
             ChatSidebarAction::MenuCalls,
-            true,
         ));
         menu.add_child(self.sidebar_menu_item(
             "我的收藏",
+            "chat-menu-favorites.svg",
+            "favorites",
             ChatSidebarAction::MenuFavorites,
-            true,
         ));
-        let panel = Container::new(
-            ConstrainedBox::new(menu.finish())
-                .with_width(200.0)
+        Container::new(
+            Container::new(menu.finish())
+                .with_padding_top(4.0)
+                .with_padding_bottom(4.0)
                 .finish(),
         )
-        .with_background(theme::panel_elevated())
-        .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-        .finish();
-        // Anchor under the hamburger (search row left).
-        positioned_context_menu(8.0, 52.0, panel)
+        .with_background(theme::panel())
+        .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+        .finish()
+    }
+
+    fn search_categories(&self) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        for (label, active, enabled) in [
+            ("聊天", true, true),
+            ("频道", false, false),
+            ("应用", false, false),
+        ] {
+            let color = if active {
+                theme::accent_cool()
+            } else if enabled {
+                theme::muted()
+            } else {
+                theme::placeholder()
+            };
+            let mut tab = Container::new(
+                ui_text::device_meta(label.to_string(), self.font)
+                    .with_color(color)
+                    .finish(),
+            )
+            .with_padding_top(8.0)
+            .with_padding_bottom(10.0);
+            if active {
+                tab = tab.with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
+            }
+            row.add_child(
+                Container::new(tab.finish())
+                    .with_margin_right(18.0)
+                    .finish(),
+            );
+        }
+        Container::new(row.finish())
+            .with_margin_top(8.0)
+            .finish()
     }
 
     fn clear_selection_if_matches(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
@@ -1142,111 +1213,155 @@ impl View for ChatSidebarView {
             .lock()
             .map(|s| s.sidebar_menu_open)
             .unwrap_or(false);
+        let menu_btn_active = sidebar_menu_open || self.menu_btn_hover;
         let menu_btn = EventHandler::new(
-            Container::new(icons::chat_sidebar_menu_icon(if sidebar_menu_open {
-                theme::text()
-            } else {
-                theme::muted()
-            }))
-            .with_uniform_padding(8.0)
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-            .with_background(if sidebar_menu_open {
+            Container::new(
+                ConstrainedBox::new(
+                    Align::new(icons::chat_sidebar_menu_icon(if menu_btn_active {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    }))
+                    .finish(),
+                )
+                .with_width(34.0)
+                .with_height(34.0)
+                .finish(),
+            )
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(17.0)))
+            .with_background(if menu_btn_active {
                 theme::accent_cool_bg(28)
             } else {
                 ColorU::new(0, 0, 0, 0)
             })
             .finish(),
         )
+        .on_mouse_in(
+            |ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::MenuBtnHover(true));
+                DispatchEventResult::PropagateToParent
+            },
+            None,
+        )
+        .on_mouse_out(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::MenuBtnHover(false));
+            DispatchEventResult::PropagateToParent
+        })
         .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
             ctx.dispatch_typed_action(ChatSidebarAction::ToggleSidebarMenu);
             DispatchEventResult::StopPropagation
         })
         .finish();
 
-        let body = Flex::column()
-            .with_main_axis_size(MainAxisSize::Max)
+        let mut search_header = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(
-                Container::new(
-                    Flex::row()
-                        .with_main_axis_size(MainAxisSize::Max)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(menu_btn)
-                        .with_child(
-                            Expanded::new(
-                                1.0,
-                                Container::new(self.search_box())
-                                    .with_padding_left(6.0)
-                                    .finish(),
-                            )
-                            .finish(),
-                        )
-                        .finish(),
-                )
-                .with_horizontal_padding(8.0)
-                .with_vertical_padding(10.0)
-                .with_background(theme::panel())
-                .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
-                .finish(),
-            )
-            .with_child(
-                Expanded::new(
-                    1.0,
-                    Container::new(
-                        ClippedScrollable::vertical(
-                            self.scroll.clone(),
-                            Container::new(list.finish())
-                                .with_vertical_padding(4.0)
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(menu_btn)
+                    .with_child(
+                        Expanded::new(
+                            1.0,
+                            Container::new(self.search_box())
+                                .with_padding_left(6.0)
                                 .finish(),
-                            ScrollbarWidth::Auto,
-                            Fill::None,
-                            Fill::None,
-                            Fill::None,
                         )
                         .finish(),
                     )
-                    .with_background(theme::panel())
-                    .with_border(Border::right(1.0).with_border_fill(theme::border()))
                     .finish(),
+            );
+        if self.search_focused {
+            search_header.add_child(self.search_categories());
+        }
+
+        let list_body = EventHandler::new(
+            Container::new(
+                ClippedScrollable::vertical(
+                    self.scroll.clone(),
+                    Container::new(list.finish())
+                        .with_vertical_padding(4.0)
+                        .finish(),
+                    ScrollbarWidth::Auto,
+                    Fill::None,
+                    Fill::None,
+                    Fill::None,
                 )
                 .finish(),
             )
-            .finish();
+            .with_background(theme::panel())
+            .with_border(Border::right(1.0).with_border_fill(theme::border()))
+            .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
+            DispatchEventResult::PropagateToParent
+        })
+        .finish();
 
-        if !menu_open && !sidebar_menu_open {
-            return body;
-        }
-
-        let mut stack = Stack::new();
-        stack.add_child(body);
-        if menu_open {
-            let scrim = EventHandler::new(
-                Container::new(Flex::column().finish())
-                    .with_background(ColorU::new(8, 7, 11, 40))
-                    .finish(),
-            )
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(ChatSidebarAction::CloseContextMenu);
-                DispatchEventResult::StopPropagation
-            })
-            .finish();
-            stack.add_child(scrim);
-            stack.add_child(self.conversation_context_menu());
-        }
-        if sidebar_menu_open {
+        let list_layer = if sidebar_menu_open {
+            let mut list_stack = Stack::new();
+            list_stack.add_child(list_body);
             let scrim = EventHandler::new(
                 Container::new(Flex::column().finish())
                     .with_background(ColorU::new(0, 0, 0, 0))
                     .finish(),
             )
             .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
                 ctx.dispatch_typed_action(ChatSidebarAction::CloseSidebarMenu);
                 DispatchEventResult::StopPropagation
             })
             .finish();
-            stack.add_child(scrim);
-            stack.add_child(self.sidebar_hamburger_menu());
+            list_stack.add_child(scrim);
+            list_stack.add_child(
+                Align::new(
+                    ConstrainedBox::new(self.sidebar_hamburger_menu())
+                        .with_width(SIDEBAR_COL_WIDTH)
+                        .finish(),
+                )
+                .top_left()
+                .finish(),
+            );
+            list_stack.finish()
+        } else {
+            list_body
+        };
+
+        let body = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(
+                Container::new(search_header.finish())
+                    .with_horizontal_padding(8.0)
+                    .with_vertical_padding(10.0)
+                    .with_background(theme::panel())
+                    .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+                    .finish(),
+            )
+            .with_child(Expanded::new(1.0, list_layer).finish())
+            .finish();
+
+        if !menu_open {
+            return body;
         }
+
+        let mut stack = Stack::new();
+        stack.add_child(body);
+        let scrim = EventHandler::new(
+            Container::new(Flex::column().finish())
+                .with_background(ColorU::new(8, 7, 11, 40))
+                .finish(),
+        )
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::CloseContextMenu);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+        stack.add_child(scrim);
+        stack.add_child(self.conversation_context_menu());
         EventHandler::new(stack.finish())
             .on_keydown(|ctx, _, keystroke| {
                 if keystroke.key.as_str() == "escape" {
@@ -1266,6 +1381,10 @@ impl TypedActionView for ChatSidebarView {
     fn handle_action(&mut self, action: &ChatSidebarAction, ctx: &mut ViewContext<Self>) {
         match action {
             ChatSidebarAction::Select(id) => {
+                if self.search_focused {
+                    self.search_focused = false;
+                    sync_caret_blink(self, ctx);
+                }
                 if self.selecting.is_some() {
                     return;
                 }
@@ -1301,6 +1420,13 @@ impl TypedActionView for ChatSidebarView {
                     ctx.notify();
                 }
             }
+            ChatSidebarAction::BlurSearch => {
+                if self.search_focused {
+                    self.search_focused = false;
+                    sync_caret_blink(self, ctx);
+                    ctx.notify();
+                }
+            }
             ChatSidebarAction::SearchEdit(edit) => {
                 self.search_field.apply(&mut self.search, edit);
                 self.search_focused = true;
@@ -1308,6 +1434,10 @@ impl TypedActionView for ChatSidebarView {
                 ctx.notify();
             }
             ChatSidebarAction::OpenContextMenu { id, x, y } => {
+                if self.search_focused {
+                    self.search_focused = false;
+                    sync_caret_blink(self, ctx);
+                }
                 self.context_menu = Some((id.clone(), *x, *y));
                 ctx.notify();
             }
@@ -1432,19 +1562,31 @@ impl TypedActionView for ChatSidebarView {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.sidebar_menu_open = false;
                 }
+                self.menu_hover = None;
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuHover(key) => {
+                self.menu_hover = *key;
+                ctx.notify();
+            }
+            ChatSidebarAction::MenuBtnHover(on) => {
+                self.menu_btn_hover = *on;
                 ctx.notify();
             }
             ChatSidebarAction::MenuNewGroup => {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.sidebar_menu_open = false;
                 }
+                self.menu_hover = None;
                 self.create_default_cluster_group(ctx);
             }
             ChatSidebarAction::MenuNewChannel => {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.sidebar_menu_open = false;
-                    state.show_toast("频道即将推出", StatusTone::Muted);
+                    state.open_channel();
                 }
+                self.menu_hover = None;
+                ctx.emit(ChatSidebarEvent::OpenChannel);
                 ctx.notify();
             }
             ChatSidebarAction::MenuContacts => {
@@ -1452,6 +1594,7 @@ impl TypedActionView for ChatSidebarView {
                     state.sidebar_menu_open = false;
                     state.open_contacts();
                 }
+                self.menu_hover = None;
                 ctx.emit(ChatSidebarEvent::OpenContacts);
                 ctx.notify();
             }
@@ -1460,6 +1603,7 @@ impl TypedActionView for ChatSidebarView {
                     state.sidebar_menu_open = false;
                     state.open_calls();
                 }
+                self.menu_hover = None;
                 ctx.emit(ChatSidebarEvent::OpenCalls);
                 ctx.notify();
             }
@@ -1477,6 +1621,7 @@ impl TypedActionView for ChatSidebarView {
                         StatusTone::Muted,
                     );
                 }
+                self.menu_hover = None;
                 ctx.notify();
             }
         }
