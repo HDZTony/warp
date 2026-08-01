@@ -21,14 +21,15 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    chat_start_conversation, StartChatConversationParams,
+    chat_start_contact_conversation, chat_start_conversation, StartChatContactParams,
+    StartChatConversationParams,
 };
 use wormhole_desktop_core::chat_contacts::{
-    chat_contacts_add, chat_contacts_list_manual, merge_contact_rows, ChatContactAddParams,
-    ContactDto, ContactSource,
+    aggregate_cluster_contacts_by_account, chat_contacts_add, chat_contacts_list_manual,
+    merge_contact_rows, ChatContactAddParams, ContactDto, ContactSource,
 };
 use wormhole_desktop_core::cluster_commands::cluster_status_hud;
-use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
+use wormhole_desktop_core::device_remarks::load_device_remarks;
 
 const DIALOG_WIDTH: f32 = 420.0;
 const DIALOG_HEIGHT: f32 = 560.0;
@@ -77,7 +78,6 @@ pub struct ContactsPanelView {
     add_focused: u8,
     status: String,
     status_tone: StatusTone,
-    opening: bool,
     last_open: bool,
 }
 
@@ -110,7 +110,6 @@ impl ContactsPanelView {
             add_focused: 0,
             status: String::new(),
             status_tone: StatusTone::Neutral,
-            opening: false,
             last_open: false,
         };
         view.poll_open(ctx);
@@ -130,11 +129,9 @@ impl ContactsPanelView {
                     .unwrap_or(false);
                 if open && !view.last_open {
                     view.last_open = true;
-                    view.opening = false;
                     view.reload(ctx);
                 } else if !open {
                     view.last_open = false;
-                    view.opening = false;
                 }
                 view.poll_open(ctx);
                 ctx.notify();
@@ -158,44 +155,27 @@ impl ContactsPanelView {
                     .node_if_ready()
                     .map(|n| n.endpoint_id().to_string())
                     .unwrap_or_default();
-                let mut cluster_rows = Vec::new();
-                if let Some(status) = cluster {
-                    for node in status.nodes {
-                        let endpoint = node
-                            .chat_endpoint_id
-                            .clone()
-                            .unwrap_or_else(|| node.node_id.clone());
-                        if endpoint.is_empty() || endpoint == local_endpoint {
-                            continue;
-                        }
-                        let title = display_name_with_remark(
-                            remarks.get(&node.node_id).map(String::as_str),
-                            || {
-                                if node.hostname.trim().is_empty() {
-                                    endpoint.clone()
-                                } else {
-                                    format!("{} · {}", node.os, node.hostname)
-                                }
-                            },
-                        );
-                        cluster_rows.push(ContactDto {
-                            id: format!("cluster:{endpoint}"),
-                            display_name: title,
-                            wormhole_id: endpoint,
-                            email: String::new(),
-                            source: ContactSource::Cluster,
-                            can_chat: true,
-                            bootstrap_addrs: node.chat_bootstrap_addrs.clone(),
-                        });
-                    }
-                }
+                let cluster_rows = if let Some(status) = cluster {
+                    let local_user_id = status
+                        .nodes
+                        .iter()
+                        .find(|node| node.node_id == status.local_node_id)
+                        .and_then(|node| node.user_id.clone());
+                    aggregate_cluster_contacts_by_account(
+                        &status.nodes,
+                        &status.local_node_id,
+                        local_user_id.as_deref(),
+                        &local_endpoint,
+                        &remarks,
+                    )
+                } else {
+                    Vec::new()
+                };
                 merge_contact_rows(cluster_rows, manual)
             },
             |view, rows, ctx| {
                 view.contacts = rows;
-                if !view.opening {
-                    view.status.clear();
-                }
+                view.status.clear();
                 ctx.notify();
             },
         );
@@ -231,75 +211,83 @@ impl ContactsPanelView {
     }
 
     fn open_contact(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
-        if self.opening {
-            return;
-        }
         let Some(contact) = self.contacts.iter().find(|c| c.id == id).cloned() else {
             return;
         };
-        if !contact.can_chat || contact.wormhole_id.is_empty() {
-            self.status = "该联系人仅有邮箱，无法打开私聊。请补充 Wormhole ID。".into();
+        if !contact.can_chat {
+            self.status = "该联系人无法打开私聊。请补充帐号 ID 或 Wormhole ID。".into();
             self.status_tone = StatusTone::Warn;
-            if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast(
-                    "该联系人仅有邮箱，无法打开私聊",
-                    StatusTone::Warn,
-                );
-            }
             ctx.notify();
             return;
         }
-        self.opening = true;
-        self.status = "正在打开会话…".into();
-        self.status_tone = StatusTone::Neutral;
-        if let Ok(mut state) = self.shell_state.lock() {
-            state.show_toast("正在打开会话…", StatusTone::Muted);
-        }
         let core = self.core.clone();
-        let peer = contact.wormhole_id.clone();
         let name = contact.display_name.clone();
-        let bootstrap = contact.bootstrap_addrs.clone();
+        let user_id = contact.user_id.clone();
+        let endpoints = contact.endpoints.clone();
+        let bootstraps = contact.endpoint_bootstraps.clone();
+        let fallback_peer = contact.wormhole_id.clone();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
-                let app = runtime.ctx.as_ref();
+                if let Some(peer_user_id) = user_id.filter(|id| !id.trim().is_empty()) {
+                    let peer_endpoints = if endpoints.is_empty() {
+                        if fallback_peer.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![(fallback_peer, Vec::new())]
+                        }
+                    } else {
+                        endpoints
+                            .into_iter()
+                            .zip(
+                                bootstraps
+                                    .into_iter()
+                                    .chain(std::iter::repeat_with(Vec::new)),
+                            )
+                            .collect::<Vec<_>>()
+                    };
+                    return chat_start_contact_conversation(
+                        &runtime.ctx,
+                        &runtime.state,
+                        StartChatContactParams {
+                            peer_user_id,
+                            peer_display_name: Some(name),
+                            peer_endpoints,
+                        },
+                    )
+                    .await;
+                }
+                if fallback_peer.is_empty() {
+                    return Err("该联系人仅有邮箱，无法打开私聊。请补充 Wormhole ID。".into());
+                }
                 chat_start_conversation(
-                    app,
+                    &runtime.ctx,
                     &runtime.state,
                     StartChatConversationParams {
                         backend: None,
-                        peer: Some(peer.clone()),
-                        peer_endpoint: Some(peer),
+                        peer: Some(fallback_peer.clone()),
+                        peer_endpoint: Some(fallback_peer),
                         peer_display_name: Some(name),
-                        peer_bootstrap_addrs: bootstrap,
+                        peer_bootstrap_addrs: Vec::new(),
                     },
                 )
                 .await
             },
-            |view, result, ctx| {
-                view.opening = false;
-                match result {
-                    Ok(conv) => {
-                        if let Ok(mut state) = view.shell_state.lock() {
-                            state.close_contacts();
-                            state.show_toast("已打开会话", StatusTone::Success);
-                        }
-                        view.status.clear();
-                        ctx.emit(ContactsPanelEvent::OpenConversation(conv.id));
-                        ctx.notify();
+            |view, result, ctx| match result {
+                Ok(conv) => {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.close_contacts();
                     }
-                    Err(err) => {
-                        view.status = err.clone();
-                        view.status_tone = StatusTone::Danger;
-                        if let Ok(mut state) = view.shell_state.lock() {
-                            state.show_toast(format!("无法打开会话: {err}"), StatusTone::Danger);
-                        }
-                        ctx.notify();
-                    }
+                    ctx.emit(ContactsPanelEvent::OpenConversation(conv.id));
+                    ctx.notify();
+                }
+                Err(err) => {
+                    view.status = err;
+                    view.status_tone = StatusTone::Danger;
+                    ctx.notify();
                 }
             },
         );
-        ctx.notify();
     }
 
     fn submit_add(&mut self, ctx: &mut ViewContext<Self>) {
@@ -308,6 +296,7 @@ impl ContactsPanelView {
             display_name: self.add_name.clone(),
             wormhole_id: self.add_id.clone(),
             email: self.add_email.clone(),
+            user_id: String::new(),
         };
         ctx.spawn(
             async move {
@@ -453,9 +442,7 @@ impl ContactsPanelView {
             )
             .finish()
         } else {
-            let mut list = Flex::column()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            let mut list = Flex::column().with_main_axis_size(MainAxisSize::Min);
             for c in rows {
                 list.add_child(self.contact_row(&c));
             }
@@ -552,7 +539,6 @@ impl ContactsPanelView {
 
     fn contact_row(&self, c: &ContactDto) -> Box<dyn Element> {
         let id = c.id.clone();
-        let dimmed = self.opening;
         let avatar = tg_avatar(
             c.display_name.chars().take(2).collect::<String>(),
             self.font,
@@ -561,17 +547,21 @@ impl ContactsPanelView {
         let mut copy = Flex::column().with_main_axis_size(MainAxisSize::Min);
         copy.add_child(
             ui_text::body(c.display_name.clone(), self.font)
-                .with_color(if dimmed {
-                    theme::muted()
-                } else {
-                    theme::text()
-                })
+                .with_color(theme::text())
                 .finish(),
         );
-        let subtitle = if !c.wormhole_id.is_empty() {
-            c.wormhole_id.clone()
-        } else {
+        let subtitle = if c.device_count > 0 {
+            if !c.email.is_empty() {
+                format!("{} · {} 台设备", c.email, c.device_count)
+            } else {
+                format!("{} 台设备", c.device_count)
+            }
+        } else if !c.email.is_empty() {
             c.email.clone()
+        } else if let Some(user_id) = c.user_id.as_ref() {
+            user_id.clone()
+        } else {
+            c.wormhole_id.clone()
         };
         copy.add_child(
             ui_text::chat_preview(subtitle, self.font)
@@ -583,13 +573,9 @@ impl ContactsPanelView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(avatar)
             .with_child(
-                Expanded::new(
-                    1.0,
-                    Container::new(copy.finish())
-                        .with_padding_left(10.0)
-                        .finish(),
-                )
-                .finish(),
+                Container::new(copy.finish())
+                    .with_padding_left(10.0)
+                    .finish(),
             )
             .finish();
         EventHandler::new(

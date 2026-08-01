@@ -45,6 +45,36 @@ extern "C" {
     pub(super) fn get_warp_app() -> id;
 }
 
+/// Ensure the process shared `NSApplication` is Warp's subclass (`WarpApplication`).
+///
+/// AppKit only creates the shared application once. Third-party macOS code such as
+/// `tray-icon` / `muda` may call `[NSApplication sharedApplication]` and lock in a
+/// plain `NSApplication` without the `rustWrapper` ivar WarpUI requires. Call this
+/// before creating a system tray (or any other AppKit client) so
+/// `[WarpApplication sharedApplication]` wins.
+///
+/// # Panics
+///
+/// Panics if the shared application is not a `WarpApplication` (usually because
+/// something else already created `NSApplication` first).
+pub fn ensure_shared_application() {
+    // SAFETY: `get_warp_app()` returns the process NSApplication singleton.
+    let app_ptr = unsafe { get_warp_app() };
+    assert!(
+        !app_ptr.is_null(),
+        "get_warp_app() returned null; AppKit failed to create WarpApplication"
+    );
+    // SAFETY: `app_ptr` is a live Objective-C object for the process lifetime.
+    let class_name = unsafe { (*app_ptr).class().name() };
+    assert_eq!(
+        class_name,
+        "WarpApplication",
+        "NSApplication singleton is `{class_name}` but WarpUI requires `WarpApplication` \
+         (rustWrapper ivar). Call warpui::platform::mac::ensure_shared_application() \
+         before tray-icon/muda or other AppKit clients."
+    );
+}
+
 /// An extension trait defining additional configurability for
 /// applications when running on macOS.
 pub trait AppExt {

@@ -336,6 +336,27 @@ impl ChatSidebarView {
     }
 
     fn apply_selection(&mut self, conv_id: String, ctx: &mut ViewContext<Self>) {
+        if self.ui_prefs.is_hidden(&conv_id) {
+            let core = self.core.clone();
+            let hide_id = conv_id.clone();
+            ctx.spawn(
+                async move {
+                    let runtime = core.runtime();
+                    set_chat_hidden(&runtime.state.data_dir, &hide_id, false).await
+                },
+                move |view, output, ctx| {
+                    if let Ok(prefs) = output {
+                        view.apply_ui_prefs(prefs, ctx);
+                    }
+                    view.finish_apply_selection(conv_id, ctx);
+                },
+            );
+            return;
+        }
+        self.finish_apply_selection(conv_id, ctx);
+    }
+
+    fn finish_apply_selection(&mut self, conv_id: String, ctx: &mut ViewContext<Self>) {
         if let Ok(mut guard) = self.selection.lock() {
             *guard = Some(conv_id.clone());
         }
@@ -488,10 +509,26 @@ impl ChatSidebarView {
             if self.ui_prefs.is_hidden(&conv.id) {
                 continue;
             }
-            let remark = find_cluster_node(conv, cluster)
-                .and_then(|node| self.remarks.get(&node.node_id).map(String::as_str));
-            let title =
-                display_name_with_remark(remark, || conversation_device_title(conv, cluster));
+            let title = if conv.kind == "contact_direct" {
+                conv.title
+                    .clone()
+                    .or_else(|| conv.peer_display_name.clone())
+                    .unwrap_or_else(|| "联系人".into())
+            } else if conv.kind == "channel" {
+                conv.title
+                    .clone()
+                    .or_else(|| conv.peer_display_name.clone())
+                    .unwrap_or_else(|| "频道".into())
+            } else if conv.kind == "cluster_group" {
+                conv.title
+                    .clone()
+                    .or_else(|| conv.peer_display_name.clone())
+                    .unwrap_or_else(|| "群组".into())
+            } else {
+                let remark = find_cluster_node(conv, cluster)
+                    .and_then(|node| self.remarks.get(&node.node_id).map(String::as_str));
+                display_name_with_remark(remark, || conversation_device_title(conv, cluster))
+            };
             let preview = conversation_preview(conv, cluster);
             let time = conv
                 .last_message_at
@@ -520,10 +557,10 @@ impl ChatSidebarView {
                 if node.node_id == cluster.local_node_id {
                     continue;
                 }
-                if conversations
-                    .iter()
-                    .any(|conv| conversation_covers_cluster_node(conv, node))
-                {
+                if conversations.iter().any(|conv| {
+                    !self.ui_prefs.is_hidden(&conv.id)
+                        && conversation_covers_cluster_node(conv, node)
+                }) {
                     continue;
                 }
                 let id = node
@@ -590,7 +627,11 @@ impl ChatSidebarView {
                     .iter()
                     .find(|conv| conv.peer_endpoint == peer)
                 {
-                    self.apply_selection(conv.id.clone(), ctx);
+                    // Re-open existing DM via start path so invite/bootstrap repair runs.
+                    let display_name = Some(format!("{} · {}", node.os, node.hostname));
+                    let bootstrap_addrs = node.chat_bootstrap_addrs.clone();
+                    let _ = conv;
+                    self.start_conversation_for_peer(peer, display_name, bootstrap_addrs, ctx);
                     return;
                 }
                 let display_name = Some(format!("{} · {}", node.os, node.hostname));
@@ -1583,7 +1624,7 @@ impl TypedActionView for ChatSidebarView {
             ChatSidebarAction::MenuNewChannel => {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.sidebar_menu_open = false;
-                    state.open_channel();
+                    state.open_channel_create();
                 }
                 self.menu_hover = None;
                 ctx.emit(ChatSidebarEvent::OpenChannel);
@@ -1797,6 +1838,10 @@ mod tests {
             peer_endpoint: peer.into(),
             peer_display_name: None,
             peer_bootstrap_addrs: Vec::new(),
+            peer_user_id: None,
+            contact_conv_id: None,
+            description: None,
+            avatar_path: None,
             doc_ticket: String::new(),
             created_at: 0,
             last_message_at: None,
@@ -1849,6 +1894,7 @@ mod tests {
                 revoked: false,
                 server_member_confirmed: false,
                 same_account: false,
+                user_id: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: Vec::new(),
@@ -1908,6 +1954,7 @@ mod tests {
                 revoked: false,
                 server_member_confirmed: false,
                 same_account: false,
+                user_id: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: Vec::new(),
@@ -1991,6 +2038,7 @@ mod tests {
             revoked: false,
             server_member_confirmed: false,
             same_account: local,
+            user_id: None,
             pending_handshake: false,
             handshake_error: None,
             share_volumes: Vec::new(),
@@ -2061,5 +2109,25 @@ mod tests {
             );
         }
         assert_eq!(placeholder_ids, vec!["ep-remote-b".to_string()]);
+    }
+
+    #[test]
+    fn hidden_pref_skips_conversation_row_but_not_cover_check_helper() {
+        let prefs = ChatUiPrefs {
+            muted: Default::default(),
+            hidden: ["conv-win".into()].into_iter().collect(),
+            wallpapers: Default::default(),
+            pinned: Default::default(),
+        };
+        assert!(prefs.is_hidden("conv-win"));
+        let node = sample_node("n-win", Some("ep-win"), false);
+        let covers = conversation_covers_cluster_node(&sample_conv("conv-win", "ep-win"), &node);
+        assert!(covers);
+        // build_rows uses: !is_hidden && covers — so hidden conv must not suppress placeholders.
+        assert!(!prefs.is_hidden("ep-win"));
+        assert!(
+            !(!prefs.is_hidden("conv-win") && covers),
+            "hidden conversation must not participate in placeholder suppression"
+        );
     }
 }

@@ -12,7 +12,7 @@ use warpui::{
 };
 
 use crate::ui::chat::calls_panel::{open_video_viewer_url, CallsPanelEvent, CallsPanelView};
-use crate::ui::chat::channel_panel::{ChannelPanelEvent, ChannelPanelView};
+use crate::ui::chat::channel_create_panel::{ChannelCreateEvent, ChannelCreatePanelView};
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::contacts_panel::{ContactsPanelEvent, ContactsPanelView};
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
@@ -66,7 +66,7 @@ pub struct ChatShellView {
     compose: ViewHandle<ChatComposeView>,
     profile: ViewHandle<ChatProfilePanelView>,
     contacts: ViewHandle<ContactsPanelView>,
-    channel: ViewHandle<ChannelPanelView>,
+    channel_create: ViewHandle<ChannelCreatePanelView>,
     calls: ViewHandle<CallsPanelView>,
 }
 
@@ -94,8 +94,8 @@ impl ChatShellView {
         let contacts = ctx.add_typed_action_view(|ctx| {
             ContactsPanelView::new(ctx, core.clone(), shell_state.clone())
         });
-        let channel = ctx.add_typed_action_view(|ctx| {
-            ChannelPanelView::new(ctx, core.clone(), shell_state.clone())
+        let channel_create = ctx.add_typed_action_view(|ctx| {
+            ChannelCreatePanelView::new(ctx, core.clone(), shell_state.clone())
         });
         let calls = ctx.add_typed_action_view(|ctx| {
             CallsPanelView::new(ctx, core.clone(), shell_state.clone())
@@ -137,9 +137,7 @@ impl ChatShellView {
                 });
                 ctx.notify();
             }
-            ChatSidebarEvent::OpenContacts
-            | ChatSidebarEvent::OpenCalls
-            | ChatSidebarEvent::OpenChannel => {
+            ChatSidebarEvent::OpenContacts | ChatSidebarEvent::OpenCalls => {
                 ctx.notify();
             }
         });
@@ -163,8 +161,8 @@ impl ChatShellView {
         let channel_header = header.clone();
         let channel_thread = thread.clone();
         let channel_sidebar = sidebar.clone();
-        ctx.subscribe_to_view(&channel, move |view, _, event, ctx| match event {
-            ChannelPanelEvent::Created(conv_id) => {
+        ctx.subscribe_to_view(&channel_create, move |view, _, event, ctx| match event {
+            ChannelCreateEvent::Created(conv_id) => {
                 if let Ok(mut guard) = view.selection.lock() {
                     *guard = Some(conv_id.clone());
                 }
@@ -176,7 +174,7 @@ impl ChatShellView {
                 ctx.update_view(&channel_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
                 ctx.notify();
             }
-            ChannelPanelEvent::Closed => ctx.notify(),
+            ChannelCreateEvent::Closed => ctx.notify(),
         });
         let call_header = header.clone();
         let call_thread = thread.clone();
@@ -229,7 +227,7 @@ impl ChatShellView {
             compose,
             profile,
             contacts,
-            channel,
+            channel_create,
             calls,
         };
         view.poll_gate(ctx);
@@ -271,6 +269,15 @@ impl ChatShellView {
                         if let Ok(chat_event) =
                             serde_json::from_value::<ChatEventDto>(event.payload.clone())
                         {
+                            if chat_event.kind == "announce_warning" {
+                                if let Ok(mut state) = shell_state.lock() {
+                                    state.show_toast(
+                                        "消息已保存，但对端拨号地址为空，可能无法即时同步到对方",
+                                        StatusTone::Warn,
+                                    );
+                                }
+                                ctx.notify();
+                            }
                             if chat_event.kind == "sync_required" {
                                 lagged = true;
                             }
@@ -368,7 +375,7 @@ impl ChatShellView {
                     || state.thread_search_open
                     || state.sidebar_menu_open
                     || state.contacts_open
-                    || state.channel_open
+                    || state.channel_create_open
                     || state.calls_open
             })
             .unwrap_or(false)
@@ -418,12 +425,12 @@ impl TypedActionView for ChatShellView {
                         } else {
                             state.close_calls();
                         }
-                    } else if state.channel_open {
-                        state.close_channel();
                     } else if state.contacts_add_open {
                         state.contacts_add_open = false;
                     } else if state.contacts_open {
                         state.close_contacts();
+                    } else if state.channel_create_open {
+                        state.close_channel_create();
                     } else if state.sidebar_menu_open {
                         state.sidebar_menu_open = false;
                     } else {
@@ -512,7 +519,7 @@ impl ChatShellView {
                 .finish(),
         );
         stack.add_child(ChildView::new(&self.contacts).finish());
-        stack.add_child(ChildView::new(&self.channel).finish());
+        stack.add_child(ChildView::new(&self.channel_create).finish());
         stack.add_child(ChildView::new(&self.calls).finish());
         stack.finish()
     }

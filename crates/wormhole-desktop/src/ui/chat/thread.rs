@@ -172,6 +172,7 @@ pub(crate) fn merge_pending_messages(
                     local_path: None,
                 })
                 .collect(),
+            source_kind: None,
         });
     }
     merged.sort_by_key(|msg| msg.sent_at);

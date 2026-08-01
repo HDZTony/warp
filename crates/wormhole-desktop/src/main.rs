@@ -181,6 +181,11 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     let _gui_instance_lock = acquire_gui_instance_or_exit();
 
+    // macOS: tray-icon/muda call [NSApplication sharedApplication]. That must be
+    // WarpApplication (with rustWrapper), so initialize WarpUI's subclass first.
+    #[cfg(target_os = "macos")]
+    warpui::platform::mac::ensure_shared_application();
+
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let tray = {
         use wormhole_desktop_tray::TrayController;
