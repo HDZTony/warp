@@ -137,7 +137,9 @@ impl ChatShellView {
                 });
                 ctx.notify();
             }
-            ChatSidebarEvent::OpenContacts | ChatSidebarEvent::OpenCalls => {
+            ChatSidebarEvent::OpenContacts
+            | ChatSidebarEvent::OpenCalls
+            | ChatSidebarEvent::OpenChannel => {
                 ctx.notify();
             }
         });

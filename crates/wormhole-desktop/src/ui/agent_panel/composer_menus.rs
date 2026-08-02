@@ -351,16 +351,16 @@ mod tests {
     #[test]
     fn composer_model_chip_prefers_active_choice() {
         let choices = vec![AgentModelChoiceDto {
-            id: "deepseek:deepseek-v4-pro".into(),
+            id: "deepseek:deepseek-v4-flash".into(),
             provider_id: "deepseek".into(),
-            model: "deepseek-v4-pro".into(),
-            label: "DeepSeek · DeepSeek V4 Pro".into(),
+            model: "deepseek-v4-flash".into(),
+            label: "DeepSeek · DeepSeek V4 Flash".into(),
             source: "byok".into(),
             is_active: true,
         }];
         assert_eq!(
             composer_model_chip_label(&choices, AgentModelRate::X03),
-            "DeepSeek · DeepSeek V4 Pro"
+            "DeepSeek · DeepSeek V4 Flash"
         );
     }
 }

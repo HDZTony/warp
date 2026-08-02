@@ -34,6 +34,7 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("device-phone.svg"),
     bundled_icon!("device-tablet.svg"),
     bundled_icon!("device-remove.svg"),
+    bundled_icon!("device-admin-crown.svg"),
     bundled_icon!("share-folder.svg"),
     bundled_icon!("share-file.svg"),
     bundled_icon!("share-pdf.svg"),
@@ -143,7 +144,7 @@ mod tests {
         for name in [
             "share-folder.svg",
             "chat-header-rdp.svg",
-            "device-remove.svg",
+            "device-admin-crown.svg",
         ] {
             let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(bytes.starts_with(b"<svg"), "{name} should be svg markup");

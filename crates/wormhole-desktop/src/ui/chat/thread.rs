@@ -1190,6 +1190,7 @@ mod tests {
             sent_at,
             sticker: None,
             attachments: Vec::new(),
+            source_kind: None,
         }
     }
 

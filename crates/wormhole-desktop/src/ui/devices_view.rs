@@ -2193,6 +2193,23 @@ impl DevicesView {
     }
 
     fn open_delete_node_modal(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
+        let removable = self
+            .cluster
+            .as_ref()
+            .and_then(|cluster| {
+                cluster
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == node_id)
+                    .map(|node| node.removable)
+            })
+            .unwrap_or(false);
+        if !removable {
+            self.status_flash = Some("只有集群管理员可以移除设备".into());
+            self.device_context_menu = None;
+            ctx.notify();
+            return;
+        }
         self.delete_modal_node_id = Some(node_id);
         self.device_context_menu = None;
         ctx.notify();
@@ -4154,14 +4171,14 @@ impl DevicesView {
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("删除终端", self.font)
+            ui_text::title("移除设备", self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "将从当前集群移除该终端。其共享文件夹与同步状态将不再可见，此操作不可撤销。",
+                    "将从当前集群移除该设备（仅管理员可操作）。其共享文件夹与同步状态将不再对其他成员可见，此操作不可撤销。",
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -4201,7 +4218,7 @@ impl DevicesView {
                 .finish(),
         );
         actions.add_child(self.toolbar_button(
-            "删除",
+            "移除",
             DevicesAction::ConfirmDeleteNode,
             true,
             80.0,
@@ -4291,16 +4308,25 @@ impl DevicesView {
             ContextItemStyle::Accent,
             !is_local,
         ));
+        let can_remove = self.cluster.as_ref().is_some_and(|cluster| {
+            cluster
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .is_some_and(|node| node.removable)
+        });
         menu.add_child(Self::cluster_menu_divider());
         menu.add_child(self.device_context_item(
             if is_local {
                 "无法删除本机"
+            } else if can_remove {
+                "移除设备"
             } else {
-                "删除终端"
+                "无权移除设备"
             },
             DevicesAction::OpenDeleteNodeModal(node_id),
             ContextItemStyle::Danger,
-            !is_local,
+            can_remove,
         ));
 
         let panel = Container::new(
@@ -6267,9 +6293,6 @@ impl TypedActionView for DevicesView {
             DevicesAction::OpenDeleteClusterModal => self.open_delete_cluster_modal(ctx),
             DevicesAction::CloseDeleteClusterModal => self.close_delete_cluster_modal(ctx),
             DevicesAction::ConfirmDeleteCluster => self.confirm_delete_cluster(ctx),
-            DevicesAction::RemoveClusterDevice { device_id, node_id } => {
-                self.remove_cluster_device(device_id.clone(), node_id.clone(), ctx);
-            }
             DevicesAction::ShareBack => self.share_back(ctx),
             DevicesAction::ShareForward => self.share_forward(ctx),
             DevicesAction::ShareNavigate { volume_id, name } => {
@@ -6575,6 +6598,7 @@ mod share_root_reload_tests {
                 revoked: false,
                 server_member_confirmed: true,
                 same_account: true,
+                user_id: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: volumes

@@ -24,9 +24,21 @@ use crate::ui::cluster_layout::{
 
 const TOPO_HINT_TOP_MARGIN: f32 = 24.0;
 const DEVICE_CHROME_INSET: f32 = 6.0;
+const DEVICE_ADMIN_BADGE_INSET: f32 = 5.0;
+const DEVICE_ADMIN_BADGE_SIZE: f32 = 28.0;
 const DEVICE_DELETE_BTN: f32 = 26.0;
 const DEVICE_ACTION_BTN_SIZE: f32 = 64.0;
 const DEVICE_ACTION_GAP: f32 = 8.0;
+
+/// Control-plane manage roles that may remove members (`owner` / `admin`).
+pub(crate) fn node_is_cluster_admin(role: &str) -> bool {
+    matches!(role.trim(), "owner" | "admin")
+}
+
+/// Whether the card × remove control should paint (admin actor + hover/selected).
+pub(crate) fn show_device_remove(removable: bool, hovered: bool, selected: bool) -> bool {
+    removable && (hovered || selected)
+}
 
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::hud_effects::ClusterTopology;
@@ -297,6 +309,14 @@ fn device_local_badge(mono: FamilyId) -> Box<dyn Element> {
     .finish()
 }
 
+/// HTML `.device-admin-badge` — warm crown for cluster `owner` / `admin` nodes.
+fn device_admin_badge() -> Box<dyn Element> {
+    ConstrainedBox::new(Align::new(icons::device_admin_crown_icon(theme::accent())).finish())
+        .with_width(DEVICE_ADMIN_BADGE_SIZE)
+        .with_height(DEVICE_ADMIN_BADGE_SIZE)
+        .finish()
+}
+
 fn device_delete_button(node_id: String, mono: FamilyId) -> Box<dyn Element> {
     let mouse_state: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
     let button = Hoverable::new(mouse_state, move |state| {
@@ -500,30 +520,6 @@ fn remote_desktop_button(node_id: String, available: bool, mono: FamilyId) -> Bo
     }
 }
 
-fn remove_device_button(
-    device_id: Option<String>,
-    node_id: String,
-    mono: FamilyId,
-) -> Box<dyn Element> {
-    let inner = device_action_button(
-        icons::DeviceActionIconKind::RemoveDevice,
-        "移除设备",
-        true,
-        true,
-        mono,
-    );
-
-    EventHandler::new(inner)
-        .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(DevicesAction::RemoveClusterDevice {
-                device_id: device_id.clone(),
-                node_id: node_id.clone(),
-            });
-            DispatchEventResult::StopPropagation
-        })
-        .finish()
-}
-
 fn node_card(
     node: &ClusterNodeDto,
     local_node_id: &str,
@@ -541,7 +537,8 @@ fn node_card(
     let is_local = node.node_id == local_node_id;
     let selected = node.node_id == selected_node_id;
     let hovered = node.node_id == hovered_node_id;
-    let show_delete = !is_local && (hovered || selected);
+    let is_admin = node_is_cluster_admin(&node.role);
+    let show_delete = show_device_remove(node.removable, hovered, selected);
     let display_label = node_display_label(node, is_local, remark);
     let (status_text, status_tone) = node_presence_label(node);
 
@@ -608,32 +605,13 @@ fn node_card(
             node_share_browsable(node, is_local),
             mono,
         ))
-        .with_margin_right(if !is_local || node.removable {
-            DEVICE_ACTION_GAP
-        } else {
-            0.0
-        })
+        .with_margin_right(if !is_local { DEVICE_ACTION_GAP } else { 0.0 })
         .finish(),
     );
     if !is_local {
-        actions.add_child(
-            Container::new(remote_desktop_button(
-                node_id.clone(),
-                node_remote_desktop_available(node, is_local),
-                mono,
-            ))
-            .with_margin_right(if node.removable {
-                DEVICE_ACTION_GAP
-            } else {
-                0.0
-            })
-            .finish(),
-        );
-    }
-    if node.removable {
-        actions.add_child(remove_device_button(
-            node.device_id.clone(),
-            node.node_id.clone(),
+        actions.add_child(remote_desktop_button(
+            node_id.clone(),
+            node_remote_desktop_available(node, is_local),
             mono,
         ));
     }
@@ -681,6 +659,18 @@ fn node_card(
     let card_h = card_height(card_width);
     let mut card_stack = Stack::new();
     card_stack.add_child(card);
+    if is_admin {
+        card_stack.add_child(
+            Align::new(
+                Container::new(device_admin_badge())
+                    .with_margin_top(DEVICE_ADMIN_BADGE_INSET)
+                    .with_margin_left(DEVICE_ADMIN_BADGE_INSET)
+                    .finish(),
+            )
+            .top_left()
+            .finish(),
+        );
+    }
     if is_local {
         card_stack.add_child(
             Align::new(
@@ -735,7 +725,10 @@ fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
 
 #[cfg(test)]
 mod node_share_browsable_tests {
-    use super::{node_remote_desktop_available, node_share_browsable};
+    use super::{
+        node_is_cluster_admin, node_remote_desktop_available, node_share_browsable,
+        show_device_remove,
+    };
     use wormhole_desktop_core::cluster_commands::{
         ClusterNodeDto, ShareVolumeRosterDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE,
         NODE_PRESENCE_SIGNED_IN,
@@ -768,6 +761,7 @@ mod node_share_browsable_tests {
             revoked: false,
             server_member_confirmed: true,
             same_account: true,
+            user_id: None,
             pending_handshake: false,
             handshake_error: None,
             share_volumes: (0..share_count)
@@ -778,6 +772,23 @@ mod node_share_browsable_tests {
                 .collect(),
             has_local_share_replicas: false,
         }
+    }
+
+    #[test]
+    fn cluster_admin_roles_match_owner_and_admin() {
+        assert!(node_is_cluster_admin("owner"));
+        assert!(node_is_cluster_admin("admin"));
+        assert!(node_is_cluster_admin(" owner "));
+        assert!(!node_is_cluster_admin("member"));
+        assert!(!node_is_cluster_admin(""));
+    }
+
+    #[test]
+    fn remove_control_requires_removable_and_hover_or_selected() {
+        assert!(!show_device_remove(false, true, true));
+        assert!(!show_device_remove(true, false, false));
+        assert!(show_device_remove(true, true, false));
+        assert!(show_device_remove(true, false, true));
     }
 
     #[test]

@@ -26,10 +26,6 @@ pub enum DevicesAction {
     OpenDeleteClusterModal,
     CloseDeleteClusterModal,
     ConfirmDeleteCluster,
-    RemoveClusterDevice {
-        device_id: Option<String>,
-        node_id: String,
-    },
     ShareBack,
     ShareForward,
     ShareNavigate {

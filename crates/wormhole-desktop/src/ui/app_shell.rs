@@ -1673,13 +1673,28 @@ impl AppShellView {
                 .with_border(Border::right(1.0).with_border_fill(theme::border()));
             if keyboard_focused {
                 body = body.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
-            } else if selected {
-                // Nested so right divider + bottom accent can use different fills.
-                body = Container::new(body.finish())
-                    .with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
             }
 
-            let button = ConstrainedBox::new(body.finish())
+            // Column (not Stack overlay): tab buttons live in a MainAxisSize::Min row, which
+            // passes infinite max width — Flex::Max + Expanded under Align panics there.
+            // Stretch the underline to the body width inside a finite-height column instead
+            // (HTML `.tab-btn.active::after { bottom:0; height:2px }` over `.tab-bar` border).
+            let mut column = Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(Expanded::new(1.0, body.finish()).finish());
+            if selected && !keyboard_focused {
+                column.add_child(
+                    ConstrainedBox::new(
+                        Container::new(Empty::new().finish())
+                            .with_background(theme::accent_cool())
+                            .finish(),
+                    )
+                    .with_height(TAB_ACTIVE_UNDERLINE_HEIGHT)
+                    .finish(),
+                );
+            }
+            let button = ConstrainedBox::new(column.finish())
                 .with_height(CHROME_ROW_HEIGHT)
                 .finish();
 
@@ -1699,9 +1714,9 @@ impl AppShellView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
             .finish();
 
-            let mut stack = Stack::new();
-            stack.add_child(button);
-            stack.add_positioned_overlay_child(
+            let mut tip_stack = Stack::new();
+            tip_stack.add_child(button);
+            tip_stack.add_positioned_overlay_child(
                 tooltip,
                 OffsetPositioning::offset_from_parent(
                     vec2f(0.0, 6.0),
@@ -1710,7 +1725,7 @@ impl AppShellView {
                     ChildAnchor::TopMiddle,
                 ),
             );
-            stack.finish()
+            tip_stack.finish()
         })
         .on_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
@@ -1787,15 +1802,29 @@ impl AppShellView {
             }
         }
 
-        ConstrainedBox::new(
-            Container::new(tab_row.finish())
-                .with_background(theme::panel_elevated())
-                .with_border(Border::bottom(1.0).with_border_fill(theme::border_bright()))
-                .with_horizontal_padding(4.0)
+        // HTML `.tab-bar`: content fills height; border-bottom + glow sit at bottom:0 so the
+        // active tab underline (overlay) can paint on the same edge and highlight it.
+        let chrome = Container::new(tab_row.finish())
+            .with_background(theme::panel_elevated())
+            .with_horizontal_padding(4.0)
+            .finish();
+
+        let mut stack = Stack::new();
+        stack.add_child(
+            ConstrainedBox::new(chrome)
+                .with_height(CHROME_ROW_HEIGHT)
                 .finish(),
-        )
-        .with_height(CHROME_ROW_HEIGHT)
-        .finish()
+        );
+        // Behind the active-tab overlay underline (HTML border-bottom + ::after glow).
+        stack.add_child(chrome_bottom_hairline(
+            TAB_BAR_EDGE_HEIGHT,
+            theme::border_bright(),
+        ));
+        stack.add_child(chrome_bottom_hairline(
+            TAB_BAR_EDGE_HEIGHT,
+            theme::accent_cool_bg(90),
+        ));
+        stack.finish()
     }
 
     fn onboarding_chip(&self, label: &str, tab: AppTab) -> Box<dyn Element> {
@@ -2205,6 +2234,35 @@ impl TypedActionView for AppShellView {
         };
         ActionAccessibilityContent::Custom(content)
     }
+}
+
+/// HTML `.tab-bar` border-bottom height.
+const TAB_BAR_EDGE_HEIGHT: f32 = 1.0;
+/// HTML `.tab-btn.active::after` underline height (paints over the chrome edge).
+const TAB_ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
+
+/// Full-width hairline pinned to the bottom of a [`Stack`] (HTML `bottom: 0`).
+fn chrome_bottom_hairline(height: f32, fill: ColorU) -> Box<dyn Element> {
+    Align::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(
+                Expanded::new(
+                    1.0,
+                    ConstrainedBox::new(
+                        Container::new(Empty::new().finish())
+                            .with_background(fill)
+                            .finish(),
+                    )
+                    .with_height(height)
+                    .finish(),
+                )
+                .finish(),
+            )
+            .finish(),
+    )
+    .bottom_left()
+    .finish()
 }
 
 /// Top-bar tab colors aligned with Warp icon-button press feedback.

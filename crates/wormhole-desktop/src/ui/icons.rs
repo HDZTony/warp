@@ -111,7 +111,6 @@ pub fn tab_button_content(
 pub enum DeviceActionIconKind {
     ShareFiles,
     RemoteDesktop,
-    RemoveDevice,
 }
 
 impl DeviceActionIconKind {
@@ -119,13 +118,19 @@ impl DeviceActionIconKind {
         match self {
             Self::ShareFiles => "share-folder.svg",
             Self::RemoteDesktop => "chat-header-rdp.svg",
-            Self::RemoveDevice => "device-remove.svg",
         }
     }
 }
 
 pub fn device_action_icon(kind: DeviceActionIconKind, color: ColorU) -> Box<dyn Element> {
     icon(kind.asset_path(), DEVICE_ACTION_ICON_SIZE, color)
+}
+
+/// Cluster admin crown (HTML `.device-admin-badge`); tinted with warm accent at call site.
+pub const DEVICE_ADMIN_CROWN_SIZE: f32 = 23.0;
+
+pub fn device_admin_crown_icon(color: ColorU) -> Box<dyn Element> {
+    icon("device-admin-crown.svg", DEVICE_ADMIN_CROWN_SIZE, color)
 }
 
 pub fn agent_icon(path: &'static str, color: ColorU) -> Box<dyn Element> {
@@ -392,10 +397,6 @@ mod tests {
         assert_eq!(
             DeviceActionIconKind::RemoteDesktop.asset_path(),
             "chat-header-rdp.svg"
-        );
-        assert_eq!(
-            DeviceActionIconKind::RemoveDevice.asset_path(),
-            "device-remove.svg"
         );
     }
 
