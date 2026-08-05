@@ -32,7 +32,7 @@ use warpui::platform::{AppBuilder, AppCallbacks};
 use warpui_core::platform::app::ApproveTerminateResult;
 use wormhole_desktop_core::bootstrap_desktop;
 use wormhole_desktop_core::shutdown_desktop;
-use wormhole_desktop_core::MAIN_WINDOW_TITLE;
+use wormhole_desktop_core::main_window_title;
 #[cfg(unix)]
 use wormhole_desktop_core::{
     acquire_gui_instance_or_exit, acquire_headless_instance_or_exit, DesktopInstanceKind,
@@ -186,12 +186,21 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     warpui::platform::mac::ensure_shared_application();
 
+    std::fs::create_dir_all(&data_dir)?;
+    {
+        let prefs = crate::ui::desktop_prefs::load(&data_dir);
+        let locale = wormhole_i18n::resolve_locale(
+            prefs.ui_language.as_deref(),
+            &wormhole_i18n::system_locale_tag(),
+        );
+        wormhole_i18n::set_locale(locale);
+    }
+
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let tray = {
         use wormhole_desktop_tray::TrayController;
-        Arc::new(TrayController::spawn("Wormhole")?)
+        Arc::new(TrayController::spawn(&wormhole_i18n::t("tray.tooltip"))?)
     };
-    std::fs::create_dir_all(&data_dir)?;
 
     let tokio = tokio::runtime::Runtime::new()?;
     let desktop_runtime = tokio.block_on(bootstrap_desktop(
@@ -358,7 +367,7 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         ctx.add_singleton_model(crate::ui::window_chrome::WindowsSymbolFontState::new);
         ctx.add_window(
-            ui::window_options::desktop_window_options(MAIN_WINDOW_TITLE, vec2f(1280.0, 840.0)),
+            ui::window_options::desktop_window_options(main_window_title(), vec2f(1280.0, 840.0)),
             move |view_ctx| {
                 AppShellView::new(
                     view_ctx,

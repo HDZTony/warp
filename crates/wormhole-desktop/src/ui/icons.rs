@@ -3,8 +3,8 @@
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex, Icon,
-    Image, MainAxisAlignment, MainAxisSize, ParentElement, Radius, Stack,
+    Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Icon, Image,
+    MainAxisAlignment, MainAxisSize, ParentElement, Radius, Stack,
 };
 use warpui::Element;
 use warpui_core::assets::asset_cache::AssetSource;
@@ -207,6 +207,12 @@ pub fn device_icon_scaled(
         .finish()
 }
 
+/// Device card thumb: icon centered (HTML `place-items: center`); OS label is an
+/// absolute bottom overlay (`left/right/bottom: 8px`) so it does not push the icon up.
+///
+/// Important: the label bar must be **content-sized**. Nesting `Align` inside the bar
+/// (or constraining only width) makes `Align` expand to the thumb's max height and its
+/// opaque background covers the device icon — looking like a stretched OS label.
 pub fn device_thumb(
     os_label: &str,
     online: bool,
@@ -222,40 +228,44 @@ pub fn device_thumb(
         stack.add_child(DeviceEnergyLines::live());
     }
     stack.add_child(
-        Container::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_child(
-                    Expanded::new(
-                        1.0,
-                        Flex::column()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_main_axis_alignment(MainAxisAlignment::Center)
-                            .with_child(device_icon_scaled(kind, color, card_width))
-                            .finish(),
-                    )
-                    .finish(),
-                )
-                .with_child(
-                    Container::new(
-                        crate::ui_text::device_os_label(os_upper, mono)
-                            .with_color(theme::accent_cool())
-                            .finish(),
-                    )
-                    .with_uniform_padding(4.0)
-                    .with_horizontal_margin(8.0)
-                    .with_vertical_margin(8.0)
-                    .with_background(theme::panel())
-                    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
-                        crate::ui::panel_primitives::HUD_RADIUS,
-                    )))
-                    .finish(),
-                )
+        Align::new(
+            Container::new(device_icon_scaled(kind, color, card_width))
+                .with_uniform_padding(12.0)
                 .finish(),
         )
-        .with_uniform_padding(12.0)
+        .finish(),
+    );
+    // HTML `.device-os-label { position:absolute; left:8px; right:8px; bottom:8px }`
+    // Width is fixed; height must stay content-sized (Flex Max + Center, not nested Align).
+    let os_label_bar = Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::Center)
+            .with_child(
+                crate::ui_text::device_os_label(os_upper, mono)
+                    .with_color(theme::accent_cool())
+                    .finish(),
+            )
+            .finish(),
+    )
+    .with_uniform_padding(4.0)
+    .with_background(theme::panel())
+    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+        crate::ui::panel_primitives::HUD_RADIUS,
+    )))
+    .finish();
+    stack.add_child(
+        Align::new(
+            Container::new(
+                ConstrainedBox::new(os_label_bar)
+                    .with_width((card_width - 16.0).max(1.0))
+                    .finish(),
+            )
+            .with_margin_bottom(8.0)
+            .finish(),
+        )
+        .bottom_center()
         .finish(),
     );
     Container::new(

@@ -642,8 +642,67 @@ impl ChatThreadView {
                 self.rebuild_bubbles(ctx);
             }
             self.update_hint_bubble(ctx);
+            self.try_pending_jump(ctx);
             ctx.notify();
         }
+    }
+
+    fn try_pending_jump(&mut self, ctx: &mut ViewContext<Self>) {
+        let target = self
+            .shell_state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.take_pending_jump_message());
+        let Some(target_id) = target else {
+            return;
+        };
+        if self.messages.iter().any(|message| message.id == target_id) {
+            self.scroll.scroll_to_position(ScrollTarget {
+                position_id: message_position_id(&target_id),
+                mode: ScrollToPositionMode::FullyIntoView,
+            });
+            return;
+        }
+        let Some(conv_id) = self.loaded_for.clone() else {
+            return;
+        };
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let params = ChatMessageWindowParams {
+                    conv_id: conv_id.clone(),
+                    anchor_message_id: target_id.clone(),
+                    before: Some(25),
+                    after: Some(25),
+                };
+                let result =
+                    chat_message_window(runtime.ctx.as_ref(), &runtime.state, params).await;
+                (conv_id, target_id, result)
+            },
+            |view, output, ctx| {
+                let (conv_id, target_id, result) = output;
+                if view.loaded_for.as_deref() != Some(conv_id.as_str()) {
+                    return;
+                }
+                if let Ok(window) = result {
+                    let base = view
+                        .message_cache
+                        .get(&conv_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let merged = merge_messages_by_id(&base, &window);
+                    view.message_cache.insert(conv_id.clone(), merged.clone());
+                    view.messages = view.merge_messages_for_conv(&merged, &conv_id);
+                    view.rebuild_bubbles(ctx);
+                    view.scroll.scroll_to_position(ScrollTarget {
+                        position_id: message_position_id(&target_id),
+                        mode: ScrollToPositionMode::FullyIntoView,
+                    });
+                    ctx.notify();
+                }
+            },
+        );
     }
 
     pub fn apply_incoming_message(
@@ -1002,6 +1061,8 @@ impl View for ChatThreadView {
                     .with_min_height(32.0)
                     .finish(),
                 )
+                .with_automation_label(label)
+                .with_automation_id("chat:load_earlier")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(ChatThreadAction::LoadEarlier);
                     DispatchEventResult::StopPropagation
@@ -1037,6 +1098,8 @@ impl View for ChatThreadView {
                         .with_uniform_padding(8.0)
                         .finish(),
                     )
+                    .with_automation_label("加入群视频")
+                    .with_automation_id(format!("chat:join_video:{room_id}"))
                     .on_left_mouse_down(move |ctx, _, _| {
                         ctx.dispatch_typed_action(ChatThreadAction::JoinVideoRoom {
                             room_id: room_id.clone(),

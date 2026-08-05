@@ -59,6 +59,8 @@ fn submit_button(font: FamilyId, label: &str, action: AgentPanelAction) -> Box<d
         .with_height(34.0)
         .finish(),
     )
+    .with_automation_label(label)
+    .with_automation_id(format!("ai:project_create:{label}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation
@@ -72,6 +74,8 @@ fn link_button(font: FamilyId, label: &str, action: AgentPanelAction) -> Box<dyn
             .with_color(theme::accent_cool())
             .finish(),
     )
+    .with_automation_label(label)
+    .with_automation_id(format!("ai:project_create:{label}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation
@@ -125,6 +129,8 @@ fn text_field(
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
             .finish(),
     )
+    .with_automation_label("项目名称")
+    .with_automation_id("ai:project_create_name")
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(focus_action.clone());
         DispatchEventResult::StopPropagation
@@ -165,6 +171,8 @@ fn dialog_head(font: FamilyId, title: &str) -> Box<dyn Element> {
                 .with_height(CLOSE_BTN)
                 .finish(),
             )
+            .with_automation_label("关闭")
+            .with_automation_id("ai:project_create_close")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::CloseProjectCreateModal);
                 DispatchEventResult::StopPropagation
@@ -286,6 +294,8 @@ pub fn render_project_create_modal(font: FamilyId, state: &ProjectCreateState) -
             .with_background(ColorU::new(8, 7, 11, 150))
             .finish(),
     )
+    .with_automation_label("关闭创建项目")
+    .with_automation_id("ai:project_create_scrim")
     .on_left_mouse_down(|ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::CloseProjectCreateModal);
         DispatchEventResult::StopPropagation

@@ -18,7 +18,8 @@ use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{tg_avatar, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
-    render_search_field_with_caret, wrap_text_field_focus_on_click, CaretBlink, TextFieldEditAction,
+    render_search_field_with_caret, wrap_text_field_focus_on_click,
+    wrap_text_field_focus_on_click_with_label, CaretBlink, TextFieldEditAction,
     TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
@@ -215,6 +216,8 @@ impl ChannelCreatePanelView {
                     .with_color(theme::accent_cool())
                     .finish(),
             )
+            .with_automation_label("选择图片")
+            .with_automation_id("chat:channel_pick_avatar")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ChannelCreateAction::PickAvatar);
                 DispatchEventResult::StopPropagation
@@ -229,6 +232,8 @@ impl ChannelCreatePanelView {
                             .with_color(theme::muted())
                             .finish(),
                     )
+                    .with_automation_label("移除")
+                    .with_automation_id("chat:channel_clear_avatar")
                     .on_left_mouse_down(|ctx, _, _| {
                         ctx.dispatch_typed_action(ChannelCreateAction::ClearAvatar);
                         DispatchEventResult::StopPropagation
@@ -275,7 +280,7 @@ impl ChannelCreatePanelView {
         })
         .focused(focused)
         .finish();
-        wrap_text_field_focus_on_click(
+        wrap_text_field_focus_on_click_with_label(
             Container::new(input)
                 .with_padding_left(10.0)
                 .with_padding_right(10.0)
@@ -289,6 +294,7 @@ impl ChannelCreatePanelView {
                 }))
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
                 .finish(),
+            placeholder,
             move |ctx| {
                 ctx.dispatch_typed_action(focus_action.clone());
             },
@@ -389,6 +395,8 @@ impl ChannelCreatePanelView {
                 .with_padding_bottom(8.0)
                 .finish(),
             )
+            .with_automation_label("取消")
+            .with_automation_id("chat:channel_cancel")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ChannelCreateAction::Close);
                 DispatchEventResult::StopPropagation
@@ -421,6 +429,8 @@ impl ChannelCreatePanelView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
                 .finish(),
             )
+            .with_automation_label(if self.submitting { "创建中…" } else { "创建" })
+            .with_automation_id("chat:channel_submit")
             .on_left_mouse_down(move |ctx, _, _| {
                 if can_submit {
                     ctx.dispatch_typed_action(ChannelCreateAction::Submit);
@@ -471,6 +481,8 @@ impl View for ChannelCreatePanelView {
                 .with_background(ColorU::new(0, 0, 0, 140))
                 .finish(),
         )
+        .with_automation_label("关闭创建频道")
+        .with_automation_id("chat:channel_scrim")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(ChannelCreateAction::Close);
             DispatchEventResult::StopPropagation
@@ -478,6 +490,8 @@ impl View for ChannelCreatePanelView {
         .finish();
 
         let dialog = EventHandler::new(self.dialog_body())
+            .with_automation_label("创建频道")
+            .with_automation_id("chat:channel_dialog")
             .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
             .finish();
 

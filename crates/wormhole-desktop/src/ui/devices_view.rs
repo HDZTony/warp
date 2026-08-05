@@ -9,17 +9,20 @@ use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::clipboard::{read_clipboard_text, write_clipboard_text};
-use crate::ui::cluster_topology_panel::{node_remote_desktop_available, ClusterTopologyPanel};
+use crate::ui::cluster_topology_panel::{
+    device_matches_query, node_display_label, node_remote_desktop_available, ClusterTopologyPanel,
+};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    section_hint, section_title, status_line, tab_content_fill, truncate_middle, StatusTone,
-    HUD_RADIUS, SECTION_PADDING,
+    chat_search_pill, chat_sidebar_search_bg, section_hint, section_title, status_line,
+    tab_content_fill, truncate_middle, StatusTone, AGENT_ROW_RADIUS, HUD_RADIUS, SECTION_PADDING,
 };
 use crate::ui::text_field_input::{
-    render_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
+    render_field_with_caret, render_search_field_with_caret, sync_caret_blink,
+    wrap_text_field_focus_on_click, wrap_text_field_focus_on_click_with_label, CaretBlink,
     CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
@@ -145,6 +148,9 @@ pub struct DevicesView {
     workspace_app_search: String,
     workspace_app_search_field: TextFieldState,
     workspace_app_search_focused: bool,
+    device_search: String,
+    device_search_field: TextFieldState,
+    device_search_focused: bool,
     workspace_dismissed_approval: Option<String>,
     workspace_auto_opened_job: Option<String>,
     bootstrap_busy: bool,
@@ -239,13 +245,16 @@ impl DevicesView {
             workspace_vm_candidates: Vec::new(),
             workspace_jobs: Vec::new(),
             workspace_remote_job: None,
-            workspace_status: "选择远端文件以检测远程虚拟机运行器".into(),
+            workspace_status: wormhole_i18n::t("devices.workspace.pick_file"),
             workspace_loading: false,
             workspace_selected_app: "default".into(),
             workspace_app_picker_open: false,
             workspace_app_search: String::new(),
             workspace_app_search_field: TextFieldState::new(),
             workspace_app_search_focused: false,
+            device_search: String::new(),
+            device_search_field: TextFieldState::new(),
+            device_search_focused: false,
             workspace_dismissed_approval: None,
             workspace_auto_opened_job: None,
             bootstrap_busy: false,
@@ -273,8 +282,11 @@ impl DevicesView {
         ctx: &mut ViewContext<Self>,
     ) {
         self.status_flash = Some(match result {
-            Ok(()) => "已打开远程桌面窗口".into(),
-            Err(err) => format!("无法打开远程桌面：{err}"),
+            Ok(()) => wormhole_i18n::t("devices.rdp.opened"),
+            Err(err) => wormhole_i18n::t_args(
+                "devices.rdp.open_failed",
+                &[("err", &err)],
+            ),
         });
         ctx.notify();
     }
@@ -874,7 +886,10 @@ impl DevicesView {
                     Ok(workers) => view.workspace_workers = workers,
                     Err(error) => {
                         view.workspace_workers.clear();
-                        view.set_workspace_progress(format!("Workspace worker 检测失败: {error}"));
+                        view.set_workspace_progress(wormhole_i18n::t_args(
+                            "devices.workspace.worker_detect_failed",
+                            &[("err", &error)],
+                        ));
                     }
                 }
                 match tools {
@@ -884,7 +899,10 @@ impl DevicesView {
                     }
                     Err(error) => {
                         view.workspace_tools.clear();
-                        view.set_workspace_progress(format!("读取工具目录失败: {error}"));
+                        view.set_workspace_progress(wormhole_i18n::t_args(
+                            "toolbox.read_failed",
+                            &[("err", &error)],
+                        ));
                     }
                 }
                 match local_user_apps {
@@ -936,7 +954,10 @@ impl DevicesView {
                             }
                         }
                         Err(error) => {
-                            view.set_workspace_progress(format!("读取远端安装进度失败: {error}"));
+                            view.set_workspace_progress(wormhole_i18n::t_args(
+                                "devices.workspace.read_progress_failed",
+                                &[("err", &error)],
+                            ));
                         }
                     }
                 } else {
@@ -955,24 +976,30 @@ impl DevicesView {
 
     fn update_workspace_status_from_selection(&mut self) {
         let Some(entry) = self.selected_share_entry() else {
-            self.workspace_status = "选择远端文件以检测远程虚拟机运行器".into();
+            self.workspace_status = wormhole_i18n::t("devices.workspace.pick_file");
             return;
         };
         let Some(author) = entry.version_author.as_deref() else {
-            self.workspace_status = "打开时将向来源电脑准备文件身份".into();
+            self.workspace_status = wormhole_i18n::t("devices.workspace.prepare_identity");
             return;
         };
         let Some(worker) = self.workspace_worker_for_author(author) else {
-            self.workspace_status = "远程虚拟机运行器尚未就绪".into();
+            self.workspace_status = wormhole_i18n::t("devices.workspace.runner_not_ready");
             return;
         };
         if workspace_worker_supports_app(worker, &self.workspace_selected_app) {
             let mode = workspace_worker_mode_label(worker, &self.workspace_selected_app);
-            self.workspace_status = format!("{} · {} 已就绪", worker.hostname, mode);
+            self.workspace_status = wormhole_i18n::t_args(
+                "devices.workspace.runner_ready",
+                &[("host", &worker.hostname), ("mode", &mode)],
+            );
         } else {
-            self.workspace_status = format!(
-                "{} 在线，但镜像未提供 {}",
-                worker.hostname, self.workspace_selected_app
+            self.workspace_status = wormhole_i18n::t_args(
+                "devices.workspace.online_image_missing",
+                &[
+                    ("name", &worker.hostname),
+                    ("what", &self.workspace_selected_app),
+                ],
             );
         }
     }
@@ -999,15 +1026,23 @@ impl DevicesView {
             .and_then(|e| e.version_author.as_deref())
             .and_then(|author| self.workspace_worker_for_author(author))
             .map(|worker| workspace_worker_mode_label(worker, &self.workspace_selected_app))
-            .unwrap_or_else(|| "远程运行器".into());
-        self.set_workspace_progress(format!(
-            "正在{mode_hint}中打开 {entry_name}…{}",
-            if mode_hint.contains("Host-Native") {
-                "（会占用来源电脑桌面焦点与键鼠；Wayland 首次需在来源机点「共享整屏」）"
-            } else {
-                ""
-            }
-        ));
+            .unwrap_or_else(|| wormhole_i18n::t("devices.workspace.runner_default"));
+        let host_native = self
+            .selected_share_entry()
+            .and_then(|e| e.version_author.as_deref())
+            .and_then(|author| self.workspace_worker_for_author(author))
+            .and_then(|worker| {
+                workspace_worker_execution_mode_for_app(worker, &self.workspace_selected_app)
+            })
+            == Some(WorkspaceExecutionMode::HostNative);
+        let mut opening = wormhole_i18n::t_args(
+            "devices.workspace.opening",
+            &[("name", &entry_name), ("mode", &mode_hint)],
+        );
+        if host_native {
+            opening.push_str(&wormhole_i18n::t("devices.workspace.wayland_focus_hint"));
+        }
+        self.set_workspace_progress(opening);
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -1017,11 +1052,14 @@ impl DevicesView {
             move |view, result, ctx| {
                 view.share_file_busy = false;
                 view.set_workspace_progress(match result {
-                    Ok(session) => format!(
-                        "会话 {} 已提交，正在等待虚拟机应用就绪",
-                        session.session_id
+                    Ok(session) => wormhole_i18n::t_args(
+                        "devices.workspace.session_submitted",
+                        &[("id", &session.session_id)],
                     ),
-                    Err(error) => format!("远程虚拟机打开失败: {error}"),
+                    Err(error) => wormhole_i18n::t_args(
+                        "devices.workspace.open_failed",
+                        &[("err", &error)],
+                    ),
                 });
                 ctx.notify();
             },
@@ -1041,17 +1079,17 @@ impl DevicesView {
             .as_ref()
             .and_then(|cluster| cluster.cluster_id.clone())
         else {
-            self.set_workspace_progress("当前共享浏览没有有效的 cluster_id");
+            self.set_workspace_progress(wormhole_i18n::t("devices.workspace.no_cluster"));
             ctx.notify();
             return;
         };
         let Some(source_node_id) = entry.version_author.clone() else {
-            self.set_workspace_progress("文件缺少 SyncIndex 来源节点，无法安装到正确电脑");
+            self.set_workspace_progress(wormhole_i18n::t("devices.workspace.missing_source"));
             ctx.notify();
             return;
         };
         let Some(entry_id) = entry.entry_id.clone() else {
-            self.set_workspace_progress("文件缺少 SyncIndex entry_id，无法创建安装任务");
+            self.set_workspace_progress(wormhole_i18n::t("devices.workspace.missing_entry"));
             ctx.notify();
             return;
         };
@@ -1066,7 +1104,7 @@ impl DevicesView {
             requested_by_node_id: None,
         };
         self.workspace_loading = true;
-        self.set_workspace_progress("正在向来源电脑请求准备虚拟机运行器…");
+        self.set_workspace_progress(wormhole_i18n::t("devices.workspace.provisioning"));
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -1086,7 +1124,10 @@ impl DevicesView {
                         view.workspace_remote_job = Some(job);
                     }
                     Err(error) => {
-                        view.set_workspace_progress(format!("请求安装失败: {error}"));
+                        view.set_workspace_progress(wormhole_i18n::t_args(
+                            "devices.workspace.request_install_failed",
+                            &[("err", &error)],
+                        ));
                     }
                 }
                 ctx.notify();
@@ -1129,7 +1170,10 @@ impl DevicesView {
                         view.workspace_dismissed_approval = None;
                     }
                     Err(error) => {
-                        view.set_workspace_progress(format!("批准安装失败: {error}"));
+                        view.set_workspace_progress(wormhole_i18n::t_args(
+                            "devices.workspace.approve_install_failed",
+                            &[("err", &error)],
+                        ));
                     }
                 }
                 view.refresh_workspace(ctx);
@@ -1181,7 +1225,7 @@ impl DevicesView {
                 .iter()
                 .any(|m| m.app_id.eq_ignore_ascii_case(&app));
         if !known {
-            self.set_workspace_progress("此远程虚拟机不支持该文件的打开方式");
+            self.set_workspace_progress(wormhole_i18n::t("devices.workspace.unsupported_open"));
             ctx.notify();
             return;
         }
@@ -1200,6 +1244,91 @@ impl DevicesView {
         self.workspace_app_search_focused = true;
         sync_caret_blink(self, ctx);
         ctx.notify();
+    }
+
+    fn clear_device_search(&mut self) {
+        self.device_search.clear();
+        self.device_search_field = TextFieldState::new();
+        self.device_search_focused = false;
+    }
+
+    fn edit_device_search(&mut self, edit: &TextFieldEditAction, ctx: &mut ViewContext<Self>) {
+        self.device_search_field
+            .apply(&mut self.device_search, edit);
+        self.device_search_focused = true;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn device_search_box(&self) -> Box<dyn Element> {
+        let search_focused = self.device_search_focused;
+        let draft = self.device_search.clone();
+        let marked = self.device_search_field.marked_text.clone();
+        let search_placeholder = wormhole_i18n::t("devices.search.placeholder");
+        let field = render_search_field_with_caret(
+            &draft,
+            &marked,
+            &search_placeholder,
+            self.font,
+            search_focused,
+            false,
+            self.caret_blink.visible,
+            self.device_search_field.cursor,
+        );
+        let input = TextFieldInput::builder(field, |ctx, action| {
+            ctx.dispatch_typed_action(DevicesAction::DeviceSearchEdit(action));
+        })
+        .focused(search_focused)
+        .ime_preedit(!marked.is_empty())
+        .on_keydown(move |ctx, keystroke| {
+            if keystroke.key == "tab" || keystroke.key == "escape" {
+                ctx.dispatch_typed_action(DevicesAction::BlurDeviceSearch);
+                return DispatchEventResult::StopPropagation;
+            }
+            DispatchEventResult::PropagateToParent
+        })
+        .finish();
+        let input = wrap_text_field_focus_on_click_with_label(
+            input,
+            wormhole_i18n::t("devices.search.placeholder"),
+            |ctx| {
+                ctx.dispatch_typed_action(DevicesAction::FocusDeviceSearch);
+            },
+        );
+        let input = EventHandler::new(input)
+            .with_automation_label(wormhole_i18n::t("devices.search.placeholder"))
+            .with_automation_id("devices:search")
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::FocusDeviceSearch);
+                DispatchEventResult::PropagateToParent
+            })
+            .finish();
+
+        let border_color = if search_focused {
+            theme::accent_cool()
+        } else {
+            theme::border()
+        };
+
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Container::new(icons::chat_sidebar_search_icon(theme::muted()))
+                    .with_horizontal_margin(2.0)
+                    .finish(),
+            )
+            .with_child(Expanded::new(1.0, input).finish())
+            .finish();
+
+        chat_search_pill(
+            row,
+            chat_sidebar_search_bg(),
+            border_color,
+            7.0,
+            10.0,
+            AGENT_ROW_RADIUS,
+        )
     }
 
     fn confirm_workspace_app_open(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1226,7 +1355,10 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Err(error) = result {
-                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
+                    view.set_workspace_progress(wormhole_i18n::t_args(
+                        "devices.workspace.save_open_failed",
+                        &[("err", &error)],
+                    ));
                     ctx.notify();
                 }
             },
@@ -1265,7 +1397,7 @@ impl DevicesView {
                 .cloned();
             if !local_ready && catalog.is_none() {
                 self.set_workspace_progress(
-                    "用户程序目录中无可用版本：请发布者在「设置 → 虚拟机」上传并设置下载权限，或确认当前账号在允许范围内",
+                    wormhole_i18n::t("devices.workspace.no_user_app_version"),
                 );
                 ctx.notify();
                 return;
@@ -1297,7 +1429,10 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Err(error) = result {
-                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
+                    view.set_workspace_progress(wormhole_i18n::t_args(
+                        "devices.workspace.save_open_failed",
+                        &[("err", &error)],
+                    ));
                     ctx.notify();
                 }
             },
@@ -1315,8 +1450,9 @@ impl DevicesView {
     fn workspace_open_user_app_via_worker(&mut self, app_id: String, ctx: &mut ViewContext<Self>) {
         self.workspace_selected_app = app_id.clone();
         self.update_workspace_status_from_selection();
-        self.set_workspace_progress(format!(
-            "将由目标 Linux worker 按权限拉取用户程序 {app_id} 并打开…"
+        self.set_workspace_progress(wormhole_i18n::t_args(
+            "devices.workspace.pulling_user_app",
+            &[("app_id", &app_id)],
         ));
         let Some(entry) = self.selected_share_entry() else {
             self.close_workspace_app_picker(ctx);
@@ -1336,7 +1472,10 @@ impl DevicesView {
             },
             |view, result, ctx| {
                 if let Err(error) = result {
-                    view.set_workspace_progress(format!("保存打开方式失败: {error}"));
+                    view.set_workspace_progress(wormhole_i18n::t_args(
+                        "devices.workspace.save_open_failed",
+                        &[("err", &error)],
+                    ));
                     ctx.notify();
                 }
             },
@@ -1475,7 +1614,7 @@ impl DevicesView {
             return catalog.display_name.clone();
         }
         if app.is_empty() {
-            "未选择程序".into()
+            wormhole_i18n::t("devices.workspace.no_app_selected")
         } else {
             app.to_string()
         }
@@ -1491,21 +1630,27 @@ impl DevicesView {
             .find(|item| item.app_id.eq_ignore_ascii_case(app))
         {
             let exts = if local.extensions.is_empty() {
-                "任意扩展名".into()
+                wormhole_i18n::t("devices.workspace.any_ext")
             } else {
                 local.extensions.join(", ")
             };
-            return format!("用户程序 · {exts}");
+            return wormhole_i18n::t_args(
+                "devices.workspace.user_app_exts",
+                &[("exts", &exts)],
+            );
         }
         if let Some(catalog) = self
             .workspace_catalog_user_apps
             .iter()
             .find(|item| item.app_id.eq_ignore_ascii_case(app))
         {
-            return format!("用户程序目录 · {}", catalog.visibility);
+            return wormhole_i18n::t_args(
+                "devices.workspace.user_app_catalog",
+                &[("visibility", &catalog.visibility)],
+            );
         }
         if is_user_app_capability(app) {
-            return "来源电脑已登记的用户程序".into();
+            return wormhole_i18n::t("devices.workspace.registered_user_apps");
         }
         String::new()
     }
@@ -1536,15 +1681,13 @@ impl DevicesView {
             .as_ref()
             .and_then(|c| c.nodes.iter().find(|n| n.node_id == node_id))
             .map(|n| {
-                if node_id == local_id {
-                    format!("{} · 本机", n.os)
-                } else {
-                    format!("{} · {}", n.os, n.hostname)
-                }
+                let remark = self.device_remarks.get(&n.node_id).map(String::as_str);
+                node_display_label(n, node_id == local_id, remark)
             })
             .unwrap_or_else(|| node_id.clone());
 
         self.mode = ViewMode::Files;
+        self.clear_device_search();
         self.join_modal_open = false;
         self.join_invite_draft.clear();
         self.join_feedback = None;
@@ -1788,8 +1931,8 @@ impl DevicesView {
         self.share_file_busy = true;
         self.share_new_menu_open = false;
         self.share_status = Some(match kind {
-            CreateShareEntryKind::Folder => "正在新建文件夹…".into(),
-            CreateShareEntryKind::Txt => "正在新建 txt…".into(),
+            CreateShareEntryKind::Folder => wormhole_i18n::t("devices.share.creating_folder"),
+            CreateShareEntryKind::Txt => wormhole_i18n::t("devices.share.creating_txt"),
         });
         ctx.notify();
         let core = self.core.clone();
@@ -1811,11 +1954,17 @@ impl DevicesView {
                 view.share_file_busy = false;
                 match output {
                     Ok(created) => {
-                        view.share_status = Some(format!("已新建 · {}", created.name));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.created",
+                            &[("name", &created.name)],
+                        ));
                         view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
-                        view.share_status = Some(format!("新建失败 · {e}"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.create_failed",
+                            &[("err", &e)],
+                        ));
                     }
                 }
                 ctx.notify();
@@ -1877,7 +2026,10 @@ impl DevicesView {
         }
         let share_path = self.share_path_string();
         self.share_rename_busy = true;
-        self.share_rename_feedback = Some((StatusTone::Neutral, "正在重命名…".into()));
+        self.share_rename_feedback = Some((
+            StatusTone::Neutral,
+            wormhole_i18n::t("devices.share.renaming"),
+        ));
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -1901,7 +2053,10 @@ impl DevicesView {
                         view.share_rename_modal_open = false;
                         view.share_rename_entry = None;
                         view.share_rename_feedback = None;
-                        view.share_status = Some(format!("已重命名 · {name}"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.renamed",
+                            &[("name", &name)],
+                        ));
                         view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
@@ -1924,7 +2079,7 @@ impl DevicesView {
         } else if !self.browsing_local() {
             self.share_add_path.clear();
             self.share_add_feedback =
-                Some((StatusTone::Muted, "请输入目标终端上的文件夹路径".into()));
+                Some((StatusTone::Muted, wormhole_i18n::t("devices.share.need_folder_path")));
         }
         self.share_add_modal_open = true;
         ctx.notify();
@@ -1939,7 +2094,7 @@ impl DevicesView {
     fn browse_share_add_path(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.browsing_local() {
             self.share_add_feedback =
-                Some((StatusTone::Muted, "远端终端请手动输入其本机路径".into()));
+                Some((StatusTone::Muted, wormhole_i18n::t("devices.share.remote_path_hint")));
             ctx.notify();
             return;
         }
@@ -1948,12 +2103,12 @@ impl DevicesView {
                 tokio::task::spawn_blocking(|| {
                     #[cfg(windows)]
                     {
-                        wormhole_desktop_platform_windows::pick_folder("选择共享文件夹")
+                        wormhole_desktop_platform_windows::pick_folder(&wormhole_i18n::t("devices.share.pick_folder"))
                     }
                     #[cfg(not(windows))]
                     {
                         rfd::FileDialog::new()
-                            .set_title("选择共享文件夹")
+                            .set_title(&wormhole_i18n::t("devices.share.pick_folder"))
                             .pick_folder()
                     }
                 })
@@ -1974,7 +2129,7 @@ impl DevicesView {
     fn submit_share_add(&mut self, ctx: &mut ViewContext<Self>) {
         let path = self.share_add_path.trim().to_string();
         if path.is_empty() {
-            self.share_add_feedback = Some((StatusTone::Warn, "请输入目标终端路径".into()));
+            self.share_add_feedback = Some((StatusTone::Warn, wormhole_i18n::t("devices.share.need_path")));
             ctx.notify();
             return;
         }
@@ -1982,13 +2137,16 @@ impl DevicesView {
             self.share_add_busy = false;
             self.share_add_feedback = Some((
                 StatusTone::Warn,
-                "无法确定目标终端，请重新进入共享浏览".into(),
+                wormhole_i18n::t("devices.share.no_target"),
             ));
             ctx.notify();
             return;
         };
         self.share_add_busy = true;
-        self.share_add_feedback = Some((StatusTone::Neutral, "正在添加共享文件夹…".into()));
+        self.share_add_feedback = Some((
+            StatusTone::Neutral,
+            wormhole_i18n::t("devices.share.adding"),
+        ));
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -2002,7 +2160,7 @@ impl DevicesView {
                     Ok(_) => {
                         view.share_add_modal_open = false;
                         view.share_add_feedback = None;
-                        view.share_status = Some("已添加共享文件夹".into());
+                        view.share_status = Some(wormhole_i18n::t("devices.share.added"));
                         view.force_load_share_directory(ctx);
                         view.refresh_cluster(ctx);
                     }
@@ -2050,8 +2208,8 @@ impl DevicesView {
     fn run_share_file_action<F>(
         &mut self,
         entry_name: String,
-        busy_label: &str,
-        success_label: &str,
+        busy_label: impl Into<String>,
+        success_label: impl Into<String>,
         op: F,
         ctx: &mut ViewContext<Self>,
     ) where
@@ -2068,11 +2226,11 @@ impl DevicesView {
         }
         let params = self.share_action_params(&entry_name);
         self.share_file_busy = true;
-        self.share_status = Some(busy_label.to_string());
+        self.share_status = Some(busy_label.into());
         self.close_share_context_menu(ctx);
         ctx.notify();
         let core = self.core.clone();
-        let success = success_label.to_string();
+        let success = success_label.into();
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
@@ -2086,7 +2244,10 @@ impl DevicesView {
                         view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
-                        view.share_status = Some(format!("失败 · {e}"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                        "devices.share.failed",
+                        &[("err", &e)],
+                    ));
                     }
                 }
                 ctx.notify();
@@ -2097,8 +2258,8 @@ impl DevicesView {
     fn open_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
         self.run_share_file_action(
             entry_name.clone(),
-            "正在打开…",
-            "已打开",
+            wormhole_i18n::t("devices.share.opening"),
+            wormhole_i18n::t("devices.share.opened"),
             |state, params| Box::pin(async move { open_share_entry(&state, params).await }),
             ctx,
         );
@@ -2107,8 +2268,8 @@ impl DevicesView {
     fn sync_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
         self.run_share_file_action(
             entry_name.clone(),
-            "正在同步…",
-            "已同步",
+            wormhole_i18n::t("devices.share.syncing"),
+            wormhole_i18n::t("devices.share.synced"),
             |state, params| Box::pin(async move { sync_share_entry(&state, params).await }),
             ctx,
         );
@@ -2120,7 +2281,7 @@ impl DevicesView {
         }
         let params = self.share_action_params(&entry_name);
         self.share_file_busy = true;
-        self.share_status = Some("正在来源 Windows 打开并连接桌面…".into());
+        self.share_status = Some(wormhole_i18n::t("devices.share.windows_open_progress"));
         self.close_share_context_menu(ctx);
         ctx.notify();
         let core = self.core.clone();
@@ -2133,13 +2294,19 @@ impl DevicesView {
                 view.share_file_busy = false;
                 match result {
                     Ok(target) => {
-                        view.share_status = Some(format!("Windows 打开方式已启动 · {entry_name}"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.windows_open_ok",
+                            &[("name", &entry_name)],
+                        ));
                         ctx.emit(DevicesEvent::OpenRemoteDesktop {
                             node_id: target.node_id,
                         });
                     }
                     Err(error) => {
-                        view.share_status = Some(format!("来源 Windows 打开失败 · {error}"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.windows_open_failed",
+                            &[("err", &error)],
+                        ));
                     }
                 }
                 ctx.notify();
@@ -2150,11 +2317,11 @@ impl DevicesView {
     fn delete_share_file(&mut self, entry_name: String, ctx: &mut ViewContext<Self>) {
         self.run_share_file_action(
             entry_name.clone(),
-            "正在删除…",
+            wormhole_i18n::t("devices.share.deleting"),
             if self.browsing_can_manage() {
-                "已删除"
+                wormhole_i18n::t("devices.share.deleted")
             } else {
-                "已删除本地副本"
+                wormhole_i18n::t("devices.share.deleted_local")
             },
             |state, params| Box::pin(async move { delete_share_entry(&state, params).await }),
             ctx,
@@ -2205,7 +2372,7 @@ impl DevicesView {
             })
             .unwrap_or(false);
         if !removable {
-            self.status_flash = Some("只有集群管理员可以移除设备".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.toast.admin_only_remove"));
             self.device_context_menu = None;
             ctx.notify();
             return;
@@ -2276,7 +2443,7 @@ impl DevicesView {
                     .cluster_id
                     .as_deref()
                     .map(short_cluster_id)
-                    .unwrap_or_else(|| "集群".to_string())
+                    .unwrap_or_else(|| wormhole_i18n::t("devices.status.cluster_default"))
             })
     }
 
@@ -2319,21 +2486,19 @@ impl DevicesView {
             && Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role != "owner")
     }
 
-    fn membership_gate_message(cluster: &ClusterStatusDto) -> Option<&'static str> {
+    fn membership_gate_message(cluster: &ClusterStatusDto) -> Option<String> {
         if cluster.clusters.is_empty() {
             return None;
         }
         if cluster.role_stale
             || Self::active_cluster_entry(cluster).is_some_and(|entry| entry.role_stale)
         {
-            return Some("MEMBERSHIP · 控面成员状态未同步 · 请刷新；若仍失败请重新加入或创建集群");
+            return Some(wormhole_i18n::t("devices.membership.role_stale"));
         }
         if !Self::active_cluster_can_invite(cluster)
             && Self::active_cluster_entry(cluster).is_some_and(|entry| !entry.revoked)
         {
-            return Some(
-                "MEMBERSHIP · 当前设备不是可管理成员 · 跨账号成员需管理员提升，或重新加入",
-            );
+            return Some(wormhole_i18n::t("devices.membership.not_manager"));
         }
         None
     }
@@ -2348,8 +2513,13 @@ impl DevicesView {
                 cluster
                     .cluster_id
                     .as_deref()
-                    .map(|id| format!("集群 {}", short_cluster_id(id)))
-                    .unwrap_or_else(|| "集群".to_string())
+                    .map(|id| {
+                        wormhole_i18n::t_args(
+                            "devices.status.cluster_named",
+                            &[("id", &short_cluster_id(id))],
+                        )
+                    })
+                    .unwrap_or_else(|| wormhole_i18n::t("devices.status.cluster_default"))
             })
     }
 
@@ -2373,16 +2543,16 @@ impl DevicesView {
             return flash.clone();
         }
         if self.cluster_refresh_busy {
-            return "REFRESH · 正在刷新设备目录…".to_string();
+            return wormhole_i18n::t("devices.status.refreshing");
         }
         if self.cluster_syncing {
-            return "CLUSTER · SYNCING · 后台同步集群…".to_string();
+            return wormhole_i18n::t("devices.status.syncing");
         }
         if cluster.clusters.is_empty() {
-            return "CLUSTER · EMPTY · 创建或加入集群开始同步".to_string();
+            return wormhole_i18n::t("devices.status.empty");
         }
         if let Some(gate) = Self::membership_gate_message(cluster) {
-            return gate.to_string();
+            return gate;
         }
         let n = cluster.nodes.len();
         let online = cluster.nodes.iter().filter(|node| node.online).count();
@@ -2407,28 +2577,38 @@ impl DevicesView {
                 format!("{online} ONLINE"),
             ];
             if signed_in > 0 {
-                parts.push(format!("{signed_in} 最近在线"));
+                parts.push(wormhole_i18n::t_args(
+                    "devices.status.recently_online",
+                    &[("n", &signed_in.to_string())],
+                ));
             }
             if pending > 0 {
-                parts.push(format!("{pending} 握手中"));
+                parts.push(wormhole_i18n::t_args(
+                    "devices.status.handshaking",
+                    &[("n", &pending.to_string())],
+                ));
             }
             if failed > 0 {
-                parts.push(format!("{failed} 连接失败"));
+                parts.push(wormhole_i18n::t_args(
+                    "devices.status.connect_failed",
+                    &[("n", &failed.to_string())],
+                ));
             }
             if pending > 0 {
-                parts.push("后台重试连接中".into());
+                parts.push(wormhole_i18n::t("devices.status.retrying"));
             } else if signed_in > 0 {
                 if self.signed_in_peers_slow() {
-                    parts.push("等待设备续租或重新上线".into());
+                    parts.push(wormhole_i18n::t("devices.status.wait_lease"));
                 } else {
-                    parts.push("正在确认设备在线状态".into());
+                    parts.push(wormhole_i18n::t("devices.status.confirming"));
                 }
             }
             return parts.join(" · ");
         }
         format!(
-            "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · 单击共享文件浏览",
-            if n == 1 { "" } else { "S" }
+            "CLUSTER · {n} NODE{} · {online} ONLINE · E2E ENCRYPTED · {}",
+            if n == 1 { "" } else { "S" },
+            wormhole_i18n::t("devices.status.click_browse"),
         )
     }
 
@@ -2473,6 +2653,8 @@ impl DevicesView {
             inner
         } else {
             EventHandler::new(inner)
+                .with_automation_label("刷新集群")
+                .with_automation_id("devices:refresh")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::Refresh);
                     DispatchEventResult::StopPropagation
@@ -2526,8 +2708,9 @@ impl DevicesView {
         } else {
             theme::text()
         };
+        let menu_label = label.to_string();
         let inner = Container::new(
-            ui_text::cluster_label(label.to_string(), self.mono)
+            ui_text::cluster_label(menu_label.clone(), self.mono)
                 .with_color(color)
                 .finish(),
         )
@@ -2536,6 +2719,8 @@ impl DevicesView {
         .finish();
         if enabled {
             EventHandler::new(inner)
+                .with_automation_label(menu_label)
+                .with_automation_id(format!("devices:cluster_menu:{label}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -2569,13 +2754,14 @@ impl DevicesView {
         } else {
             (theme::border_bright(), theme::panel(), theme::text())
         };
+        let btn_label = label.to_string();
         let inner = Container::new(
             ConstrainedBox::new(
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_main_axis_alignment(MainAxisAlignment::Center)
                     .with_child(
-                        ui_text::cluster_ctrl(label.to_string(), self.mono)
+                        ui_text::cluster_ctrl(btn_label.clone(), self.mono)
                             .with_color(color)
                             .finish(),
                     )
@@ -2592,6 +2778,8 @@ impl DevicesView {
         .finish();
         if enabled {
             EventHandler::new(inner)
+                .with_automation_label(btn_label)
+                .with_automation_id(format!("devices:toolbar:{label}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -2641,8 +2829,16 @@ impl DevicesView {
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish();
 
+        let nav_label = if back { "上一级" } else { "下一级" };
+        let nav_id = if back {
+            "devices:share_back"
+        } else {
+            "devices:share_forward"
+        };
         if enabled {
             EventHandler::new(inner)
+                .with_automation_label(nav_label)
+                .with_automation_id(nav_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -2657,11 +2853,13 @@ impl DevicesView {
         let mut menu = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
-        menu.add_child(Self::cluster_menu_section("切换集群", self.mono));
+        let switch_cluster = wormhole_i18n::t("devices.cluster.switch");
+        menu.add_child(Self::cluster_menu_section(&switch_cluster, self.mono));
         if cluster.clusters.is_empty() {
+            let no_clusters = wormhole_i18n::t("devices.cluster.none");
             menu.add_child(
                 Container::new(
-                    ui_text::cluster_label("暂无集群", self.mono)
+                    ui_text::cluster_label(no_clusters, self.mono)
                         .with_color(theme::muted())
                         .finish(),
                 )
@@ -2687,8 +2885,9 @@ impl DevicesView {
             let mut item_row = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Max);
+            let cluster_name = name.clone();
             item_row.add_child(
-                ui_text::cluster_label(name, self.mono)
+                ui_text::cluster_label(cluster_name.clone(), self.mono)
                     .with_color(color)
                     .finish(),
             );
@@ -2710,6 +2909,7 @@ impl DevicesView {
                     .with_color(check_color)
                     .finish(),
             );
+            let cluster_name = name.clone();
             menu.add_child(
                 EventHandler::new(
                     Container::new(item_row.finish())
@@ -2718,6 +2918,8 @@ impl DevicesView {
                         .with_background(bg)
                         .finish(),
                 )
+                .with_automation_label(cluster_name)
+                .with_automation_id(format!("devices:cluster:{cluster_id}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::SelectCluster(cluster_id.clone()));
                     DispatchEventResult::StopPropagation
@@ -2729,7 +2931,7 @@ impl DevicesView {
             menu.add_child(Self::cluster_menu_divider());
             if Self::active_cluster_can_invite(cluster) {
                 menu.add_child(self.cluster_menu_action(
-                    self.copy_invite_label(),
+                    &self.copy_invite_label(),
                     DevicesAction::CopyInvite,
                     false,
                     !self.copy_invite_busy,
@@ -2737,14 +2939,14 @@ impl DevicesView {
                 ));
             } else {
                 menu.add_child(self.cluster_menu_action(
-                    "复制邀请码（需先确认成员）",
+                    &wormhole_i18n::t("devices.cluster.copy_invite_needs_member"),
                     DevicesAction::CopyInvite,
                     false,
                     false,
                     false,
                 ));
                 menu.add_child(self.cluster_menu_action(
-                    "重新加入集群",
+                    &wormhole_i18n::t("devices.cluster.rejoin"),
                     DevicesAction::OpenJoinModal,
                     true,
                     true,
@@ -2753,19 +2955,20 @@ impl DevicesView {
             }
         }
         menu.add_child(Self::cluster_menu_divider());
+        let create_label = if self.create_cluster_busy {
+            wormhole_i18n::t("devices.cluster.creating")
+        } else {
+            wormhole_i18n::t("devices.toolbar.create")
+        };
         menu.add_child(self.cluster_menu_action(
-            if self.create_cluster_busy {
-                "创建中…"
-            } else {
-                "创建集群"
-            },
+            &create_label,
             DevicesAction::OpenCreateClusterModal,
             true,
             !self.create_cluster_busy,
             false,
         ));
         menu.add_child(self.cluster_menu_action(
-            "加入集群",
+            &wormhole_i18n::t("devices.toolbar.join"),
             DevicesAction::OpenJoinModal,
             true,
             true,
@@ -2774,7 +2977,7 @@ impl DevicesView {
         if Self::active_cluster_is_owner(cluster) && !Self::active_cluster_is_default(cluster) {
             menu.add_child(Self::cluster_menu_divider());
             menu.add_child(self.cluster_menu_action(
-                "删除集群",
+                &wormhole_i18n::t("devices.cluster.delete"),
                 DevicesAction::OpenDeleteClusterModal,
                 false,
                 true,
@@ -2785,7 +2988,7 @@ impl DevicesView {
         {
             menu.add_child(Self::cluster_menu_divider());
             menu.add_child(self.cluster_menu_action(
-                "退出集群",
+                &wormhole_i18n::t("devices.cluster.leave"),
                 DevicesAction::LeaveCluster,
                 false,
                 true,
@@ -2815,10 +3018,11 @@ impl DevicesView {
         let mut trigger_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
+        let picker_label = label.clone();
         trigger_row.add_child(
             Shrinkable::new(
                 1.0,
-                ui_text::cluster_label(label, self.mono)
+                ui_text::cluster_label(picker_label.clone(), self.mono)
                     .with_color(theme::text())
                     .finish(),
             )
@@ -2847,6 +3051,8 @@ impl DevicesView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
             .finish(),
         )
+        .with_automation_label(picker_label)
+        .with_automation_id("devices:cluster_picker")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(DevicesAction::ToggleClusterPicker);
             DispatchEventResult::StopPropagation
@@ -2864,12 +3070,13 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         if cluster.clusters.is_empty() {
+            let create_label = if self.create_cluster_busy {
+                wormhole_i18n::t("devices.cluster.creating")
+            } else {
+                wormhole_i18n::t("devices.toolbar.create")
+            };
             row.add_child(self.toolbar_button(
-                if self.create_cluster_busy {
-                    "创建中…"
-                } else {
-                    "创建集群"
-                },
+                &create_label,
                 DevicesAction::OpenCreateClusterModal,
                 true,
                 112.0,
@@ -2877,7 +3084,7 @@ impl DevicesView {
             ));
             row.add_child(
                 Container::new(self.toolbar_button(
-                    "加入集群",
+                    &wormhole_i18n::t("devices.toolbar.join"),
                     DevicesAction::OpenJoinModal,
                     true,
                     104.0,
@@ -2918,7 +3125,7 @@ impl DevicesView {
         {
             row.add_child(
                 Container::new(self.toolbar_button(
-                    "重新加入",
+                    &wormhole_i18n::t("devices.cluster.rejoin_short"),
                     DevicesAction::OpenJoinModal,
                     true,
                     104.0,
@@ -2948,13 +3155,13 @@ impl DevicesView {
         row.finish()
     }
 
-    fn copy_invite_label(&self) -> &'static str {
+    fn copy_invite_label(&self) -> String {
         if self.copy_invite_ack {
-            "已复制"
+            wormhole_i18n::t("devices.invite.copied")
         } else if self.copy_invite_busy {
-            "复制中…"
+            wormhole_i18n::t("devices.invite.copying")
         } else {
-            "复制邀请码"
+            wormhole_i18n::t("devices.invite.copy")
         }
     }
 
@@ -2964,8 +3171,11 @@ impl DevicesView {
             .cluster
             .as_ref()
             .map(DevicesView::cluster_label)
-            .unwrap_or_else(|| "集群".to_string());
-        self.status_flash = Some(format!("INVITE COPIED · {name} · 已复制本机邀请码"));
+            .unwrap_or_else(|| wormhole_i18n::t("devices.status.cluster_default"));
+        self.status_flash = Some(wormhole_i18n::t_args(
+            "devices.invite.copied_flash",
+            &[("name", &name)],
+        ));
         self.copy_invite_ack = true;
         self.copy_invite_busy = false;
         ctx.notify();
@@ -2988,9 +3198,9 @@ impl DevicesView {
         if let Some(cluster) = self.cluster.as_ref() {
             if !Self::active_cluster_can_invite(cluster) {
                 self.status_flash = Some(
-                    Self::membership_gate_message(cluster)
-                        .unwrap_or("当前设备不是该集群成员，请用原设备操作或重新加入")
-                        .to_string(),
+                    Self::membership_gate_message(cluster).unwrap_or_else(|| {
+                        wormhole_i18n::t("devices.cluster.not_member")
+                    }),
                 );
                 self.cluster_picker_open = false;
                 ctx.notify();
@@ -2999,7 +3209,7 @@ impl DevicesView {
         }
         self.copy_invite_ack = false;
         self.copy_invite_busy = true;
-        self.status_flash = Some("正在生成邀请码…".into());
+        self.status_flash = Some(wormhole_i18n::t("devices.invite.generating"));
         ctx.notify();
 
         let core = self.core.clone();
@@ -3007,7 +3217,7 @@ impl DevicesView {
         let cached = self.cached_invite.clone();
         ctx.spawn(
             async move {
-                let cluster_id = cluster_id.ok_or_else(|| "尚未选择集群".to_string())?;
+                let cluster_id = cluster_id.ok_or_else(|| wormhole_i18n::t("devices.cluster.none_selected"))?;
                 let state = core.runtime().state.clone();
                 prepare_cluster_invite_for_copy(
                     &state,
@@ -3026,14 +3236,20 @@ impl DevicesView {
                     Ok(invite) => match write_clipboard_text(&invite) {
                         Ok(()) => view.apply_copy_invite_success(invite, ctx),
                         Err(e) => {
-                            view.status_flash = Some(format!("复制失败：{e}"));
+                            view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.invite.copy_failed",
+                            &[("err", &e)],
+                        ));
                             view.join_feedback = Some((StatusTone::Danger, e));
                             ctx.notify();
                         }
                     },
                     Err(e) => {
                         view.cached_invite = None;
-                        view.status_flash = Some(format!("生成邀请码失败：{e}"));
+                        view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.invite.gen_failed",
+                            &[("err", &e)],
+                        ));
                         view.join_feedback = Some((StatusTone::Danger, e));
                         ctx.notify();
                     }
@@ -3075,7 +3291,10 @@ impl DevicesView {
         }
         let name = self.create_cluster_name.trim().to_string();
         if name.is_empty() {
-            self.create_cluster_feedback = Some((StatusTone::Danger, "请输入集群名。".to_string()));
+            self.create_cluster_feedback = Some((
+                StatusTone::Danger,
+                wormhole_i18n::t("devices.cluster.need_name"),
+            ));
             self.create_cluster_name_focused = true;
             sync_caret_blink(self, ctx);
             ctx.notify();
@@ -3084,7 +3303,7 @@ impl DevicesView {
         if name.chars().count() > 128 {
             self.create_cluster_feedback = Some((
                 StatusTone::Danger,
-                "集群名最多 128 个字符，请缩短后再创建。".to_string(),
+                wormhole_i18n::t("devices.cluster.name_too_long"),
             ));
             self.create_cluster_name_focused = true;
             sync_caret_blink(self, ctx);
@@ -3093,7 +3312,7 @@ impl DevicesView {
         }
         self.cluster_picker_open = false;
         self.create_cluster_busy = true;
-        self.status_flash = Some("正在创建新集群…".into());
+        self.status_flash = Some(wormhole_i18n::t("devices.cluster.creating_flash"));
         self.create_cluster_feedback = None;
         ctx.notify();
         let core = self.core.clone();
@@ -3105,7 +3324,7 @@ impl DevicesView {
                     create_cluster_command(&state, CreateClusterParams { name: Some(name) }),
                 )
                 .await
-                .map_err(|_| "创建集群超时，请检查登录状态和控制面连接后重试。".to_string())?
+                .map_err(|_| wormhole_i18n::t("devices.cluster.create_timeout"))?
             },
             |view, output, ctx| {
                 view.create_cluster_busy = false;
@@ -3117,13 +3336,16 @@ impl DevicesView {
                         view.create_cluster_modal_open = false;
                         view.create_cluster_name_focused = false;
                         view.create_cluster_name_field.clear_marked();
-                        view.status_flash = Some("已创建新集群".into());
+                        view.status_flash = Some(wormhole_i18n::t("devices.cluster.created"));
                         sync_caret_blink(view, ctx);
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
                         view.create_cluster_feedback = Some((StatusTone::Danger, e.clone()));
-                        view.status_flash = Some(format!("创建集群失败：{e}"));
+                        view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.cluster.create_failed",
+                            &[("err", &e)],
+                        ));
                     }
                 }
                 ctx.notify();
@@ -3183,6 +3405,7 @@ impl DevicesView {
 
     fn select_cluster(&mut self, cluster_id: String, ctx: &mut ViewContext<Self>) {
         self.cluster_picker_open = false;
+        self.clear_device_search();
         let already_active = self.cluster.as_ref().and_then(|c| c.cluster_id.as_deref())
             == Some(cluster_id.as_str());
         if already_active {
@@ -3222,13 +3445,13 @@ impl DevicesView {
     fn leave_active_cluster(&mut self, ctx: &mut ViewContext<Self>) {
         let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
         let Some(cluster_id) = cluster_id else {
-            self.status_flash = Some("尚未选择集群".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.cluster.none_selected"));
             ctx.notify();
             return;
         };
         self.cluster_picker_open = false;
         self.apply_optimistic_remove_cluster(&cluster_id, ctx);
-        self.status_flash = Some("已退出集群".into());
+        self.status_flash = Some(wormhole_i18n::t("devices.cluster.left"));
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -3242,11 +3465,14 @@ impl DevicesView {
                         view.apply_cluster_status(status, ctx);
                         view.cluster_error = None;
                         view.cached_invite = None;
-                        view.status_flash = Some("已退出集群".into());
+                        view.status_flash = Some(wormhole_i18n::t("devices.cluster.left"));
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
-                        view.status_flash = Some(format!("退出集群失败：{e}"));
+                        view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.cluster.leave_failed",
+                            &[("err", &e)],
+                        ));
                         view.refresh_cluster(ctx);
                     }
                 }
@@ -3260,13 +3486,13 @@ impl DevicesView {
             return;
         };
         if Self::active_cluster_is_default(cluster) {
-            self.status_flash = Some("账号默认集群不可删除".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.cluster.cannot_delete_default"));
             self.cluster_picker_open = false;
             ctx.notify();
             return;
         }
         if !Self::active_cluster_is_owner(cluster) {
-            self.status_flash = Some("只有集群创建者可以删除集群；成员请使用退出集群".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.cluster.owner_only_delete"));
             self.cluster_picker_open = false;
             ctx.notify();
             return;
@@ -3300,8 +3526,7 @@ impl DevicesView {
                 self.cluster
                     .as_ref()
                     .and_then(Self::membership_gate_message)
-                    .unwrap_or("只有集群创建者可以删除集群；成员请使用退出集群")
-                    .to_string(),
+                    .unwrap_or_else(|| wormhole_i18n::t("devices.cluster.owner_only_delete")),
             );
             ctx.notify();
             return;
@@ -3318,9 +3543,9 @@ impl DevicesView {
                         .map(Self::joined_cluster_label)
                 })
             })
-            .unwrap_or_else(|| "集群".to_string());
+            .unwrap_or_else(|| wormhole_i18n::t("devices.status.cluster_default"));
         let Some(cluster_id) = cluster_id else {
-            self.status_flash = Some("尚未选择集群".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.cluster.none_selected"));
             ctx.notify();
             return;
         };
@@ -3347,7 +3572,10 @@ impl DevicesView {
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
-                        view.status_flash = Some(format!("删除集群失败：{e}"));
+                        view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.cluster.delete_failed",
+                            &[("err", &e)],
+                        ));
                         view.refresh_cluster(ctx);
                     }
                 }
@@ -3364,16 +3592,16 @@ impl DevicesView {
     ) {
         let cluster_id = self.cluster.as_ref().and_then(Self::active_cluster_id);
         let Some(cluster_id) = cluster_id else {
-            self.status_flash = Some("尚未选择集群".into());
+            self.status_flash = Some(wormhole_i18n::t("devices.cluster.none_selected"));
             ctx.notify();
             return;
         };
         let removing_server_member = device_id.is_some();
         self.apply_optimistic_remove_node(&node_id, ctx);
         self.status_flash = Some(if removing_server_member {
-            "已移除设备".into()
+            wormhole_i18n::t("devices.device.removed")
         } else {
-            "已隐藏离线终端".into()
+            wormhole_i18n::t("devices.grid.hidden_offline")
         });
         ctx.notify();
         let core = self.core.clone();
@@ -3401,14 +3629,17 @@ impl DevicesView {
                         view.cluster_error = None;
                         view.cached_invite = None;
                         view.status_flash = Some(if removing_server_member {
-                            "已移除设备".into()
+                            wormhole_i18n::t("devices.device.removed")
                         } else {
-                            "已隐藏离线终端".into()
+                            wormhole_i18n::t("devices.grid.hidden_offline")
                         });
                     }
                     Err(e) => {
                         view.cluster_error = Some(e.clone());
-                        view.status_flash = Some(format!("移除设备失败：{e}"));
+                        view.status_flash = Some(wormhole_i18n::t_args(
+                            "devices.device.remove_failed",
+                            &[("err", &e)],
+                        ));
                         view.refresh_cluster(ctx);
                     }
                 }
@@ -3428,12 +3659,15 @@ impl DevicesView {
     fn submit_join(&mut self, ctx: &mut ViewContext<Self>) {
         let invite = self.join_invite_draft.trim().to_string();
         if invite.is_empty() {
-            self.join_feedback = Some((StatusTone::Warn, "请粘贴邀请码".into()));
+            self.join_feedback = Some((StatusTone::Warn, wormhole_i18n::t("devices.invite.need_paste")));
             ctx.notify();
             return;
         }
         self.invite_busy = true;
-        self.join_feedback = Some((StatusTone::Neutral, "正在加入集群…".into()));
+        self.join_feedback = Some((
+            StatusTone::Neutral,
+            wormhole_i18n::t("devices.invite.joining"),
+        ));
         ctx.notify();
         let core = self.core.clone();
         ctx.spawn(
@@ -3454,10 +3688,16 @@ impl DevicesView {
                         view.join_feedback = None;
                         view.cached_invite = None;
                         view.status_flash = Some(match result.outcome {
-                            JoinClusterOutcome::Joined => format!("已加入集群 · {cluster_label}"),
-                            JoinClusterOutcome::AlreadyActive => "您已在该集群中".to_string(),
+                            JoinClusterOutcome::Joined => wormhole_i18n::t_args(
+                                "devices.invite.joined",
+                                &[("name", &cluster_label)],
+                            ),
+                            JoinClusterOutcome::AlreadyActive => wormhole_i18n::t("devices.invite.already"),
                             JoinClusterOutcome::SwitchedActive => {
-                                format!("已切换到集群 · {cluster_label}")
+                                wormhole_i18n::t_args(
+                                    "devices.invite.switched",
+                                    &[("name", &cluster_label)],
+                                )
                             }
                         });
                         ctx.spawn(
@@ -3485,7 +3725,7 @@ impl DevicesView {
         let field = render_field_with_caret(
             &draft,
             &marked,
-            "例如：家庭集群…",
+            &wormhole_i18n::t("devices.cluster.name_placeholder"),
             self.font,
             self.create_cluster_name_focused,
             false,
@@ -3515,13 +3755,13 @@ impl DevicesView {
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("创建集群", self.font)
+            ui_text::title(wormhole_i18n::t("devices.modal.create_title"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
-                ui_text::body("输入一个用于设备列表展示的集群名。", self.font)
+                ui_text::body(wormhole_i18n::t("devices.modal.create_body"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -3529,7 +3769,7 @@ impl DevicesView {
             .finish(),
         );
         dialog.add_child(
-            ui_text::hud_title("集群名", self.font)
+            ui_text::hud_title(wormhole_i18n::t("devices.modal.cluster_name"), self.font)
                 .with_color(theme::muted())
                 .finish(),
         );
@@ -3548,7 +3788,7 @@ impl DevicesView {
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
         actions.add_child(self.toolbar_button(
-            "取消",
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseCreateClusterModal,
             false,
             72.0,
@@ -3559,12 +3799,13 @@ impl DevicesView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
+        let submit_label = if self.create_cluster_busy {
+            wormhole_i18n::t("devices.cluster.creating")
+        } else {
+            wormhole_i18n::t("devices.cluster.create_btn")
+        };
         actions.add_child(self.toolbar_button(
-            if self.create_cluster_busy {
-                "创建中…"
-            } else {
-                "创建"
-            },
+            &submit_label,
             DevicesAction::CreateCluster,
             true,
             80.0,
@@ -3592,6 +3833,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -3601,6 +3844,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭创建集群")
+            .with_automation_id("devices:scrim_create_cluster")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseCreateClusterModal);
                 DispatchEventResult::StopPropagation
@@ -3610,20 +3855,20 @@ impl DevicesView {
 
     fn join_modal(&self) -> Box<dyn Element> {
         let join_preview = if self.join_invite_draft.is_empty() {
-            "粘贴 https://w.hdz73.com/j/... 邀请链接".to_string()
+            wormhole_i18n::t("devices.modal.join_paste_preview")
         } else {
             truncate_middle(&self.join_invite_draft, 240)
         };
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("加入集群", self.font)
+            ui_text::title(wormhole_i18n::t("devices.modal.join_title"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
-                ui_text::body("粘贴对方邀请码加入新集群。", self.font)
+                ui_text::body(wormhole_i18n::t("devices.modal.join_body"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -3632,7 +3877,7 @@ impl DevicesView {
         );
         dialog.add_child(
             Container::new(
-                ui_text::hud_title("加入集群 · 粘贴邀请码", self.font)
+                ui_text::hud_title(wormhole_i18n::t("devices.modal.join_paste_title"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -3656,6 +3901,7 @@ impl DevicesView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
             .finish(),
         );
+        let paste_clipboard = wormhole_i18n::t("devices.modal.paste_clipboard");
         dialog.add_child(
             Container::new(
                 Flex::row()
@@ -3664,7 +3910,7 @@ impl DevicesView {
                         Expanded::new(
                             1.0,
                             self.toolbar_button(
-                                "从剪贴板粘贴",
+                                &paste_clipboard,
                                 DevicesAction::PasteJoinInvite,
                                 false,
                                 0.0,
@@ -3683,8 +3929,8 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(self.toolbar_button(
-            "取消",
+        actions.add_child(            self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseJoinModal,
             false,
             72.0,
@@ -3695,12 +3941,13 @@ impl DevicesView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
+        let join_label = if self.invite_busy {
+            wormhole_i18n::t("devices.invite.joining")
+        } else {
+            wormhole_i18n::t("devices.toolbar.join")
+        };
         actions.add_child(self.toolbar_button(
-            if self.invite_busy {
-                "加入中…"
-            } else {
-                "加入"
-            },
+            &join_label,
             DevicesAction::SubmitJoin,
             true,
             80.0,
@@ -3728,6 +3975,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -3737,6 +3986,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭加入集群")
+            .with_automation_id("devices:scrim_join")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseJoinModal);
                 DispatchEventResult::StopPropagation
@@ -3748,44 +3999,54 @@ impl DevicesView {
         let mut header = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
-        header.add_child(section_title("集群节点", self.mono));
+        header.add_child(section_title(wormhole_i18n::t("devices.cluster_nodes"), self.mono));
 
         if let Some(err) = &self.cluster_error {
-            header.add_child(section_hint("CLUSTER · OFFLINE · 无法读取集群", self.font));
+            header.add_child(section_hint(
+                wormhole_i18n::t("devices.bootstrap.cluster_offline"),
+                self.font,
+            ));
             header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
         } else if let Some(cluster) = &self.cluster {
             if cluster.auth_required {
-                header.add_child(section_hint("ACCOUNT · 需要登录", self.font));
+                header.add_child(section_hint(
+                    wormhole_i18n::t("devices.cluster.need_login"),
+                    self.font,
+                ));
                 header.add_child(status_line(
-                    "请登录 Wormhole 账号以使用集群与 P2P 功能。",
+                    wormhole_i18n::t("devices.bootstrap.login_for_p2p"),
                     self.font,
                     StatusTone::Placeholder,
                 ));
             } else if cluster.device_bootstrap_required {
-                header.add_child(section_hint("DEVICE · 正在恢复设备身份", self.font));
+                header.add_child(section_hint(
+                    wormhole_i18n::t("devices.bootstrap.restoring_identity"),
+                    self.font,
+                ));
                 if let Some(err) = &cluster.device_bootstrap_error {
                     header.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
                 } else {
                     header.add_child(status_line(
-                        "登录成功，正在从云端恢复本机设备身份…",
+                        wormhole_i18n::t("devices.bootstrap.restoring_progress"),
                         self.font,
                         StatusTone::Placeholder,
                     ));
                     if self.bootstrap_pending_slow(cluster) {
                         header.add_child(status_line(
-                            "仍在等待控制面响应。请点击「重试」；若持续失败请查看终端日志。",
+                            wormhole_i18n::t("devices.bootstrap.waiting_control_plane"),
                             self.font,
                             StatusTone::Placeholder,
                         ));
                     }
                 }
+                let bootstrap_label = if self.bootstrap_busy {
+                    wormhole_i18n::t("common.loading")
+                } else {
+                    wormhole_i18n::t("common.retry")
+                };
                 header.add_child(
                     Container::new(self.toolbar_button(
-                        if self.bootstrap_busy {
-                            "重试中…"
-                        } else {
-                            "重试"
-                        },
+                        &bootstrap_label,
                         DevicesAction::RetryDeviceBootstrap,
                         false,
                         88.0,
@@ -3800,10 +4061,19 @@ impl DevicesView {
                         .with_vertical_margin(10.0)
                         .finish(),
                 );
+                header.add_child(
+                    Container::new(self.device_search_box())
+                        .with_margin_top(4.0)
+                        .finish(),
+                );
             }
         } else {
             header.add_child(section_hint("CLUSTER · LOADING", self.font));
-            header.add_child(status_line("加载集群…", self.font, StatusTone::Placeholder));
+            header.add_child(status_line(
+                wormhole_i18n::t("common.loading"),
+                self.font,
+                StatusTone::Placeholder,
+            ));
         }
 
         let header_block = Container::new(header.finish())
@@ -3825,13 +4095,13 @@ impl DevicesView {
                         Container::new(
                             ui_text::body(
                                 if cluster.auth_required {
-                                    "登录后可查看集群拓扑并加入家庭网络。"
+                                    wormhole_i18n::t("devices.bootstrap.after_login_hint")
                                 } else if cluster.device_bootstrap_error.is_some() {
-                                    "设备身份恢复失败。请检查网络与控制面配置后点击「重试」，或在设置中退出并重新登录。"
+                                    wormhole_i18n::t("devices.bootstrap.restore_failed_hint")
                                 } else if self.bootstrap_pending_slow(cluster) {
-                                    "控制面响应较慢。点击「重试」将重新发起设备身份恢复；也可在终端查看 bootstrap 日志。"
+                                    wormhole_i18n::t("devices.bootstrap.slow_hint")
                                 } else {
-                                    "设备身份恢复完成后将自动同步集群。"
+                                    wormhole_i18n::t("devices.bootstrap.will_sync_hint")
                                 },
                                 self.font,
                             )
@@ -3849,13 +4119,16 @@ impl DevicesView {
                     .with_main_axis_alignment(MainAxisAlignment::Center)
                     .with_main_axis_size(MainAxisSize::Max);
                 empty.add_child(
-                    ui_text::title("暂无集群", self.font)
+                    ui_text::title(wormhole_i18n::t("devices.cluster.none"), self.font)
                         .with_color(theme::text())
                         .finish(),
                 );
                 empty.add_child(
                     Container::new(
-                        ui_text::body("点击上方「创建集群」或「加入集群」开始同步。", self.font)
+                        ui_text::body(
+                            wormhole_i18n::t("devices.bootstrap.empty_cluster_cta"),
+                            self.font,
+                        )
                             .with_color(theme::muted())
                             .finish(),
                     )
@@ -3884,28 +4157,54 @@ impl DevicesView {
                         .cmp(&a_local)
                         .then_with(|| a.hostname.cmp(&b.hostname))
                 });
-                let hub_index = nodes
-                    .iter()
-                    .position(|n| n.node_id == local_id)
-                    .unwrap_or(0);
-                col.add_child(
-                    Expanded::new(
-                        1.0,
-                        Container::new(ClusterTopologyPanel::element(
-                            nodes,
-                            local_id,
-                            selected_id,
-                            hovered_id,
-                            hub_index,
-                            self.device_remarks.clone(),
-                            self.mono,
-                            self.topology_scroll.clone(),
-                        ))
-                        .with_background(theme::panel())
+                nodes.retain(|n| {
+                    let remark = self.device_remarks.get(&n.node_id).map(String::as_str);
+                    device_matches_query(n, n.node_id == local_id, remark, &self.device_search)
+                });
+                if nodes.is_empty() {
+                    let mut empty = Flex::column()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_main_axis_alignment(MainAxisAlignment::Center)
+                        .with_main_axis_size(MainAxisSize::Max);
+                    empty.add_child(
+                        ui_text::body(wormhole_i18n::t("devices.search.empty"), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    );
+                    col.add_child(
+                        Expanded::new(
+                            1.0,
+                            Container::new(empty.finish())
+                                .with_uniform_padding(SECTION_PADDING)
+                                .with_background(theme::panel())
+                                .finish(),
+                        )
                         .finish(),
-                    )
-                    .finish(),
-                );
+                    );
+                } else {
+                    let hub_index = nodes
+                        .iter()
+                        .position(|n| n.node_id == local_id)
+                        .unwrap_or(0);
+                    col.add_child(
+                        Expanded::new(
+                            1.0,
+                            Container::new(ClusterTopologyPanel::element(
+                                nodes,
+                                local_id,
+                                selected_id,
+                                hovered_id,
+                                hub_index,
+                                self.device_remarks.clone(),
+                                self.mono,
+                                self.topology_scroll.clone(),
+                            ))
+                            .with_background(theme::panel())
+                            .finish(),
+                        )
+                        .finish(),
+                    );
+                }
             }
         } else {
             col.add_child(
@@ -3953,6 +4252,8 @@ impl DevicesView {
             && self.device_context_menu.is_none()
         {
             EventHandler::new(self.grid_view())
+                .with_automation_label("关闭集群选择器")
+                .with_automation_id("devices:close_cluster_picker")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::CloseClusterPicker);
                     DispatchEventResult::PropagateToParent
@@ -3978,6 +4279,8 @@ impl DevicesView {
                     .with_background(ColorU::new(8, 7, 11, 40))
                     .finish(),
             )
+            .with_automation_label("关闭设备菜单")
+            .with_automation_id("devices:scrim_device_menu")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
                 DispatchEventResult::StopPropagation
@@ -4002,6 +4305,8 @@ impl DevicesView {
         let create_cluster_modal_open = self.create_cluster_modal_open;
         let cluster_picker_open = self.cluster_picker_open;
         EventHandler::new(stack.finish())
+            .with_automation_label("关闭浮层")
+            .with_automation_id("devices:overlay_dismiss")
             .on_left_mouse_down(move |ctx, _, _| {
                 if device_menu_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
@@ -4065,14 +4370,14 @@ impl DevicesView {
             })
             .unwrap_or(false);
         let body = if is_owner {
-            "将从本机移除该集群及其全部终端、共享文件夹与同步索引；控制面上的集群记录将一并销毁。此操作不可撤销。"
+            wormhole_i18n::t("devices.modal.delete_cluster_owner_body")
         } else {
-            "将从本机移除该集群及其全部终端、共享文件夹与同步索引。此操作不可撤销。"
+            wormhole_i18n::t("devices.modal.delete_cluster_member_body")
         };
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("删除集群", self.font)
+            ui_text::title(wormhole_i18n::t("devices.cluster.delete"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
@@ -4104,7 +4409,7 @@ impl DevicesView {
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
         actions.add_child(self.toolbar_button(
-            "取消",
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseDeleteClusterModal,
             false,
             72.0,
@@ -4115,12 +4420,13 @@ impl DevicesView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
+        let delete_label = if self.delete_cluster_busy {
+            wormhole_i18n::t("devices.cluster.deleting")
+        } else {
+            wormhole_i18n::t("common.delete")
+        };
         actions.add_child(self.toolbar_button(
-            if self.delete_cluster_busy {
-                "删除中…"
-            } else {
-                "删除"
-            },
+            &delete_label,
             DevicesAction::ConfirmDeleteCluster,
             true,
             80.0,
@@ -4145,6 +4451,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -4154,6 +4462,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭删除集群")
+            .with_automation_id("devices:scrim_delete_cluster")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseDeleteClusterModal);
                 DispatchEventResult::StopPropagation
@@ -4171,14 +4481,14 @@ impl DevicesView {
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("移除设备", self.font)
+            ui_text::title(wormhole_i18n::t("devices.action.remove"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "将从当前集群移除该设备（仅管理员可操作）。其共享文件夹与同步状态将不再对其他成员可见，此操作不可撤销。",
+                    wormhole_i18n::t("devices.modal.remove_device_body"),
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -4205,8 +4515,8 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(self.toolbar_button(
-            "取消",
+        actions.add_child(            self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseDeleteNodeModal,
             false,
             72.0,
@@ -4218,7 +4528,7 @@ impl DevicesView {
                 .finish(),
         );
         actions.add_child(self.toolbar_button(
-            "移除",
+            &wormhole_i18n::t("devices.action.remove"),
             DevicesAction::ConfirmDeleteNode,
             true,
             80.0,
@@ -4243,6 +4553,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -4252,6 +4564,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭删除设备")
+            .with_automation_id("devices:scrim_delete_node")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseDeleteNodeModal);
                 DispatchEventResult::StopPropagation
@@ -4265,12 +4579,17 @@ impl DevicesView {
             .cluster
             .as_ref()
             .is_some_and(|cluster| cluster.local_node_id == node_id);
+        let browse_shares = wormhole_i18n::t("devices.share.shared_folders");
+        let rdp_label = wormhole_i18n::t("devices.action.rdp");
+        let chat_cannot_self = wormhole_i18n::t("devices.chat.cannot_self");
+        let chat_message = wormhole_i18n::t("devices.action.message");
+        let remove_device = wormhole_i18n::t("devices.action.remove");
 
         let mut menu = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         menu.add_child(self.device_context_item(
-            "浏览共享文件夹",
+            &browse_shares,
             DevicesAction::OpenNode(node_id.clone()),
             ContextItemStyle::Normal,
             self.cluster.as_ref().is_some_and(|cluster| {
@@ -4292,7 +4611,7 @@ impl DevicesView {
         });
         if !is_local {
             menu.add_child(self.device_context_item(
-                "远程桌面",
+                &rdp_label,
                 DevicesAction::OpenRemoteDesktop(node_id.clone()),
                 ContextItemStyle::Normal,
                 remote_available,
@@ -4300,9 +4619,9 @@ impl DevicesView {
         }
         menu.add_child(self.device_context_item(
             if is_local {
-                "无法给本机发信息"
+                chat_cannot_self.as_str()
             } else {
-                "发信息"
+                chat_message.as_str()
             },
             DevicesAction::SendMessage(node_id.clone()),
             ContextItemStyle::Accent,
@@ -4315,14 +4634,16 @@ impl DevicesView {
                 .find(|node| node.node_id == node_id)
                 .is_some_and(|node| node.removable)
         });
+        let cannot_delete_self = wormhole_i18n::t("devices.device.cannot_delete_self");
+        let no_permission_remove = wormhole_i18n::t("devices.device.no_permission_remove");
         menu.add_child(Self::cluster_menu_divider());
         menu.add_child(self.device_context_item(
             if is_local {
-                "无法删除本机"
+                cannot_delete_self.as_str()
             } else if can_remove {
-                "移除设备"
+                remove_device.as_str()
             } else {
-                "无权移除设备"
+                no_permission_remove.as_str()
             },
             DevicesAction::OpenDeleteNodeModal(node_id),
             ContextItemStyle::Danger,
@@ -4358,9 +4679,10 @@ impl DevicesView {
                 ContextItemStyle::Danger => theme::danger(),
             }
         };
+        let item_label = label.to_string();
         let handler = EventHandler::new(
             Container::new(
-                ui_text::body(label.to_string(), self.font)
+                ui_text::body(item_label.clone(), self.font)
                     .with_color(color)
                     .finish(),
             )
@@ -4369,6 +4691,8 @@ impl DevicesView {
         );
         if enabled {
             handler
+                .with_automation_label(item_label)
+                .with_automation_id(format!("devices:context:{label}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -4384,16 +4708,19 @@ impl DevicesView {
             return msg.clone();
         }
         if self.share_loading {
-            return "VAULT · 正在读取…".to_string();
+            return format!("VAULT · {}", wormhole_i18n::t("devices.share.reading"));
         }
         let count = self.share_entries.len();
         if let Some(err) = &self.share_error {
             return format!("VAULT · {err}");
         }
         if !self.browsing_local() && !self.browsing_peer_live() {
-            return format!("VAULT · 对端离线，仅显示已下载的本地副本 · {count} 项");
+            return wormhole_i18n::t_args(
+            "devices.share.vault_offline",
+            &[("count", &count.to_string())],
+        );
         }
-        format!("VAULT · {count} 项")
+        wormhole_i18n::t_args("devices.share.vault_count", &[("count", &count.to_string())])
     }
 
     fn share_address_label(&self) -> String {
@@ -4436,6 +4763,8 @@ impl DevicesView {
                         .with_horizontal_margin(4.0)
                         .finish(),
                 )
+                .with_automation_label("同步文件")
+                .with_automation_id(format!("devices:share_sync:{sync_name}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::ShareSyncFile(sync_name.clone()));
                     DispatchEventResult::StopPropagation
@@ -4460,7 +4789,7 @@ impl DevicesView {
         if entry.local && entry.volume_id.is_some() {
             name_row.add_child(
                 Container::new(
-                    ui_text::cluster_ctrl("共享".to_string(), self.mono)
+                    ui_text::cluster_ctrl(wormhole_i18n::t("devices.share.share_badge"), self.mono)
                         .with_color(theme::accent_cool())
                         .finish(),
                 )
@@ -4544,7 +4873,11 @@ impl DevicesView {
 
         let menu_name = name.clone();
         if is_folder {
+            let folder_name = name.clone();
+            let folder_id = format!("devices:share_folder:{folder_name}");
             EventHandler::new(inner)
+                .with_automation_label(folder_name)
+                .with_automation_id(folder_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::ShareNavigate {
                         volume_id: volume_id.clone(),
@@ -4564,6 +4897,8 @@ impl DevicesView {
         } else {
             let click_name = name.clone();
             EventHandler::new(inner)
+                .with_automation_label(click_name.clone())
+                .with_automation_id(format!("devices:share_file:{click_name}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::ShareFileClick(click_name.clone()));
                     DispatchEventResult::StopPropagation
@@ -4582,17 +4917,17 @@ impl DevicesView {
 
     fn share_table_header(&self) -> Box<dyn Element> {
         let mut row = Flex::row().with_main_axis_size(MainAxisSize::Min);
-        for (label, weight) in [
-            ("名称", 0.48),
-            ("修改日期", 0.22),
-            ("类型", 0.18),
-            ("大小", 0.12),
+        for (label_key, weight) in [
+            ("devices.share.column.name", 0.48),
+            ("devices.share.column.modified", 0.22),
+            ("devices.share.column.type", 0.18),
+            ("devices.share.column.size", 0.12),
         ] {
             row.add_child(
                 Shrinkable::new(
                     weight,
                     Container::new(
-                        ui_text::hud_title(label, self.font)
+                        ui_text::hud_title(wormhole_i18n::t(label_key), self.font)
                             .with_color(theme::muted())
                             .finish(),
                     )
@@ -4605,21 +4940,21 @@ impl DevicesView {
         row.finish()
     }
 
-    fn share_empty_hint(&self) -> &'static str {
+    fn share_empty_hint(&self) -> String {
         if self.share_loading {
-            "正在读取共享文件夹…"
+            wormhole_i18n::t("devices.share.reading")
         } else if self.browsing_local() && self.share_path.is_empty() {
-            "本机尚未添加共享文件夹。点击「增加共享文件夹」添加，或返回打开其它终端卡片浏览远端共享。"
+            wormhole_i18n::t("devices.share.empty_local")
         } else if !self.browsing_local() && self.share_path.is_empty() {
             if self.browsing_peer_live() {
-                "此终端尚未发布共享文件夹，或名单未同步。请在对端添加共享后刷新。"
+                wormhole_i18n::t("devices.share.empty_remote")
             } else {
-                "对端离线。若曾同步过文件，进入共享根后仅显示已下载的本地副本。"
+                wormhole_i18n::t("devices.share.empty_offline_root")
             }
         } else if !self.browsing_local() && !self.browsing_peer_live() {
-            "对端离线，此路径下没有已下载的本地副本。"
+            wormhole_i18n::t("devices.share.empty_offline_path")
         } else {
-            "此文件夹为空"
+            wormhole_i18n::t("common.empty.folder")
         }
     }
 
@@ -4634,13 +4969,15 @@ impl DevicesView {
         toolbar.add_child(
             EventHandler::new(
                 Container::new(
-                    ui_text::cluster_ctrl("← 终端", self.mono)
+                    ui_text::cluster_ctrl(wormhole_i18n::t("devices.share.back_to_devices"), self.mono)
                         .with_color(theme::accent_cool())
                         .finish(),
                 )
                 .with_horizontal_padding(4.0)
                 .finish(),
             )
+            .with_automation_label(wormhole_i18n::t("devices.share.back_to_devices"))
+            .with_automation_id("devices:back_to_grid")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::BackToGrid);
                 DispatchEventResult::StopPropagation
@@ -4684,7 +5021,7 @@ impl DevicesView {
         if self.can_show_share_new() {
             toolbar.add_child(
                 Container::new(self.toolbar_button(
-                    "新建",
+                    &wormhole_i18n::t("devices.share.new"),
                     DevicesAction::ToggleShareNewMenu,
                     false,
                     72.0,
@@ -4761,21 +5098,24 @@ impl DevicesView {
 
     fn share_add_modal(&self) -> Box<dyn Element> {
         let path_preview = if self.share_add_path.is_empty() {
-            format!("例如：{}", default_share_browse_path())
+            wormhole_i18n::t_args(
+                "devices.share.path_example",
+                &[("path", &default_share_browse_path())],
+            )
         } else {
             self.share_add_path.clone()
         };
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("增加共享文件夹", self.font)
+            ui_text::title(wormhole_i18n::t("devices.share.shared_folders"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "选择本机目录并发布到当前终端的集群共享空间。显示名称将自动取自路径末段。",
+                    wormhole_i18n::t("devices.share.add_hint"),
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -4785,7 +5125,7 @@ impl DevicesView {
             .finish(),
         );
         dialog.add_child(
-            ui_text::hud_title("本机路径", self.font)
+            ui_text::hud_title(wormhole_i18n::t("devices.share.local_path"), self.font)
                 .with_color(theme::muted())
                 .finish(),
         );
@@ -4804,7 +5144,7 @@ impl DevicesView {
         );
         dialog.add_child(
             Container::new(self.toolbar_button(
-                "浏览…",
+                &wormhole_i18n::t("toolbox.user_apps.browse"),
                 DevicesAction::BrowseShareAddPath,
                 false,
                 88.0,
@@ -4818,20 +5158,21 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         actions.add_child(Expanded::new(1.0, Flex::column().finish()).finish());
-        actions.add_child(self.toolbar_button(
-            "取消",
+        actions.add_child(            self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseShareAddModal,
             false,
             88.0,
             true,
         ));
+        let share_add_label = if self.share_add_busy {
+            wormhole_i18n::t("devices.share.adding")
+        } else {
+            wormhole_i18n::t("common.add")
+        };
         actions.add_child(
             Container::new(self.toolbar_button(
-                if self.share_add_busy {
-                    "添加中…"
-                } else {
-                    "添加"
-                },
+                &share_add_label,
                 DevicesAction::SubmitShareAdd,
                 true,
                 88.0,
@@ -4862,6 +5203,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -4871,6 +5214,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭共享添加")
+            .with_automation_id("devices:scrim_share_add")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseShareAddModal);
                 DispatchEventResult::StopPropagation
@@ -4906,10 +5251,19 @@ impl DevicesView {
             !is_folder && has_local_replica
         };
 
+        let open_folder_label = wormhole_i18n::t("devices.share.open_folder");
+        let sync_label = wormhole_i18n::t("devices.share.sync");
+        let remote_open_label = wormhole_i18n::t("devices.share.remote_open");
+        let remote_vm_label = wormhole_i18n::t("devices.share.remote_vm_open");
+        let rename_label = wormhole_i18n::t("devices.share.rename");
+        let delete_label = wormhole_i18n::t("common.delete");
+        let unshare_label = wormhole_i18n::t("devices.share.unshare");
+
+        let open_file_label = wormhole_i18n::t("common.open");
         let open_label = if is_folder {
-            "打开文件夹"
+            open_folder_label.as_str()
         } else {
-            "打开"
+            open_file_label.as_str()
         };
         let open_action = if is_folder {
             DevicesAction::ShareNavigate {
@@ -4923,37 +5277,37 @@ impl DevicesView {
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         menu.add_child(self.share_context_item(open_label, Some(open_action), false, true));
         menu.add_child(self.share_context_item(
-            "同步",
+            &sync_label,
             Some(DevicesAction::ShareSyncFile(name.clone())),
             false,
             needs_sync,
         ));
         menu.add_child(self.share_context_item(
-            "远程打开",
+            &remote_open_label,
             Some(DevicesAction::ShareRemoteOpenOnHost(name.clone())),
             false,
             can_remote,
         ));
         menu.add_child(self.share_context_item(
-            "远程虚拟机打开",
+            &remote_vm_label,
             Some(DevicesAction::ShareRemoteOpenFile(name.clone())),
             false,
             can_remote,
         ));
         menu.add_child(self.share_context_item(
-            "重命名",
+            &rename_label,
             Some(DevicesAction::OpenShareRenameModal(name.clone())),
             false,
             can_rename,
         ));
         menu.add_child(self.share_context_item(
-            "删除",
+            &delete_label,
             Some(DevicesAction::ShareDeleteFile(name.clone())),
             true,
             can_delete,
         ));
         menu.add_child(self.share_context_item(
-            "取消共享",
+            &unshare_label,
             Some(DevicesAction::OpenShareUnshareModal(name)),
             true,
             can_unshare,
@@ -4979,14 +5333,14 @@ impl DevicesView {
             .unwrap_or_else(|| "—".into());
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("取消共享", self.font)
+            ui_text::title(wormhole_i18n::t("devices.share.unshare"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "将从当前终端的集群共享中移除此项。其他终端将无法再浏览或同步其中的内容。",
+                    wormhole_i18n::t("devices.share.unshare_confirm_body"),
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -4998,7 +5352,7 @@ impl DevicesView {
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    "本机路径中的原始文件不会被删除，仅取消共享发布。同级其他共享项不受影响。",
+                    wormhole_i18n::t("devices.share.unshare_body"),
                     self.font,
                 )
                 .with_color(theme::muted())
@@ -5025,8 +5379,9 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
+        let back_label = wormhole_i18n::t("common.back");
         actions.add_child(self.toolbar_button(
-            "返回",
+            &back_label,
             DevicesAction::CloseShareUnshareModal,
             false,
             72.0,
@@ -5037,12 +5392,13 @@ impl DevicesView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
+        let unshare_label = if self.share_unshare_busy {
+            wormhole_i18n::t("common.loading")
+        } else {
+            wormhole_i18n::t("devices.share.unshare")
+        };
         actions.add_child(self.toolbar_button(
-            if self.share_unshare_busy {
-                "处理中…"
-            } else {
-                "取消共享"
-            },
+            &unshare_label,
             DevicesAction::ConfirmShareUnshare,
             true,
             96.0,
@@ -5067,6 +5423,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -5076,6 +5434,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭取消共享")
+            .with_automation_id("devices:scrim_share_unshare")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseShareUnshareModal);
                 DispatchEventResult::StopPropagation
@@ -5129,11 +5489,17 @@ impl DevicesView {
                 match output {
                     Ok(_) => {
                         view.close_share_unshare_modal(ctx);
-                        view.share_status = Some(format!("已取消共享 · {name} · 本机文件保留"));
+                        view.share_status = Some(wormhole_i18n::t_args(
+                            "devices.share.unshared_kept",
+                            &[("name", &name)],
+                        ));
                         view.force_load_share_directory(ctx);
                     }
                     Err(e) => {
-                        view.share_error = Some(format!("取消共享失败: {e}"));
+                        view.share_error = Some(wormhole_i18n::t_args(
+                            "devices.share.unshare_failed",
+                            &[("err", &e)],
+                        ));
                         view.close_share_unshare_modal(ctx);
                     }
                 }
@@ -5165,7 +5531,10 @@ impl DevicesView {
         .finish();
         if enabled {
             if let Some(action) = action {
+                let item_label = label.to_string();
                 EventHandler::new(inner)
+                    .with_automation_label(item_label)
+                    .with_automation_id(format!("devices:share_menu:{label}"))
                     .on_left_mouse_down(move |ctx, _, _| {
                         ctx.dispatch_typed_action(action.clone());
                         DispatchEventResult::StopPropagation
@@ -5197,11 +5566,14 @@ impl DevicesView {
             .with_horizontal_margin(8.0)
             .finish(),
         );
+        let new_label = label.to_string();
         EventHandler::new(
             Container::new(row.finish())
                 .with_uniform_padding(10.0)
                 .finish(),
         )
+        .with_automation_label(new_label)
+        .with_automation_id(format!("devices:share_new:{label}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -5213,20 +5585,23 @@ impl DevicesView {
         let mut menu = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         match self.share_new_menu_mode() {
             ShareNewMenuMode::AddSharedFolder => {
+                let shared_folders = wormhole_i18n::t("devices.share.shared_folders");
                 menu.add_child(self.share_new_menu_item(
-                    "共享文件夹",
+                    &shared_folders,
                     true,
                     DevicesAction::OpenShareAddModal,
                 ));
             }
             ShareNewMenuMode::CreateEntries => {
+                let new_folder = wormhole_i18n::t("devices.share.new_folder");
+                let new_txt = wormhole_i18n::t("devices.share.new_txt");
                 menu.add_child(self.share_new_menu_item(
-                    "文件夹",
+                    &new_folder,
                     true,
                     DevicesAction::ShareCreateFolder,
                 ));
                 menu.add_child(self.share_new_menu_item(
-                    "txt 文件",
+                    &new_txt,
                     false,
                     DevicesAction::ShareCreateTxt,
                 ));
@@ -5243,6 +5618,8 @@ impl DevicesView {
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish();
         let panel = EventHandler::new(panel)
+            .with_automation_label("共享新建菜单")
+            .with_automation_id("devices:share_new_menu")
             .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
             .finish();
         Align::new(
@@ -5258,10 +5635,11 @@ impl DevicesView {
     fn share_rename_modal(&self) -> Box<dyn Element> {
         let draft = self.share_rename_draft.clone();
         let marked = self.share_rename_field.marked_text.clone();
+        let rename_placeholder = wormhole_i18n::t("devices.share.rename_placeholder");
         let field = render_field_with_caret(
             &draft,
             &marked,
-            "新名称",
+            &rename_placeholder,
             self.font,
             self.share_rename_focused,
             false,
@@ -5291,7 +5669,7 @@ impl DevicesView {
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("重命名", self.font)
+            ui_text::title(wormhole_i18n::t("devices.share.rename"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
@@ -5308,20 +5686,21 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         actions.add_child(Expanded::new(1.0, Flex::column().finish()).finish());
-        actions.add_child(self.toolbar_button(
-            "取消",
+        actions.add_child(            self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseShareRenameModal,
             false,
             88.0,
             true,
         ));
+        let confirm_rename_label = if self.share_rename_busy {
+            wormhole_i18n::t("common.saving")
+        } else {
+            wormhole_i18n::t("common.ok")
+        };
         actions.add_child(
             Container::new(self.toolbar_button(
-                if self.share_rename_busy {
-                    "保存中…"
-                } else {
-                    "确定"
-                },
+                &confirm_rename_label,
                 DevicesAction::ConfirmShareRename,
                 true,
                 88.0,
@@ -5352,6 +5731,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = Container::new(
@@ -5361,6 +5742,8 @@ impl DevicesView {
         .finish();
 
         EventHandler::new(scrim)
+            .with_automation_label("关闭重命名")
+            .with_automation_id("devices:scrim_share_rename")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseShareRenameModal);
                 DispatchEventResult::StopPropagation
@@ -5391,6 +5774,8 @@ impl DevicesView {
                     .with_background(ColorU::new(8, 7, 11, 1))
                     .finish(),
             )
+            .with_automation_label("关闭新建菜单")
+            .with_automation_id("devices:scrim_share_new")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(DevicesAction::CloseShareNewMenu);
                 DispatchEventResult::StopPropagation
@@ -5405,8 +5790,9 @@ impl DevicesView {
                     .with_background(ColorU::new(8, 7, 11, 40))
                     .finish(),
             )
+            .with_automation_label("关闭共享菜单")
+            .with_automation_id("devices:scrim_share_context")
             .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(DevicesAction::CloseShareContextMenu);
                 DispatchEventResult::StopPropagation
             })
             .finish();
@@ -5420,6 +5806,8 @@ impl DevicesView {
         let body = stack.finish();
         if share_menu_open {
             EventHandler::new(body)
+                .with_automation_label("关闭共享浮层")
+                .with_automation_id("devices:share_overlay_dismiss")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(DevicesAction::CloseShareContextMenu);
                     ctx.dispatch_typed_action(DevicesAction::CloseShareNewMenu);
@@ -5443,19 +5831,19 @@ impl DevicesView {
         let file_name = self
             .selected_share_entry()
             .map(|entry| entry.name.clone())
-            .unwrap_or_else(|| "此文件".into());
+            .unwrap_or_else(|| wormhole_i18n::t("devices.workspace.this_file"));
         let installed = self.workspace_installed_apps_for_file(&file_name);
         let query = self.workspace_app_search.trim().to_ascii_lowercase();
 
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         dialog.add_child(
-            ui_text::title("远程虚拟机打开", self.font)
+            ui_text::title(wormhole_i18n::t("devices.workspace.picker_title"), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
         dialog.add_child(
             Container::new(
-                ui_text::body("选择用于打开此文件的程序。", self.font)
+                ui_text::body(wormhole_i18n::t("devices.workspace.picker_body"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -5493,12 +5881,18 @@ impl DevicesView {
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_main_axis_size(MainAxisSize::Max);
         section_head.add_child(
-            ui_text::cluster_ctrl("已安装应用", self.mono)
+            ui_text::cluster_ctrl(wormhole_i18n::t("devices.workspace.installed_apps"), self.mono)
                 .with_color(theme::muted())
                 .finish(),
         );
         section_head.add_child(
-            ui_text::cluster_ctrl(format!("{} 个", installed.len()), self.mono)
+            ui_text::cluster_ctrl(
+                wormhole_i18n::t_args(
+                    "common.count_n",
+                    &[("n", &installed.len().to_string())],
+                ),
+                self.mono,
+            )
                 .with_color(theme::muted())
                 .finish(),
         );
@@ -5512,7 +5906,7 @@ impl DevicesView {
         let mut app_list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         if installed.is_empty() {
             app_list.add_child(
-                ui_text::body("当前文件暂无已就绪的虚拟机程序。", self.font)
+                ui_text::body(wormhole_i18n::t("devices.workspace.no_ready_apps"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             );
@@ -5532,7 +5926,7 @@ impl DevicesView {
 
         dialog.add_child(
             Container::new(
-                ui_text::cluster_ctrl("搜索虚拟机支持的程序", self.mono)
+                ui_text::cluster_ctrl(wormhole_i18n::t("devices.workspace.search_apps"), self.mono)
                     .with_color(theme::muted())
                     .finish(),
             )
@@ -5541,10 +5935,11 @@ impl DevicesView {
         );
 
         let marked = self.workspace_app_search_field.marked_text.clone();
+        let search_placeholder = wormhole_i18n::t("devices.workspace.search_placeholder");
         let search_field = render_field_with_caret(
             &self.workspace_app_search,
             &marked,
-            "输入程序名称，例如 Neovim",
+            &search_placeholder,
             self.font,
             self.workspace_app_search_focused,
             false,
@@ -5588,7 +5983,7 @@ impl DevicesView {
             search_results.add_child(
                 Container::new(
                     ui_text::body(
-                        "输入程序名称，搜索虚拟机支持并可安装的程序。",
+                        wormhole_i18n::t("devices.workspace.search_hint"),
                         self.font,
                     )
                     .with_color(theme::muted())
@@ -5639,7 +6034,7 @@ impl DevicesView {
             if matches.is_empty() {
                 search_results.add_child(
                     Container::new(
-                        ui_text::body("没有找到虚拟机支持的程序。", self.font)
+                        ui_text::body(wormhole_i18n::t("devices.workspace.search_empty"), self.font)
                             .with_color(theme::muted())
                             .finish(),
                     )
@@ -5673,8 +6068,8 @@ impl DevicesView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(self.toolbar_button(
-            "取消",
+        actions.add_child(            self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
             DevicesAction::CloseWorkspaceAppPicker,
             false,
             72.0,
@@ -5685,8 +6080,9 @@ impl DevicesView {
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
+        let open_label = wormhole_i18n::t("common.open");
         actions.add_child(self.toolbar_button(
-            "打开",
+            &open_label,
             DevicesAction::ConfirmWorkspaceAppOpen,
             true,
             72.0,
@@ -5712,6 +6108,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
         let scrim = EventHandler::new(
@@ -5720,6 +6118,8 @@ impl DevicesView {
                 .with_background(ColorU::new(8, 7, 11, 190))
                 .finish(),
         )
+        .with_automation_label("关闭应用选择器")
+        .with_automation_id("devices:scrim_workspace_picker")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(DevicesAction::CloseWorkspaceAppPicker);
             DispatchEventResult::StopPropagation
@@ -5738,10 +6138,11 @@ impl DevicesView {
 
     fn workspace_app_option_row(&self, app: &str, selected: bool) -> Box<dyn Element> {
         let name = self.workspace_app_label(app);
+        let app_label = name.clone();
         let desc = self.workspace_app_desc(app);
         let mut copy = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
         copy.add_child(
-            ui_text::body(name, self.font)
+            ui_text::body(app_label.clone(), self.font)
                 .with_color(theme::text())
                 .finish(),
         );
@@ -5760,7 +6161,14 @@ impl DevicesView {
             .with_main_axis_size(MainAxisSize::Max);
         row.add_child(Expanded::new(1.0, copy.finish()).finish());
         row.add_child(
-            ui_text::cluster_ctrl(if selected { "已选" } else { "" }, self.mono)
+            ui_text::cluster_ctrl(
+                if selected {
+                    wormhole_i18n::t("common.selected")
+                } else {
+                    String::new()
+                },
+                self.mono,
+            )
                 .with_color(theme::accent_cool())
                 .finish(),
         );
@@ -5784,6 +6192,8 @@ impl DevicesView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
                 .finish(),
         )
+        .with_automation_label(app_label)
+        .with_automation_id(format!("devices:workspace_app:{app_id}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(DevicesAction::SelectWorkspaceApp(app_id.clone()));
             DispatchEventResult::StopPropagation
@@ -5809,7 +6219,11 @@ impl DevicesView {
             .with_margin_top(3.0)
             .finish(),
         );
-        let action_label = if installed { "选择" } else { "安装并打开" };
+        let action_label = if installed {
+            wormhole_i18n::t("devices.workspace.select")
+        } else {
+            wormhole_i18n::t("devices.workspace.install_and_open")
+        };
         let action = if installed {
             DevicesAction::SelectWorkspaceApp(app.to_string())
         } else {
@@ -5820,7 +6234,7 @@ impl DevicesView {
             .with_main_axis_size(MainAxisSize::Max);
         row.add_child(Expanded::new(1.0, copy.finish()).finish());
         row.add_child(
-            Container::new(self.toolbar_button(action_label, action, false, 88.0, true))
+            Container::new(self.toolbar_button(&action_label, action, false, 88.0, true))
                 .with_margin_left(10.0)
                 .finish(),
         );
@@ -5838,27 +6252,28 @@ impl DevicesView {
             .requested_by_node_id
             .as_deref()
             .map(|value| truncate_middle(value, 36))
-            .unwrap_or_else(|| "集群成员".into());
+            .unwrap_or_else(|| wormhole_i18n::t("devices.member.default"));
         let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         let failed_candidate =
             job.stage == WorkspaceProvisionStage::Failed && job.import_candidate.is_some();
         dialog.add_child(
             ui_text::title(
                 if failed_candidate {
-                    "已有虚拟机无法安全克隆"
+                    wormhole_i18n::t("devices.provision.clone_unsafe_title")
                 } else {
-                    "允许安装远程虚拟机？"
+                    wormhole_i18n::t("devices.provision.allow_install_title")
                 },
                 self.font,
             )
             .finish(),
         );
+        let manifest_name = job.manifest.name.clone();
         dialog.add_child(
             Container::new(
                 ui_text::body(
-                    format!(
-                        "{requester} 请求在这台来源电脑安装 {}，用于打开同步文件。",
-                        job.manifest.name
+                    wormhole_i18n::t_args(
+                        "devices.provision.request_body",
+                        &[("requester", &requester), ("name", &manifest_name)],
                     ),
                     self.font,
                 )
@@ -5868,12 +6283,16 @@ impl DevicesView {
             .with_margin_top(12.0)
             .finish(),
         );
+        let apps = job.manifest.installed_apps.join(", ");
+        let size = format_size(job.manifest.size_bytes);
         dialog.add_child(status_line(
-            format!(
-                "镜像 {} · {} · {}",
-                job.manifest.version,
-                job.manifest.installed_apps.join(", "),
-                format_size(job.manifest.size_bytes)
+            wormhole_i18n::t_args(
+                "devices.provision.image_meta",
+                &[
+                    ("version", &job.manifest.version),
+                    ("apps", &apps),
+                    ("size", &size),
+                ],
             ),
             self.font,
             StatusTone::Neutral,
@@ -5892,19 +6311,20 @@ impl DevicesView {
             .count();
         dialog.add_child(status_line(
             if failed_candidate {
-                "原 VM 保持不变。可以显式改用组织私有签名镜像。".into()
+                wormhole_i18n::t("devices.provision.keep_original_hint")
             } else if compatible_candidates > 0 {
-                format!(
-                    "已检测到 {compatible_candidates} 个关闭的 Hyper-V VHDX 候选；将只读验收并克隆，不修改原 VM。"
+                wormhole_i18n::t_args(
+                    "devices.provision.candidates_hint",
+                    &[("n", &compatible_candidates.to_string())],
                 )
             } else {
-                "未发现可安全克隆的已关闭 Hyper-V VM，将使用组织私有镜像。".into()
+                wormhole_i18n::t("devices.provision.no_safe_candidate")
             },
             self.font,
             StatusTone::Muted,
         ));
         dialog.add_child(status_line(
-            "批准后将触发本机 UAC，可能启用 Hyper-V 并要求重启。镜像及应用许可由组织负责。",
+            wormhole_i18n::t("devices.provision.uac_warn"),
             self.font,
             StatusTone::Warn,
         ));
@@ -5915,9 +6335,14 @@ impl DevicesView {
                 .filter(|candidate| candidate.importable)
                 .take(3)
             {
+                let vm_name = truncate_middle(&candidate.vm_name, 28);
+                let clone_label = wormhole_i18n::t_args(
+                    "devices.provision.clone_named",
+                    &[("name", &vm_name)],
+                );
                 dialog.add_child(
                     Container::new(self.toolbar_button(
-                        &format!("克隆 {}", truncate_middle(&candidate.vm_name, 28)),
+                        &clone_label,
                         DevicesAction::WorkspaceApproveProvisionCandidate {
                             job_id: job.job_id.clone(),
                             vm_name: candidate.vm_name.clone(),
@@ -5932,9 +6357,9 @@ impl DevicesView {
             }
             if compatible_candidates > 3 {
                 dialog.add_child(status_line(
-                    format!(
-                        "另有 {} 个候选未显示，请整理 VM 后刷新。",
-                        compatible_candidates - 3
+                    wormhole_i18n::t_args(
+                        "devices.provision.more_candidates",
+                        &[("n", &(compatible_candidates - 3).to_string())],
                     ),
                     self.font,
                     StatusTone::Muted,
@@ -5944,8 +6369,9 @@ impl DevicesView {
         let mut actions = Flex::row()
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        let later_label = wormhole_i18n::t("common.later");
         actions.add_child(self.toolbar_button(
-            "稍后",
+            &later_label,
             DevicesAction::WorkspaceDismissApproval(job.job_id.clone()),
             false,
             72.0,
@@ -5956,12 +6382,13 @@ impl DevicesView {
                 .with_horizontal_margin(6.0)
                 .finish(),
         );
+        let approve_label = if failed_candidate {
+            wormhole_i18n::t("devices.provision.use_org_image")
+        } else {
+            wormhole_i18n::t("devices.provision.download_org_image")
+        };
         actions.add_child(self.toolbar_button(
-            if failed_candidate {
-                "改用组织镜像"
-            } else {
-                "下载组织镜像"
-            },
+            &approve_label,
             DevicesAction::WorkspaceApproveProvision(job.job_id.clone()),
             true,
             136.0,
@@ -5985,6 +6412,8 @@ impl DevicesView {
             .finish(),
         )
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
         Container::new(Align::new(panel).finish())
             .with_uniform_padding(24.0)
@@ -5996,6 +6425,8 @@ impl DevicesView {
 fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
     let panel = EventHandler::new(panel)
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("对话框")
+        .with_automation_id("devices:dialog_panel")
         .finish();
 
     Align::new(
@@ -6034,7 +6465,7 @@ fn format_share_modified(timestamp: u64) -> String {
 
 fn share_type_label(entry: &ShareEntryDto) -> String {
     if entry.kind.eq_ignore_ascii_case("folder") {
-        return "文件夹".into();
+        return wormhole_i18n::t("devices.share.type.folder");
     }
     let ext = entry
         .name
@@ -6043,14 +6474,14 @@ fn share_type_label(entry: &ShareEntryDto) -> String {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "txt" => "文本文档".into(),
+        "txt" => wormhole_i18n::t("devices.share.type.txt"),
         "md" => "Markdown".into(),
         "json" => "JSON".into(),
         "pdf" => "PDF".into(),
         "toml" => "TOML".into(),
-        "rs" => "Rust 源文件".into(),
-        "swift" => "Swift 源文件".into(),
-        _ => "文件".into(),
+        "rs" => wormhole_i18n::t("devices.share.type.rs"),
+        "swift" => wormhole_i18n::t("devices.share.type.swift"),
+        _ => wormhole_i18n::t("devices.share.type.file"),
     }
 }
 
@@ -6112,7 +6543,7 @@ fn workspace_source_runtime_tools_from_catalog(tools: Vec<ToolSummary>) -> Vec<T
             tool.descriptor.id = "libreoffice".into();
             tool.descriptor.name = "LibreOffice".into();
             tool.descriptor.description =
-                "在文件来源电脑的隔离运行器中处理文档、表格与演示。".into();
+                wormhole_i18n::t("devices.workspace.host_native_docs_hint");
         }
         out.push(tool);
     }
@@ -6152,9 +6583,9 @@ fn workspace_worker_execution_mode_for_app(
 
 fn workspace_worker_mode_label(worker: &WorkspaceWorker, app: &str) -> String {
     match workspace_worker_execution_mode_for_app(worker, app) {
-        Some(WorkspaceExecutionMode::HostNative) => "Host-Native（本机桌面）".into(),
-        Some(WorkspaceExecutionMode::VmGuest) => "隔离虚拟机".into(),
-        None => "远程运行器".into(),
+        Some(WorkspaceExecutionMode::HostNative) => wormhole_i18n::t("devices.workspace.mode_host_native"),
+        Some(WorkspaceExecutionMode::VmGuest) => wormhole_i18n::t("devices.workspace.mode_vm_guest"),
+        None => wormhole_i18n::t("devices.workspace.runner_default"),
     }
 }
 
@@ -6171,11 +6602,10 @@ impl DevicesView {
         };
         match workspace_worker_execution_mode_for_app(worker, &app) {
             Some(WorkspaceExecutionMode::HostNative) => Some(
-                "当前将走 Host-Native：程序在来源 Ubuntu 本机桌面打开，会抢占该机键盘鼠标焦点。Wayland 首次推流需在来源机系统对话框点「共享整屏」（可勾选记住）；失败时检查 xdg-desktop-portal ScreenCast / grim。"
-                    .into(),
+                wormhole_i18n::t("devices.workspace.host_native_focus_warn"),
             ),
             Some(WorkspaceExecutionMode::VmGuest) => Some(
-                "当前将走隔离虚拟机（VmGuest）：不占用主机桌面焦点。".into(),
+                wormhole_i18n::t("devices.workspace.vm_guest_focus_hint"),
             ),
             None => None,
         }
@@ -6222,6 +6652,7 @@ impl CaretBlinkHost for DevicesView {
         (self.create_cluster_modal_open && self.create_cluster_name_focused)
             || (self.share_rename_modal_open && self.share_rename_focused)
             || (self.workspace_app_picker_open && self.workspace_app_search_focused)
+            || (self.mode == ViewMode::Grid && self.device_search_focused)
     }
 }
 
@@ -6364,6 +6795,19 @@ impl TypedActionView for DevicesView {
                 sync_caret_blink(self, ctx);
                 ctx.notify();
             }
+            DevicesAction::DeviceSearchEdit(edit) => {
+                self.edit_device_search(edit, ctx);
+            }
+            DevicesAction::FocusDeviceSearch => {
+                self.device_search_focused = true;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            DevicesAction::BlurDeviceSearch => {
+                self.device_search_focused = false;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
             DevicesAction::ConfirmWorkspaceAppOpen => self.confirm_workspace_app_open(ctx),
             DevicesAction::WorkspaceInstallAndOpen(app) => {
                 self.workspace_install_and_open(app.clone(), ctx);
@@ -6430,18 +6874,19 @@ impl TypedActionView for DevicesView {
                     .as_ref()
                     .is_some_and(|cluster| cluster.local_node_id == *node_id);
                 if is_local {
-                    self.status_flash = Some("无法给本机发信息".into());
+                    self.status_flash = Some(wormhole_i18n::t("devices.chat.cannot_self"));
                     ctx.notify();
                     return;
                 }
-                self.status_flash = Some("正在打开聊天…".into());
+                let chat_opening = wormhole_i18n::t("devices.chat.opening");
+                self.status_flash = Some(chat_opening.clone());
                 ctx.notify();
                 ctx.spawn(
                     async move {
                         tokio::time::sleep(Duration::from_millis(2600)).await;
                     },
-                    |view, _, ctx| {
-                        if view.status_flash.as_deref() == Some("正在打开聊天…") {
+                    move |view, _, ctx| {
+                        if view.status_flash.as_deref() == Some(chat_opening.as_str()) {
                             view.status_flash = None;
                             ctx.notify();
                         }
@@ -6458,7 +6903,7 @@ impl TypedActionView for DevicesView {
                     .as_ref()
                     .is_some_and(|cluster| cluster.local_node_id == *node_id);
                 if is_local {
-                    self.status_flash = Some("无法对本机打开远程桌面".into());
+                    self.status_flash = Some(wormhole_i18n::t("devices.rdp.cannot_self"));
                     ctx.notify();
                     return;
                 }
@@ -6470,11 +6915,11 @@ impl TypedActionView for DevicesView {
                         .is_some_and(|node| node_remote_desktop_available(node, false))
                 });
                 if !available {
-                    self.status_flash = Some("终端离线或缺少远程桌面地址".into());
+                    self.status_flash = Some(wormhole_i18n::t("devices.toast.offline_no_rdp"));
                     ctx.notify();
                     return;
                 }
-                self.status_flash = Some("正在打开远程桌面…".into());
+                self.status_flash = Some(wormhole_i18n::t("devices.rdp.opening"));
                 ctx.notify();
                 ctx.emit(DevicesEvent::OpenRemoteDesktop {
                     node_id: node_id.clone(),
@@ -6599,6 +7044,7 @@ mod share_root_reload_tests {
                 server_member_confirmed: true,
                 same_account: true,
                 user_id: None,
+                account_display_name: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: volumes

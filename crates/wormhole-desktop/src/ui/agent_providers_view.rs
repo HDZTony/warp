@@ -600,13 +600,16 @@ impl AgentProvidersView {
 
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
         let label = label.to_string();
+        let automation_id = format!("settings:agent_btn:{label}");
         let disabled = self.busy;
         Container::new(
             EventHandler::new(
-                ui_text::body(label, self.font)
+                ui_text::body(label.clone(), self.font)
                     .with_color(theme::accent())
                     .finish(),
             )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 if disabled {
                     return DispatchEventResult::StopPropagation;

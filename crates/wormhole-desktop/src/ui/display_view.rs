@@ -108,9 +108,10 @@ impl DisplayView {
 
     fn action_button(&self, label: &str, action: DisplayAction, disabled: bool) -> Box<dyn Element> {
         let label = label.to_string();
+        let automation_id = format!("display:btn:{label}");
         Container::new(
             EventHandler::new(
-                ui_text::body(label, self.font)
+                ui_text::body(label.clone(), self.font)
                     .with_color(if disabled {
                         theme::placeholder()
                     } else {
@@ -118,6 +119,8 @@ impl DisplayView {
                     })
                     .finish(),
             )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 if !disabled {
                     ctx.dispatch_typed_action(action.clone());

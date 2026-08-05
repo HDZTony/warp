@@ -4,35 +4,37 @@ use pathfinder_color::ColorU;
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
     CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth, Stack,
+    MainAxisAlignment, MainAxisSize, ParentElement, Radius, ScrollbarWidth, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
 use crate::ui::chat::shell_state::SharedChatShellState;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{
-    chat_search_pill, chat_sidebar_search_bg, tg_avatar, StatusTone, HUD_RADIUS,
-};
+use crate::ui::icons;
+use crate::ui::panel_primitives::{tg_avatar, StatusTone, HUD_RADIUS};
 use crate::ui::text_field_input::{
-    render_search_field_with_caret, wrap_text_field_focus_on_click, CaretBlink, TextFieldEditAction,
-    TextFieldInput, TextFieldState,
+    render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click_with_label,
+    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    chat_start_contact_conversation, chat_start_conversation, StartChatContactParams,
-    StartChatConversationParams,
+    chat_start_contact_conversation, chat_start_conversation, lookup_account_by_email,
+    peer_endpoints_for_user_id, StartChatContactParams, StartChatConversationParams,
 };
 use wormhole_desktop_core::chat_contacts::{
     aggregate_cluster_contacts_by_account, chat_contacts_add, chat_contacts_list_manual,
-    merge_contact_rows, ChatContactAddParams, ContactDto, ContactSource,
+    chat_contacts_set_user_id, classify_contact_id_input, merge_contact_rows, ChatContactAddParams,
+    ContactDto, ContactIdInput,
 };
 use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::load_device_remarks;
 
 const DIALOG_WIDTH: f32 = 420.0;
 const DIALOG_HEIGHT: f32 = 560.0;
+const ADD_DIALOG_WIDTH: f32 = 360.0;
+const ADD_FIELD_HEIGHT: f32 = 44.0;
 
 #[derive(Debug, Clone)]
 pub enum ContactsPanelAction {
@@ -44,9 +46,10 @@ pub enum ContactsPanelAction {
     Select(String),
     OpenAdd,
     CloseAdd,
+    FocusAddName,
+    FocusAddId,
     AddNameEdit(TextFieldEditAction),
     AddIdEdit(TextFieldEditAction),
-    AddEmailEdit(TextFieldEditAction),
     SubmitAdd,
     Refresh,
 }
@@ -73,8 +76,7 @@ pub struct ContactsPanelView {
     add_name_field: TextFieldState,
     add_id: String,
     add_id_field: TextFieldState,
-    add_email: String,
-    add_email_field: TextFieldState,
+    /// 0 = name, 1 = id/email, 255 = none
     add_focused: u8,
     status: String,
     status_tone: StatusTone,
@@ -89,7 +91,7 @@ impl ContactsPanelView {
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
-        let mut view = Self {
+        let view = Self {
             core,
             shell_state,
             font,
@@ -105,9 +107,7 @@ impl ContactsPanelView {
             add_name_field: TextFieldState::new(),
             add_id: String::new(),
             add_id_field: TextFieldState::new(),
-            add_email: String::new(),
-            add_email_field: TextFieldState::new(),
-            add_focused: 0,
+            add_focused: 255,
             status: String::new(),
             status_tone: StatusTone::Neutral,
             last_open: false,
@@ -129,9 +129,15 @@ impl ContactsPanelView {
                     .unwrap_or(false);
                 if open && !view.last_open {
                     view.last_open = true;
+                    view.search_focused = true;
+                    view.add_focused = 255;
                     view.reload(ctx);
+                    sync_caret_blink(view, ctx);
                 } else if !open {
                     view.last_open = false;
+                    view.search_focused = false;
+                    view.add_focused = 255;
+                    sync_caret_blink(view, ctx);
                 }
                 view.poll_open(ctx);
                 ctx.notify();
@@ -214,23 +220,48 @@ impl ContactsPanelView {
         let Some(contact) = self.contacts.iter().find(|c| c.id == id).cloned() else {
             return;
         };
-        if !contact.can_chat {
+        let core = self.core.clone();
+        let contact_id = contact.id.clone();
+        let name = contact.display_name.clone();
+        let email = contact.email.clone();
+        let mut user_id = contact.user_id.clone();
+        let endpoints = contact.endpoints.clone();
+        let bootstraps = contact.endpoint_bootstraps.clone();
+        let fallback_peer = contact.wormhole_id.clone();
+        let needs_lookup = user_id
+            .as_ref()
+            .map(|id| id.trim().is_empty())
+            .unwrap_or(true)
+            && fallback_peer.trim().is_empty()
+            && email.contains('@');
+        if !contact.can_chat && !needs_lookup {
             self.status = "该联系人无法打开私聊。请补充帐号 ID 或 Wormhole ID。".into();
             self.status_tone = StatusTone::Warn;
             ctx.notify();
             return;
         }
-        let core = self.core.clone();
-        let name = contact.display_name.clone();
-        let user_id = contact.user_id.clone();
-        let endpoints = contact.endpoints.clone();
-        let bootstraps = contact.endpoint_bootstraps.clone();
-        let fallback_peer = contact.wormhole_id.clone();
+        self.status = if needs_lookup {
+            "正在解析邮箱帐号…".into()
+        } else {
+            String::new()
+        };
+        self.status_tone = StatusTone::Muted;
+        ctx.notify();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
+                if needs_lookup {
+                    let looked = lookup_account_by_email(&runtime.state, &email).await?;
+                    let updated = chat_contacts_set_user_id(
+                        &runtime.state.data_dir,
+                        &contact_id,
+                        &looked.user_id,
+                    )
+                    .await?;
+                    user_id = updated.user_id;
+                }
                 if let Some(peer_user_id) = user_id.filter(|id| !id.trim().is_empty()) {
-                    let peer_endpoints = if endpoints.is_empty() {
+                    let mut peer_endpoints = if endpoints.is_empty() {
                         if fallback_peer.is_empty() {
                             Vec::new()
                         } else {
@@ -246,6 +277,10 @@ impl ContactsPanelView {
                             )
                             .collect::<Vec<_>>()
                     };
+                    if peer_endpoints.is_empty() {
+                        peer_endpoints =
+                            peer_endpoints_for_user_id(&runtime.state, &peer_user_id).await;
+                    }
                     return chat_start_contact_conversation(
                         &runtime.ctx,
                         &runtime.state,
@@ -258,7 +293,7 @@ impl ContactsPanelView {
                     .await;
                 }
                 if fallback_peer.is_empty() {
-                    return Err("该联系人仅有邮箱，无法打开私聊。请补充 Wormhole ID。".into());
+                    return Err("该联系人仅有邮箱，无法打开私聊。请补充用户 ID 或 Wormhole ID。".into());
                 }
                 chat_start_conversation(
                     &runtime.ctx,
@@ -278,12 +313,18 @@ impl ContactsPanelView {
                     if let Ok(mut state) = view.shell_state.lock() {
                         state.close_contacts();
                     }
+                    view.status.clear();
                     ctx.emit(ContactsPanelEvent::OpenConversation(conv.id));
+                    view.reload(ctx);
                     ctx.notify();
                 }
                 Err(err) => {
-                    view.status = err;
+                    view.status = err.clone();
                     view.status_tone = StatusTone::Danger;
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(err, StatusTone::Danger);
+                    }
+                    view.reload(ctx);
                     ctx.notify();
                 }
             },
@@ -291,29 +332,79 @@ impl ContactsPanelView {
     }
 
     fn submit_add(&mut self, ctx: &mut ViewContext<Self>) {
-        let core = self.core.clone();
-        let params = ChatContactAddParams {
-            display_name: self.add_name.clone(),
-            wormhole_id: self.add_id.clone(),
-            email: self.add_email.clone(),
-            user_id: String::new(),
+        let display_name = self.add_name.trim().to_string();
+        let id_raw = self.add_id.trim().to_string();
+        if display_name.is_empty() || id_raw.is_empty() {
+            self.status = "请填写联系人名称和用户 ID / Wormhole ID / 邮箱".into();
+            self.status_tone = StatusTone::Danger;
+            ctx.notify();
+            return;
+        }
+        let Some(classified) = classify_contact_id_input(&id_raw) else {
+            self.status = "请填写联系人名称和用户 ID / Wormhole ID / 邮箱".into();
+            self.status_tone = StatusTone::Danger;
+            ctx.notify();
+            return;
         };
+        let (wormhole_id, email, mut user_id) = match classified {
+            ContactIdInput::Email(email) => (String::new(), email, String::new()),
+            ContactIdInput::UserId(user_id) => (String::new(), String::new(), user_id),
+            ContactIdInput::WormholeId(wormhole_id) => (wormhole_id, String::new(), String::new()),
+        };
+        let core = self.core.clone();
+        self.status = if email.contains('@') {
+            "正在解析邮箱帐号…".into()
+        } else {
+            String::new()
+        };
+        self.status_tone = StatusTone::Muted;
+        ctx.notify();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
-                chat_contacts_add(&runtime.state.data_dir, params).await
+                let mut lookup_warning = None;
+                if email.contains('@') && user_id.is_empty() {
+                    match lookup_account_by_email(&runtime.state, &email).await {
+                        Ok(looked) => user_id = looked.user_id,
+                        Err(err) => lookup_warning = Some(err),
+                    }
+                }
+                let dto = chat_contacts_add(
+                    &runtime.state.data_dir,
+                    ChatContactAddParams {
+                        display_name,
+                        wormhole_id,
+                        email,
+                        user_id,
+                    },
+                )
+                .await?;
+                Ok((dto, lookup_warning))
             },
             |view, result, ctx| match result {
-                Ok(_) => {
+                Ok((dto, lookup_warning)) => {
                     view.add_name.clear();
                     view.add_id.clear();
-                    view.add_email.clear();
+                    view.add_name_field = TextFieldState::new();
+                    view.add_id_field = TextFieldState::new();
                     if let Ok(mut state) = view.shell_state.lock() {
                         state.contacts_add_open = false;
                     }
+                    view.add_focused = 255;
+                    view.search_focused = true;
+                    sync_caret_blink(view, ctx);
                     view.reload(ctx);
-                    view.status = "已添加联系人".into();
-                    view.status_tone = StatusTone::Success;
+                    if let Some(warning) = lookup_warning {
+                        view.status = format!("已添加联系人，但暂无法私聊：{warning}");
+                        view.status_tone = StatusTone::Warn;
+                    } else if dto.can_chat {
+                        view.status = "已添加联系人".into();
+                        view.status_tone = StatusTone::Success;
+                    } else {
+                        view.status =
+                            "已添加联系人，但缺少帐号 ID，暂无法打开私聊".into();
+                        view.status_tone = StatusTone::Warn;
+                    }
                     ctx.notify();
                 }
                 Err(err) => {
@@ -355,6 +446,8 @@ impl View for ContactsPanelView {
                 .with_background(ColorU::new(0, 0, 0, 140))
                 .finish(),
         )
+        .with_automation_label("关闭联系人")
+        .with_automation_id("chat:contacts_scrim")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(ContactsPanelAction::Close);
             DispatchEventResult::StopPropagation
@@ -367,6 +460,8 @@ impl View for ContactsPanelView {
             .finish();
 
         let dialog = EventHandler::new(dialog)
+            .with_automation_label("联系人")
+            .with_automation_id("chat:contacts_dialog")
             .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
             .finish();
 
@@ -406,6 +501,8 @@ impl ContactsPanelView {
                 .with_uniform_padding(8.0)
                 .finish(),
             )
+            .with_automation_label(if self.sort_desc { "Z→A" } else { "A→Z" })
+            .with_automation_id("chat:contacts_sort")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ContactsPanelAction::ToggleSort);
                 DispatchEventResult::StopPropagation
@@ -422,15 +519,8 @@ impl ContactsPanelView {
                 .finish(),
         );
 
-        // Search
-        col.add_child(
-            Container::new(self.search_box())
-                .with_padding_left(12.0)
-                .with_padding_right(12.0)
-                .with_padding_top(10.0)
-                .with_padding_bottom(8.0)
-                .finish(),
-        );
+        // Search — HTML `.chat-contacts-search`
+        col.add_child(self.search_box());
 
         // Body
         let rows = self.filtered();
@@ -458,7 +548,7 @@ impl ContactsPanelView {
         };
         col.add_child(Expanded::new(1.0, body).finish());
 
-        if !self.status.is_empty() {
+        if !self.status.is_empty() && !add_open {
             col.add_child(
                 Container::new(
                     ui_text::chat_preview(self.status.clone(), self.font)
@@ -490,6 +580,8 @@ impl ContactsPanelView {
                 .with_uniform_padding(10.0)
                 .finish(),
             )
+            .with_automation_label("添加联系人")
+            .with_automation_id("chat:contacts_add")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ContactsPanelAction::OpenAdd);
                 DispatchEventResult::StopPropagation
@@ -507,6 +599,8 @@ impl ContactsPanelView {
                 .with_uniform_padding(10.0)
                 .finish(),
             )
+            .with_automation_label("关闭")
+            .with_automation_id("chat:contacts_close")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ContactsPanelAction::Close);
                 DispatchEventResult::StopPropagation
@@ -578,6 +672,7 @@ impl ContactsPanelView {
                     .finish(),
             )
             .finish();
+        let contact_name = c.display_name.clone();
         EventHandler::new(
             Container::new(row)
                 .with_padding_left(10.0)
@@ -587,6 +682,8 @@ impl ContactsPanelView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
                 .finish(),
         )
+        .with_automation_label(contact_name)
+        .with_automation_id(format!("chat:contact:{id}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(ContactsPanelAction::Select(id.clone()));
             DispatchEventResult::StopPropagation
@@ -595,10 +692,15 @@ impl ContactsPanelView {
     }
 
     fn search_box(&self) -> Box<dyn Element> {
+        let border = if self.search_focused {
+            theme::accent_cool()
+        } else {
+            theme::border()
+        };
         let field = render_search_field_with_caret(
             &self.search,
             &self.search_field.marked_text,
-            "搜索联系人",
+            "搜索",
             self.font,
             self.search_focused,
             false,
@@ -609,111 +711,256 @@ impl ContactsPanelView {
             ctx.dispatch_typed_action(ContactsPanelAction::SearchEdit(action));
         })
         .focused(self.search_focused)
+        .ime_preedit(!self.search_field.marked_text.is_empty())
         .finish();
-        let input = wrap_text_field_focus_on_click(input, |ctx| {
+        let input = wrap_text_field_focus_on_click_with_label(input, "搜索", |ctx| {
             ctx.dispatch_typed_action(ContactsPanelAction::ActivateSearch);
         });
-        chat_search_pill(
-            input,
-            chat_sidebar_search_bg(),
-            theme::border(),
-            7.0,
-            10.0,
-            999.0,
+        let row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Container::new(icons::chat_sidebar_search_icon(theme::muted()))
+                    .with_margin_right(10.0)
+                    .finish(),
+            )
+            .with_child(Expanded::new(1.0, input).finish())
+            .finish();
+        ConstrainedBox::new(
+            Container::new(row)
+                .with_padding_left(18.0)
+                .with_padding_right(18.0)
+                .with_background(theme::canvas())
+                .with_border(Border::bottom(1.0).with_border_fill(border))
+                .finish(),
         )
+        .with_min_height(50.0)
+        .finish()
     }
 
     fn add_form_overlay(&self) -> Box<dyn Element> {
-        let mut col = Flex::column()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(
-            ui_text::body("添加联系人".to_string(), self.font)
-                .with_color(theme::text())
+        // HTML `.chat-contact-modal` — dim scrim + centered dialog
+        let scrim = EventHandler::new(
+            Container::new(Flex::column().finish())
+                .with_background(ColorU::new(0, 0, 0, 184))
                 .finish(),
+        )
+        .with_automation_label("关闭添加联系人")
+        .with_automation_id("chat:contacts_add_scrim")
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ContactsPanelAction::CloseAdd);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+
+        let mut head = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        head.add_child(
+            Expanded::new(
+                1.0,
+                ui_text::body("添加联系人".to_string(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .finish(),
         );
-        col.add_child(self.add_field("名称", &self.add_name, 0, ContactsPanelAction::AddNameEdit));
-        col.add_child(self.add_field(
-            "Wormhole ID",
-            &self.add_id,
-            1,
-            ContactsPanelAction::AddIdEdit,
-        ));
-        col.add_child(self.add_field(
-            "邮箱（可选）",
-            &self.add_email,
-            2,
-            ContactsPanelAction::AddEmailEdit,
-        ));
-        let mut actions = Flex::row().with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(Expanded::new(1.0, Flex::row().finish()).finish());
-        actions.add_child(
+        head.add_child(
             EventHandler::new(
-                Container::new(
-                    ui_text::body("取消".to_string(), self.font)
-                        .with_color(theme::muted())
-                        .finish(),
+                ConstrainedBox::new(
+                    Align::new(
+                        ui_text::body("×".to_string(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .finish(),
                 )
-                .with_uniform_padding(10.0)
+                .with_width(44.0)
+                .with_height(44.0)
                 .finish(),
             )
+            .with_automation_label("关闭添加联系人弹框")
+            .with_automation_id("chat:contacts_add_close")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ContactsPanelAction::CloseAdd);
                 DispatchEventResult::StopPropagation
             })
             .finish(),
         );
-        actions.add_child(
-            EventHandler::new(
-                Container::new(
-                    ui_text::body("保存".to_string(), self.font)
-                        .with_color(theme::accent_cool())
-                        .finish(),
-                )
-                .with_uniform_padding(10.0)
-                .finish(),
-            )
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(ContactsPanelAction::SubmitAdd);
-                DispatchEventResult::StopPropagation
-            })
+
+        let mut form = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        form.add_child(self.add_field(
+            "联系人名称",
+            "输入联系人名称",
+            &self.add_name,
+            &self.add_name_field,
+            0,
+            ContactsPanelAction::FocusAddName,
+            ContactsPanelAction::AddNameEdit,
+        ));
+        form.add_child(
+            Container::new(self.add_field(
+                "用户 ID / Wormhole ID / 邮箱",
+                "输入用户 ID / Wormhole ID / 邮箱",
+                &self.add_id,
+                &self.add_id_field,
+                1,
+                ContactsPanelAction::FocusAddId,
+                ContactsPanelAction::AddIdEdit,
+            ))
+            .with_padding_top(14.0)
             .finish(),
         );
-        col.add_child(actions.finish());
 
-        Align::new(
-            Container::new(col.finish())
-                .with_background(theme::panel())
-                .with_uniform_padding(18.0)
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
-                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        let feedback = if self.status.is_empty() {
+            " ".to_string()
+        } else {
+            self.status.clone()
+        };
+        let feedback_color = if self.status.is_empty() {
+            theme::muted()
+        } else {
+            match self.status_tone {
+                StatusTone::Danger => theme::danger(),
+                StatusTone::Success => theme::accent_cool(),
+                _ => theme::muted(),
+            }
+        };
+        form.add_child(
+            Container::new(
+                ui_text::chat_preview(feedback, self.font)
+                    .with_color(feedback_color)
+                    .finish(),
+            )
+            .with_padding_top(12.0)
+            .finish(),
+        );
+
+        let cancel_btn = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(
+                    Align::new(
+                        ui_text::body("取消".to_string(), self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_min_height(ADD_FIELD_HEIGHT)
                 .finish(),
+            )
+            .with_padding_left(12.0)
+            .with_padding_right(12.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+            .finish(),
         )
-        .finish()
+        .with_automation_label("取消")
+        .with_automation_id("chat:contacts_add_cancel")
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ContactsPanelAction::CloseAdd);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+
+        let save_btn = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(
+                    Align::new(
+                        ui_text::body("添加".to_string(), self.font)
+                            .with_color(theme::canvas())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_min_height(ADD_FIELD_HEIGHT)
+                .finish(),
+            )
+            .with_padding_left(12.0)
+            .with_padding_right(12.0)
+            .with_background(theme::accent_cool())
+            .with_border(Border::all(1.0).with_border_fill(theme::accent_cool()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+            .with_margin_left(7.0)
+            .finish(),
+        )
+        .with_automation_label("添加")
+        .with_automation_id("chat:contacts_add_save")
+        .on_left_mouse_down(|ctx, _, _| {
+            ctx.dispatch_typed_action(ContactsPanelAction::SubmitAdd);
+            DispatchEventResult::StopPropagation
+        })
+        .finish();
+
+        let mut actions = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        actions.add_child(cancel_btn);
+        actions.add_child(save_btn);
+        form.add_child(Container::new(actions.finish()).with_padding_top(4.0).finish());
+
+        let dialog = EventHandler::new(
+            ConstrainedBox::new(
+                Container::new(
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                        .with_child(
+                            Container::new(head.finish())
+                                .with_padding_left(18.0)
+                                .with_padding_right(10.0)
+                                .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
+                                .finish(),
+                        )
+                        .with_child(
+                            Container::new(form.finish())
+                                .with_uniform_padding(18.0)
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_background(theme::panel())
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+                .finish(),
+            )
+            .with_width(ADD_DIALOG_WIDTH)
+            .finish(),
+        )
+        .with_automation_label("添加联系人表单")
+        .with_automation_id("chat:contacts_add_dialog")
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .finish();
+
+        Stack::new()
+            .with_child(scrim)
+            .with_child(Align::new(dialog).finish())
+            .finish()
     }
 
     fn add_field(
         &self,
         label: &str,
+        placeholder: &str,
         value: &str,
+        field_state: &TextFieldState,
         focus_idx: u8,
-        _edit: fn(TextFieldEditAction) -> ContactsPanelAction,
+        focus_action: ContactsPanelAction,
+        edit_ctor: fn(TextFieldEditAction) -> ContactsPanelAction,
     ) -> Box<dyn Element> {
         let focused = self.add_focused == focus_idx;
-        let field_state = match focus_idx {
-            0 => &self.add_name_field,
-            1 => &self.add_id_field,
-            _ => &self.add_email_field,
-        };
-        let action_ctor: fn(TextFieldEditAction) -> ContactsPanelAction = match focus_idx {
-            0 => ContactsPanelAction::AddNameEdit,
-            1 => ContactsPanelAction::AddIdEdit,
-            _ => ContactsPanelAction::AddEmailEdit,
+        let border = if focused {
+            theme::border_bright()
+        } else {
+            theme::border()
         };
         let field = render_search_field_with_caret(
             value,
             &field_state.marked_text,
-            label,
+            placeholder,
             self.font,
             focused,
             false,
@@ -721,22 +968,42 @@ impl ContactsPanelView {
             field_state.cursor,
         );
         let input = TextFieldInput::builder(field, move |ctx, action| {
-            ctx.dispatch_typed_action(action_ctor(action));
+            ctx.dispatch_typed_action(edit_ctor(action));
         })
         .focused(focused)
+        .ime_preedit(!field_state.marked_text.is_empty())
         .finish();
-        Container::new(
-            Flex::column()
-                .with_child(
+        let input = wrap_text_field_focus_on_click_with_label(
+            ConstrainedBox::new(
+                Container::new(input)
+                    .with_padding_left(10.0)
+                    .with_padding_right(10.0)
+                    .with_background(theme::canvas())
+                    .with_border(Border::all(1.0).with_border_fill(border))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+                    .finish(),
+            )
+            .with_min_height(ADD_FIELD_HEIGHT)
+            .finish(),
+            placeholder,
+            move |ctx| {
+                ctx.dispatch_typed_action(focus_action.clone());
+            },
+        );
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(
+                Container::new(
                     ui_text::chat_preview(label.to_string(), self.font)
                         .with_color(theme::muted())
                         .finish(),
                 )
-                .with_child(input)
+                .with_padding_bottom(7.0)
                 .finish(),
-        )
-        .with_padding_top(10.0)
-        .finish()
+            )
+            .with_child(input)
+            .finish()
     }
 }
 
@@ -759,11 +1026,14 @@ impl TypedActionView for ContactsPanelView {
             ContactsPanelAction::SearchEdit(edit) => {
                 self.search_field.apply(&mut self.search, edit);
                 self.search_focused = true;
+                self.add_focused = 255;
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::FocusSearch | ContactsPanelAction::ActivateSearch => {
                 self.search_focused = true;
                 self.add_focused = 255;
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::Select(id) => self.open_contact(id, ctx),
@@ -771,32 +1041,60 @@ impl TypedActionView for ContactsPanelView {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.contacts_add_open = true;
                 }
+                self.search_focused = false;
                 self.add_focused = 0;
+                self.status.clear();
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::CloseAdd => {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.contacts_add_open = false;
                 }
+                self.search_focused = true;
+                self.add_focused = 255;
+                self.status.clear();
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ContactsPanelAction::FocusAddName => {
+                self.add_focused = 0;
+                self.search_focused = false;
+                sync_caret_blink(self, ctx);
+                ctx.notify();
+            }
+            ContactsPanelAction::FocusAddId => {
+                self.add_focused = 1;
+                self.search_focused = false;
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::AddNameEdit(edit) => {
                 self.add_focused = 0;
+                self.search_focused = false;
                 self.add_name_field.apply(&mut self.add_name, edit);
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::AddIdEdit(edit) => {
                 self.add_focused = 1;
+                self.search_focused = false;
                 self.add_id_field.apply(&mut self.add_id, edit);
-                ctx.notify();
-            }
-            ContactsPanelAction::AddEmailEdit(edit) => {
-                self.add_focused = 2;
-                self.add_email_field.apply(&mut self.add_email, edit);
+                sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ContactsPanelAction::SubmitAdd => self.submit_add(ctx),
             ContactsPanelAction::Refresh => self.reload(ctx),
         }
+    }
+}
+
+impl CaretBlinkHost for ContactsPanelView {
+    fn caret_blink(&mut self) -> &mut CaretBlink {
+        &mut self.caret_blink
+    }
+
+    fn caret_input_focused(&self) -> bool {
+        self.search_focused || self.add_focused < 2
     }
 }

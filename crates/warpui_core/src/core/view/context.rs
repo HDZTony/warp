@@ -66,6 +66,33 @@ impl<'a, T: View> ViewContext<'a, T> {
         self.view_id
     }
 
+    /// Snapshot interactive UI automation targets for `window_id` (last paint).
+    pub fn ui_automation_snapshot(
+        &self,
+        window_id: WindowId,
+    ) -> Result<Vec<crate::ui_automation::UiAutomationNode>, String> {
+        self.app.ui_automation_snapshot(window_id)
+    }
+
+    /// Synthesize a left click at window-local coordinates.
+    pub fn ui_automation_click_at(
+        &mut self,
+        window_id: WindowId,
+        position: pathfinder_geometry::vector::Vector2F,
+    ) -> Result<(), String> {
+        self.app.ui_automation_click_at(window_id, position)
+    }
+
+    /// Type UTF-8 text into the focused field of `window_id`.
+    /// See [`AppContext::ui_automation_type_text`](crate::AppContext::ui_automation_type_text).
+    pub fn ui_automation_type_text(
+        &mut self,
+        window_id: WindowId,
+        text: &str,
+    ) -> Result<(), String> {
+        self.app.ui_automation_type_text(window_id, text)
+    }
+
     pub fn font_cache(&self) -> &FontCache {
         self.app.font_cache()
     }

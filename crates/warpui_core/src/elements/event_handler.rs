@@ -39,6 +39,12 @@ impl Default for MouseInBehavior {
     }
 }
 
+/// Registers interactive mouse targets into [`crate::ui_automation::AutomationCache`]
+/// during paint (desktop sim-use), matching [`super::Hoverable`].
+///
+/// Use [`Self::with_automation_label`] / [`Self::with_automation_id`] on clickable
+/// handlers. Prefer [`Self::skip_automation`] when a parent
+/// [`super::AutomationTarget`] already owns the outline hit.
 pub struct EventHandler {
     child: Box<dyn Element>,
     /// Allow this element to handle events even if a descendent already handled it.
@@ -64,6 +70,12 @@ pub struct EventHandler {
     // Then we use that upper bound to do the hit testing, which means a parent will always get
     // events from its children, regardless of whether they are stacks or not.
     child_max_z_index: Option<ZIndex>,
+    /// Label for desktop sim-use outline (`ui` / `tap --label`). Prefer visible / a11y wording.
+    automation_label: Option<String>,
+    /// Optional stable id for `#id` selectors.
+    automation_id: Option<String>,
+    /// When true, skip automation registration (parent [`super::AutomationTarget`] owns the hit).
+    skip_automation: bool,
 }
 
 impl EventHandler {
@@ -86,12 +98,44 @@ impl EventHandler {
             origin: None,
             child_max_z_index: None,
             mouse_in_behavior: Default::default(),
+            automation_label: None,
+            automation_id: None,
+            skip_automation: false,
         }
     }
 
     pub fn with_always_handle(mut self) -> Self {
         self.always_handle = true;
         self
+    }
+
+    /// Sets the human-readable label used by desktop UI automation (`ui_outline` / `tap --label`).
+    pub fn with_automation_label(mut self, label: impl Into<String>) -> Self {
+        self.automation_label = Some(label.into());
+        self
+    }
+
+    /// Optional stable id for `#id` selectors across layout churn.
+    pub fn with_automation_id(mut self, id: impl Into<String>) -> Self {
+        self.automation_id = Some(id.into());
+        self
+    }
+
+    /// Skip registering this handler in the automation cache (use when wrapped by
+    /// [`super::AutomationTarget`]).
+    pub fn skip_automation(mut self) -> Self {
+        self.skip_automation = true;
+        self
+    }
+
+    fn is_automation_interactive(&self) -> bool {
+        !self.skip_automation
+            && (self.left_mouse_down.is_some()
+                || self.left_mouse_up.is_some()
+                || self.middle_mouse_down.is_some()
+                || self.right_mouse_down.is_some()
+                || self.forward_mouse_down.is_some()
+                || self.back_mouse_down.is_some())
     }
 
     pub fn on_keydown<F>(mut self, callback: F) -> Self
@@ -232,6 +276,27 @@ impl Element for EventHandler {
         self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
         self.child.paint(origin, ctx, app);
         self.child_max_z_index = Some(ctx.scene.max_active_z_index());
+
+        if self.is_automation_interactive() {
+            if self.automation_label.is_none() {
+                log::warn!(
+                    "EventHandler missing with_automation_label (id={:?}); outline shows ?",
+                    self.automation_id
+                );
+            }
+            if let Some(size) = self.child.size() {
+                let view_id = ctx
+                    .painting_view_id
+                    .unwrap_or_else(|| crate::EntityId::from_usize(0));
+                ctx.automation_cache
+                    .register(crate::ui_automation::AutomationHit {
+                        label: self.automation_label.clone(),
+                        stable_id: self.automation_id.clone(),
+                        bounds: pathfinder_geometry::rect::RectF::new(origin, size),
+                        view_id,
+                    });
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

@@ -267,14 +267,61 @@ impl Element for ClusterTopologyPanel {
     }
 }
 
-fn node_display_label(node: &ClusterNodeDto, is_local: bool, remark: Option<&str>) -> String {
-    display_name_with_remark(remark, || {
-        if is_local {
-            format!("{} · 本机", node.os)
-        } else {
-            format!("{} · {}", node.os, node.hostname)
-        }
-    })
+/// Card title: viewer remark → account display name → hostname / 「本机」.
+pub(crate) fn node_display_label(
+    node: &ClusterNodeDto,
+    is_local: bool,
+    remark: Option<&str>,
+) -> String {
+    display_name_with_remark(remark, || node_username(node, is_local))
+}
+
+fn node_username(node: &ClusterNodeDto, is_local: bool) -> String {
+    if let Some(name) = node
+        .account_display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return name.to_string();
+    }
+    if is_local {
+        return "本机".into();
+    }
+    let host = node.hostname.trim();
+    if !host.is_empty() {
+        return host.to_string();
+    }
+    let id = node.node_id.trim();
+    if id.is_empty() {
+        "unknown".into()
+    } else if id.chars().count() > 12 {
+        id.chars().take(12).collect()
+    } else {
+        id.to_string()
+    }
+}
+
+/// Case-insensitive match against remark, hostname, OS, node_id, and display label.
+pub(crate) fn device_matches_query(
+    node: &ClusterNodeDto,
+    is_local: bool,
+    remark: Option<&str>,
+    query: &str,
+) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let display = node_display_label(node, is_local, remark);
+    let haystacks = [
+        display.to_lowercase(),
+        node.hostname.to_lowercase(),
+        node.os.to_lowercase(),
+        node.node_id.to_lowercase(),
+        remark.unwrap_or("").to_lowercase(),
+    ];
+    haystacks.iter().any(|s| s.contains(&q))
 }
 
 fn blend_color(base: ColorU, accent: ColorU, amount: f32) -> ColorU {
@@ -349,6 +396,8 @@ fn device_delete_button(node_id: String, mono: FamilyId) -> Box<dyn Element> {
     .finish();
 
     EventHandler::new(button)
+        .with_automation_label("删除设备")
+        .with_automation_id(format!("devices:delete:{node_id}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(DevicesAction::OpenDeleteNodeModal(node_id.clone()));
             DispatchEventResult::StopPropagation
@@ -489,8 +538,9 @@ fn share_files_button(node_id: String, clickable: bool, mono: FamilyId) -> Box<d
 
     if clickable {
         EventHandler::new(inner)
+            .with_automation_label("共享文件")
+            .with_automation_id(format!("devices:share_files:{node_id}"))
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(DevicesAction::OpenNode(node_id.clone()));
                 DispatchEventResult::StopPropagation
             })
             .finish()
@@ -510,8 +560,9 @@ fn remote_desktop_button(node_id: String, available: bool, mono: FamilyId) -> Bo
 
     if available {
         EventHandler::new(inner)
+            .with_automation_label("远程桌面")
+            .with_automation_id(format!("devices:remote_desktop:{node_id}"))
             .on_left_mouse_down(move |ctx, _, _| {
-                ctx.dispatch_typed_action(DevicesAction::OpenRemoteDesktop(node_id.clone()));
                 DispatchEventResult::StopPropagation
             })
             .finish()
@@ -540,21 +591,18 @@ fn node_card(
     let is_admin = node_is_cluster_admin(&node.role);
     let show_delete = show_device_remove(node.removable, hovered, selected);
     let display_label = node_display_label(node, is_local, remark);
+    let card_label = display_label.clone();
     let (status_text, status_tone) = node_presence_label(node);
 
     // Clickable region: thumb + name/status/share count (not action buttons).
     let mut info = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     info.add_child(
-        ConstrainedBox::new(
-            Container::new(
-                ui_text::device_name(display_label, mono)
-                    .with_color(theme::text())
-                    .finish(),
-            )
-            .with_vertical_margin(0.0)
-            .finish(),
+        Container::new(
+            ui_text::device_name(card_label.clone(), mono)
+                .with_color(theme::text())
+                .finish(),
         )
-        .with_min_height(32.0)
+        .with_margin_bottom(6.0)
         .finish(),
     );
     info.add_child(status_line(status_text, mono, status_tone));
@@ -581,6 +629,8 @@ fn node_card(
             .with_child(info_block)
             .finish(),
     )
+    .with_automation_label(card_label)
+    .with_automation_id(format!("devices:node:{node_id}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(DevicesAction::NodeCardClick(click_id.clone()));
         DispatchEventResult::StopPropagation
@@ -618,7 +668,7 @@ fn node_card(
     let actions_block = Container::new(
         Align::new(
             Container::new(actions.finish())
-                .with_margin_top(8.0)
+                .with_margin_top(4.0)
                 .finish(),
         )
         .left()
@@ -628,7 +678,9 @@ fn node_card(
     .with_padding_bottom(BODY_PADDING_BOTTOM)
     .finish();
 
-    let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    let mut col = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min);
     col.add_child(clickable);
     col.add_child(actions_block);
 
@@ -726,8 +778,8 @@ fn node_presence_label(node: &ClusterNodeDto) -> (&'static str, StatusTone) {
 #[cfg(test)]
 mod node_share_browsable_tests {
     use super::{
-        node_is_cluster_admin, node_remote_desktop_available, node_share_browsable,
-        show_device_remove,
+        device_matches_query, node_display_label, node_is_cluster_admin,
+        node_remote_desktop_available, node_share_browsable, show_device_remove,
     };
     use wormhole_desktop_core::cluster_commands::{
         ClusterNodeDto, ShareVolumeRosterDto, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_ONLINE,
@@ -762,6 +814,7 @@ mod node_share_browsable_tests {
             server_member_confirmed: true,
             same_account: true,
             user_id: None,
+            account_display_name: None,
             pending_handshake: false,
             handshake_error: None,
             share_volumes: (0..share_count)
@@ -851,5 +904,47 @@ mod node_share_browsable_tests {
 
         let missing = sample_node(true, NODE_PRESENCE_ONLINE, None, 0);
         assert!(!node_remote_desktop_available(&missing, false));
+    }
+
+    #[test]
+    fn display_label_prefers_remark_then_account_name_then_hostname_or_local() {
+        let mut node = sample_node(true, NODE_PRESENCE_ONLINE, Some("ep"), 0);
+        assert_eq!(
+            node_display_label(&node, false, Some("书房电脑")),
+            "书房电脑"
+        );
+        assert_eq!(node_display_label(&node, false, None), "host");
+        assert_eq!(node_display_label(&node, true, None), "本机");
+        assert_eq!(
+            node_display_label(&node, true, Some("我的本机")),
+            "我的本机"
+        );
+
+        node.account_display_name = Some("Alice".into());
+        assert_eq!(node_display_label(&node, false, None), "Alice");
+        assert_eq!(node_display_label(&node, true, None), "Alice");
+        assert_eq!(
+            node_display_label(&node, false, Some("书房电脑")),
+            "书房电脑"
+        );
+    }
+
+    #[test]
+    fn display_label_falls_back_when_hostname_empty() {
+        let mut node = sample_node(true, NODE_PRESENCE_ONLINE, None, 0);
+        node.hostname.clear();
+        node.node_id = "abcdefghijklmnop".into();
+        assert_eq!(node_display_label(&node, false, None), "abcdefghijkl");
+    }
+
+    #[test]
+    fn device_query_matches_remark_hostname_os_and_empty() {
+        let node = sample_node(true, NODE_PRESENCE_ONLINE, Some("ep"), 0);
+        assert!(device_matches_query(&node, false, Some("书房"), ""));
+        assert!(device_matches_query(&node, false, Some("书房电脑"), "书房"));
+        assert!(device_matches_query(&node, false, None, "HOST"));
+        assert!(device_matches_query(&node, false, None, "windows"));
+        assert!(device_matches_query(&node, false, None, "remote"));
+        assert!(!device_matches_query(&node, false, None, "macos"));
     }
 }

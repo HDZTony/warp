@@ -653,12 +653,12 @@ fn incoming_call_button(
     danger: bool,
     action: ChatShellAction,
 ) -> Box<dyn Element> {
-    let label = label.to_string();
-    let action = action.clone();
+    let btn_label = label.to_string();
+    let automation_id = format!("chat:call:{btn_label}");
     EventHandler::new(
         Container::new(
             Align::new(
-                ui_text::body(label, font)
+                ui_text::body(btn_label.clone(), font)
                     .with_color(if danger {
                         theme::danger()
                     } else {
@@ -676,6 +676,8 @@ fn incoming_call_button(
         })
         .finish(),
     )
+    .with_automation_label(btn_label)
+    .with_automation_id(automation_id)
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation

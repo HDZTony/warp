@@ -22,6 +22,10 @@ pub const OPEN_WORKSPACE_HUD_PATH: &str = "/open-workspace-hud";
 pub const FOCUS_WORKSPACE_HUD_PATH: &str = "/focus-workspace-hud";
 pub const INVOKE_RDP_PATH: &str = "/invoke-rdp";
 pub const SHUTDOWN_PATH: &str = "/shutdown";
+pub const UI_OUTLINE_PATH: &str = "/ui/outline";
+pub const UI_TAP_PATH: &str = "/ui/tap";
+pub const UI_TYPE_PATH: &str = "/ui/type";
+pub const UI_APP_STATE_PATH: &str = "/ui/app-state";
 
 pub fn session_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join("native-ui-session.json")
@@ -263,6 +267,52 @@ pub struct InvokeRdpResponse {
     pub result: Option<Value>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiOutlineRequest {
+    /// `text` (default) or `json`.
+    #[serde(default = "default_outline_format")]
+    pub format: String,
+}
+
+fn default_outline_format() -> String {
+    "text".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiOutlineResponse {
+    pub format: String,
+    pub outline: String,
+    #[serde(default)]
+    pub nodes: Vec<Value>,
+    pub window_id: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiTapRequest {
+    /// `@N`, `#id`, or label text.
+    pub selector: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiTapResponse {
+    pub alias: u32,
+    pub label: String,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiTypeRequest {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiAppStateResponse {
+    pub main_window_id: Option<usize>,
+    pub pid: u32,
+    pub target_count: usize,
 }
 
 #[cfg(test)]

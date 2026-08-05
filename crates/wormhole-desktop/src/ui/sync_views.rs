@@ -406,10 +406,14 @@ impl SyncView {
         } else {
             theme::accent()
         };
-        let label_el = ui_text::body(label.to_string(), self.font)
+        let label_text = label.to_string();
+        let automation_id = format!("sync:btn:{label_text}");
+        let label_el = ui_text::body(label_text.clone(), self.font)
             .with_color(color)
             .finish();
         let handler = EventHandler::new(label_el)
+            .with_automation_label(label_text)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 if !disabled {
                     ctx.dispatch_typed_action(action.clone());

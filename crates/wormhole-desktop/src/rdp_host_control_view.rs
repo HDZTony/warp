@@ -718,21 +718,103 @@ impl RdpHostControlView {
     }
 
     fn bump_monitor(&self, delta: i32) {
-        if let Ok(mut ui) = self.ui.lock() {
+        let next = {
+            let Ok(mut ui) = self.ui.lock() else {
+                return;
+            };
             let max = ui.host_monitors.len().saturating_sub(1) as i32;
             let max = max.max(0);
-            ui.settings.host_monitor = (ui.settings.host_monitor + delta).clamp(0, max);
-        }
+            let next = (ui.settings.host_monitor + delta).clamp(0, max);
+            ui.settings.host_monitor = next;
+            next
+        };
+        self.persist_host_monitor(next);
         self.bump();
     }
 
     fn cycle_mic_sink(&self) {
-        if let Ok(mut ui) = self.ui.lock() {
+        let settings = {
+            let Ok(mut ui) = self.ui.lock() else {
+                return;
+            };
             ui.settings.viewer_mic_sink = next_viewer_mic_sink(&ui.settings.viewer_mic_sink);
             ui.mic_sink_label = mic_sink_status_line(&ui.settings);
-            ui.status = format!("麦克风注入：{}", ui.mic_sink_label);
-        }
+            ui.status = format!("麦克风注入：{}（正在保存…）", ui.mic_sink_label);
+            ui.settings.clone()
+        };
+        self.persist_settings_snapshot(settings, "麦克风注入已保存");
         self.bump();
+    }
+
+    /// Persist monitor index and hot-switch a running Host via `switch_host_monitor`.
+    fn persist_host_monitor(&self, monitor: i32) {
+        let data_dir = self.data_dir.clone();
+        let runtime = self.runtime.clone();
+        let ui = self.ui.clone();
+        let gen = self.generation.clone();
+        std::thread::spawn(move || {
+            let Some(rt) = tokio::runtime::Runtime::new().ok() else {
+                if let Ok(mut guard) = ui.lock() {
+                    guard.status = "监视器保存失败".into();
+                }
+                return;
+            };
+            let msg = match rt.block_on(async {
+                let runtime = runtime.lock().await;
+                runtime.switch_host_monitor(monitor).await
+            }) {
+                Ok(()) => format!("监视器已切换并保存：{monitor}"),
+                Err(switch_err) => match rt.block_on(async {
+                    let mut settings = load_settings(&data_dir).await?;
+                    settings.host_monitor = monitor;
+                    save_settings(&data_dir, &settings).await?;
+                    apply_host_side_effects(&data_dir, &settings)?;
+                    Ok::<_, String>(())
+                }) {
+                    Ok(()) => format!(
+                        "监视器已保存：{monitor}（Host 未运行，下次共享生效；热切换：{switch_err}）"
+                    ),
+                    Err(e) => format!("监视器切换失败: {e}"),
+                },
+            };
+            if let Ok(mut guard) = ui.lock() {
+                guard.status = msg;
+            }
+            if let Ok(mut g) = gen.lock() {
+                *g = g.saturating_add(1);
+            }
+        });
+    }
+
+    fn persist_settings_snapshot(&self, settings: RdpSettings, ok_msg: &str) {
+        let data_dir = self.data_dir.clone();
+        let runtime = self.runtime.clone();
+        let ui = self.ui.clone();
+        let gen = self.generation.clone();
+        let ok_msg = ok_msg.to_string();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().ok();
+            let msg = match rt {
+                Some(rt) => match rt.block_on(async {
+                    save_settings(&data_dir, &settings).await?;
+                    apply_host_side_effects(&data_dir, &settings)?;
+                    let runtime = runtime.lock().await;
+                    let _ = runtime.set_mic_uplink_sink(&settings.viewer_mic_sink).await;
+                    Ok::<_, String>(())
+                }) {
+                    Ok(()) => ok_msg,
+                    Err(e) => format!("保存失败: {e}"),
+                },
+                None => "保存失败".into(),
+            };
+            if let Ok(mut guard) = ui.lock() {
+                guard.status = msg;
+                guard.mic_sink_label = mic_sink_status_line(&guard.settings);
+            }
+            if let Ok(mut g) = gen.lock() {
+                *g = g.saturating_add(1);
+            }
+        });
     }
 
     fn generate_totp(&self) {

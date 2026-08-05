@@ -45,6 +45,7 @@ fn access_option(
     icon_path: &'static str,
     selected: bool,
     action: AgentPanelAction,
+    automation_id: impl Into<String>,
 ) -> Box<dyn Element> {
     let title = title.into();
     let detail = detail.into();
@@ -57,7 +58,7 @@ fn access_option(
     );
     title_row.add_child(
         Container::new(
-            ui_text::body(title, font)
+            ui_text::body(title.clone(), font)
                 .with_color(if selected {
                     theme::text()
                 } else {
@@ -79,6 +80,8 @@ fn access_option(
         .finish();
     Container::new(
         EventHandler::new(body)
+            .with_automation_label(title.clone())
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -101,6 +104,8 @@ pub fn render_access_menu(
     font: FamilyId,
     mode: AgentAccessMode,
     agent_pet_enabled: bool,
+    agent_pet_vcam_enabled: bool,
+    agent_pet_voice_wake_enabled: bool,
 ) -> Box<dyn Element> {
     let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     col.add_child(popover_menu_header(font, "访问权限"));
@@ -111,6 +116,7 @@ pub fn render_access_menu(
         "agent-warn.svg",
         mode == AgentAccessMode::FullAccess,
         AgentPanelAction::SelectAccessMode(AgentAccessMode::FullAccess),
+        "ai:access_full",
     ));
     col.add_child(access_option(
         font,
@@ -119,6 +125,7 @@ pub fn render_access_menu(
         "agent-folder.svg",
         mode == AgentAccessMode::WorkspaceWrite,
         AgentPanelAction::SelectAccessMode(AgentAccessMode::WorkspaceWrite),
+        "ai:access_workspace",
     ));
     col.add_child(popover_menu_header(font, "桌宠"));
     col.add_child(access_option(
@@ -132,6 +139,44 @@ pub fn render_access_menu(
         "agent-folder.svg",
         agent_pet_enabled,
         AgentPanelAction::ToggleAgentPet,
+        "ai:access_agent_pet",
+    ));
+    col.add_child(access_option(
+        font,
+        "语音唤醒（芭乐）",
+        if agent_pet_voice_wake_enabled {
+            "已开启：说「芭乐」后听写指令并由 Agent 执行（再点关闭）"
+        } else {
+            "关闭中：开启后监听唤醒词「芭乐」（会同时打开桌宠）"
+        },
+        "agent-folder.svg",
+        agent_pet_voice_wake_enabled,
+        AgentPanelAction::ToggleAgentPetVoiceWake,
+        "ai:access_agent_pet_voice_wake",
+    ));
+    if agent_pet_voice_wake_enabled {
+        col.add_child(access_option(
+            font,
+            "手动唤醒听写",
+            "立刻打开听写窗（无连续唤醒词的平台可用）",
+            "agent-folder.svg",
+            false,
+            AgentPanelAction::TriggerVoiceWakeManual,
+            "ai:access_agent_pet_voice_wake_manual",
+        ));
+    }
+    col.add_child(access_option(
+        font,
+        "会议摄像头",
+        if agent_pet_vcam_enabled {
+            "已开启：写入 agent/pet-vcam（Y4M/PPM）供 Meet/Zoom 假摄像头"
+        } else {
+            "关闭中：开启后桌宠输出虚拟摄像头帧（需先开桌宠）"
+        },
+        "agent-folder.svg",
+        agent_pet_vcam_enabled,
+        AgentPanelAction::ToggleAgentPetVcam,
+        "ai:access_agent_pet_vcam",
     ));
     col.add_child(access_footnote(font, mode));
     popover_shell_with_radius(ACCESS_POPOVER_WIDTH, 14.0, col.finish())
@@ -221,6 +266,8 @@ fn model_choice_option(font: FamilyId, choice: &AgentModelChoiceDto) -> Box<dyn 
 
     Container::new(
         EventHandler::new(body)
+            .with_automation_label(choice.label.clone())
+            .with_automation_id(format!("ai:model:{provider_id}:{model}"))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SelectAgentModel {
                     provider_id: provider_id.clone(),
@@ -280,6 +327,8 @@ fn model_rate_option(font: FamilyId, rate: AgentModelRate, selected: bool) -> Bo
 
     Container::new(
         EventHandler::new(body)
+            .with_automation_label(rate.rate_label())
+            .with_automation_id(format!("ai:model_rate:{}", rate.as_str()))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SelectModelRate(rate));
                 DispatchEventResult::StopPropagation

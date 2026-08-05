@@ -32,24 +32,32 @@ pub enum AiOnboardingGroup {
 }
 
 impl AiOnboardingGroup {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Self::Career => "职业",
-            Self::Interests => "兴趣爱好",
-            Self::Daily => "日常活动",
+            Self::Career => wormhole_i18n::t("ai.onboarding.group.career"),
+            Self::Interests => wormhole_i18n::t("ai.onboarding.group.interests"),
+            Self::Daily => wormhole_i18n::t("ai.onboarding.group.daily"),
         }
     }
 
-    pub fn subtitle(self) -> &'static str {
+    pub fn subtitle(self) -> String {
         match self {
-            Self::Career => "你主要投入的领域",
-            Self::Interests => "你愿意持续探索的主题",
-            Self::Daily => "你经常需要完成的事情",
+            Self::Career => wormhole_i18n::t("ai.onboarding.group.career_sub"),
+            Self::Interests => wormhole_i18n::t("ai.onboarding.group.interests_sub"),
+            Self::Daily => wormhole_i18n::t("ai.onboarding.group.daily_sub"),
         }
     }
 
     pub fn all() -> [Self; 3] {
         [Self::Career, Self::Interests, Self::Daily]
+    }
+
+    pub fn automation_slug(self) -> &'static str {
+        match self {
+            Self::Career => "career",
+            Self::Interests => "interests",
+            Self::Daily => "daily",
+        }
     }
 }
 
@@ -255,11 +263,17 @@ pub fn options_for(group: AiOnboardingGroup) -> &'static [AiOnboardingOption] {
 pub fn status_text(selections: &AiOnboardingSelections) -> String {
     let complete = selections.complete_group_count();
     if selections.all_groups_complete() {
-        format!("已选择 {} 项，可以保存", selections.selected_count())
+        wormhole_i18n::t_args(
+            "ai.onboarding.status.complete",
+            &[("count", &selections.selected_count().to_string())],
+        )
     } else if complete == 0 {
-        "请在每一类中至少选择一项".into()
+        wormhole_i18n::t("ai.onboarding.status.pick_one")
     } else {
-        format!("已完成 {complete} / 3 类，请在每一类中至少选择一项")
+        wormhole_i18n::t_args(
+            "ai.onboarding.status.progress",
+            &[("complete", &complete.to_string())],
+        )
     }
 }
 
@@ -310,6 +324,7 @@ impl HoverableChip {
         let group = self.group;
         let id = self.id.clone();
         let label = self.label.clone();
+        let automation_label = label.clone();
         let selected = self.selected;
         let hoverable = Hoverable::new(self.mouse, move |state| {
             let hovered = state.is_hovered();
@@ -411,6 +426,12 @@ impl HoverableChip {
         .finish();
 
         EventHandler::new(hoverable)
+            .with_automation_label(automation_label)
+            .with_automation_id(format!(
+                "ai:onboarding:{}:{}",
+                group.automation_slug(),
+                id
+            ))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::ToggleAiOnboardingOption {
                     group,
@@ -443,13 +464,13 @@ fn render_group(
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(
-                ui_text::body(group.title().to_string(), font)
+                ui_text::body(group.title(), font)
                     .with_color(theme::text())
                     .finish(),
             )
             .with_child(
                 Container::new(
-                    Text::new(group.subtitle().to_string(), font, 12.0)
+                    Text::new(group.subtitle(), font, 12.0)
                         .with_color(theme::placeholder())
                         .finish(),
                 )
@@ -483,10 +504,11 @@ fn render_group(
 
 fn action_button(
     font: FamilyId,
-    label: &str,
+    label: String,
     primary: bool,
     enabled: bool,
     action: AgentPanelAction,
+    automation_id: &str,
 ) -> Box<dyn Element> {
     let (bg, fg, border) = if primary && enabled {
         (theme::accent_cool(), theme::canvas(), theme::accent_cool())
@@ -503,7 +525,8 @@ fn action_button(
             ColorU::new(0, 0, 0, 0),
         )
     };
-    let label = label.to_string();
+    let label = label;
+    let automation_label = label.clone();
     let inner = ConstrainedBox::new(
         Container::new(
             Align::new(
@@ -525,6 +548,8 @@ fn action_button(
         return inner;
     }
     EventHandler::new(inner)
+        .with_automation_label(automation_label)
+        .with_automation_id(automation_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -547,13 +572,13 @@ pub fn render(
         .with_main_axis_size(MainAxisSize::Min);
 
     col.add_child(
-        Text::new("AI · 首次设置".to_string(), mono, 11.0)
+        Text::new(wormhole_i18n::t("ai.onboarding.eyebrow"), mono, 11.0)
             .with_color(theme::accent_cool())
             .finish(),
     );
     col.add_child(
         Container::new(
-            Text::new("让 AI 更懂你的日常".to_string(), font, 34.0)
+            Text::new(wormhole_i18n::t("ai.onboarding.headline"), font, 34.0)
                 .with_color(theme::text())
                 .finish(),
         )
@@ -562,12 +587,7 @@ pub fn render(
     );
     col.add_child(
         Container::new(
-            Text::new(
-                "选择你愿意分享的内容，可多选。AI 会据此调整任务推荐与回答侧重点，偏好会同步保存到当前账号。"
-                    .to_string(),
-                font,
-                14.0,
-            )
+            Text::new(wormhole_i18n::t("ai.onboarding.body"), font, 14.0)
             .with_color(theme::muted())
             .finish(),
         )
@@ -600,10 +620,11 @@ pub fn render(
                     .with_main_axis_size(MainAxisSize::Min)
                     .with_child(action_button(
                         font,
-                        "暂时跳过",
+                        wormhole_i18n::t("ai.onboarding.skip"),
                         false,
                         true,
                         AgentPanelAction::SkipAiOnboarding,
+                        "ai:onboarding_skip",
                     ))
                     .with_child(
                         ConstrainedBox::new(warpui::elements::Empty::new().finish())
@@ -613,10 +634,11 @@ pub fn render(
                     )
                     .with_child(action_button(
                         font,
-                        "保存并进入 AI",
+                        wormhole_i18n::t("ai.onboarding.save"),
                         true,
                         submit_enabled,
                         AgentPanelAction::SubmitAiOnboarding,
+                        "ai:onboarding_save",
                     ))
                     .finish(),
             )
@@ -657,6 +679,8 @@ pub fn render(
             .with_background(theme::canvas())
             .finish(),
     )
+    .with_automation_label("AI 引导层")
+    .with_automation_id("ai:onboarding_overlay")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish()
 }
@@ -675,12 +699,12 @@ mod tests {
     #[test]
     fn status_text_progresses() {
         let empty = AiOnboardingSelections::empty();
-        assert!(status_text(&empty).contains("每一类"));
+        assert!(status_text(&empty).contains(&wormhole_i18n::t("ai.onboarding.status.pick_one")));
         let mut s = empty;
         s.career.push("student".into());
-        assert!(status_text(&s).contains("1 / 3"));
+        assert!(status_text(&s).contains("1"));
         s.interests.push("gaming".into());
         s.daily.push("learning".into());
-        assert!(status_text(&s).contains("可以保存"));
+        assert!(status_text(&s).contains("3"));
     }
 }

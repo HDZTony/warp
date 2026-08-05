@@ -26,6 +26,10 @@ impl WindowId {
     pub fn from_usize(value: usize) -> WindowId {
         WindowId(value)
     }
+
+    pub fn to_usize(self) -> usize {
+        self.0
+    }
 }
 
 impl fmt::Display for WindowId {

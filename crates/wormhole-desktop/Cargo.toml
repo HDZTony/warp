@@ -46,6 +46,7 @@ vt100 = "0.15"
 warpui.workspace = true
 warpui_core.workspace = true
 wormhole-desktop-core = { path = "../../../../crates/wormhole-desktop-core", default-features = false }
+wormhole-i18n = { path = "../../../../crates/wormhole-i18n" }
 wormhole-native-ipc = { path = "../../../../crates/wormhole-native-ipc" }
 wormhole-desktop-rdp = { path = "../../../../crates/wormhole-desktop-rdp", features = [
   "iroh-transport",

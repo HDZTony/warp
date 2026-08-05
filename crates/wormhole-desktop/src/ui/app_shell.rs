@@ -19,7 +19,7 @@ use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
 use warpui_core::keymap::Keystroke;
 
 use crate::coordinator::{CoordinatorState, CoordinatorView, UiCommand};
-use crate::ui::agent_panel::AgentPanelView;
+use crate::ui::agent_panel::{AgentPanelEvent, AgentPanelView};
 use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::core_handle::CoreHandle;
@@ -158,6 +158,8 @@ pub enum AppShellAction {
     RedeemCodeEdit(TextFieldEditAction),
     FocusRedeemCode,
     SubmitRedeem,
+    /// Open Settings → Memory (from Agent composer memory chip).
+    OpenSettingsMemory,
 }
 
 pub struct AppShellView {
@@ -288,6 +290,11 @@ impl AppShellView {
             }
         });
         let warp = ctx.add_typed_action_view(|ctx| AgentPanelView::new(ctx, core.clone()));
+        ctx.subscribe_to_view(&warp, |view, _, event, ctx| match event {
+            AgentPanelEvent::OpenSettingsMemory => {
+                view.open_settings_memory(ctx);
+            }
+        });
         let settings = ctx.add_typed_action_view(|ctx| SettingsView::new(ctx, core.clone()));
         let login_modal = ctx.add_typed_action_view(|ctx| LoginModalView::new(ctx, core.clone()));
         ctx.subscribe_to_view(&login_modal, |view, _, event, ctx| {
@@ -465,6 +472,7 @@ impl AppShellView {
         view.start_warp_focus_poll(ctx);
         view.start_hud_poll(ctx);
         view.refresh_voice_status();
+        view.start_voice_wake_poll(ctx);
         view.refresh_auth_status(ctx);
         view.start_event_listener(ctx);
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -790,16 +798,33 @@ impl AppShellView {
         }
     }
 
-    fn tab_label(tab: AppTab) -> &'static str {
-        match tab {
-            AppTab::WDrive => "共享",
-            AppTab::Sync => "同步",
-            AppTab::Devices => "终端",
-            AppTab::Display => "显示器",
-            AppTab::Chat => "聊天",
-            AppTab::Warp => "AI",
-            AppTab::Settings => "设置",
-        }
+    fn open_settings_memory(&mut self, ctx: &mut ViewContext<Self>) {
+        let warp_handle = self.warp.clone();
+        ctx.update_view(&warp_handle, |view, ctx| {
+            view.set_tab_visible(false, ctx);
+        });
+        self.tab = AppTab::Settings;
+        self.tab_focus = AppTab::Settings;
+        self.tab_bar_keyboard_focus = false;
+        self.persist_last_tab();
+        let settings_handle = self.settings.clone();
+        ctx.update_view(&settings_handle, |settings, ctx| {
+            settings.select_memory(ctx);
+        });
+        ctx.notify();
+    }
+
+    fn tab_label(tab: AppTab) -> String {
+        let key = match tab {
+            AppTab::WDrive => "tab.share",
+            AppTab::Sync => "tab.sync",
+            AppTab::Devices => "tab.devices",
+            AppTab::Display => "tab.display",
+            AppTab::Chat => "tab.chat",
+            AppTab::Warp => "tab.ai",
+            AppTab::Settings => "tab.settings",
+        };
+        wormhole_i18n::t(key)
     }
 
     fn visible_tabs() -> [AppTab; 4] {
@@ -1291,6 +1316,34 @@ impl AppShellView {
         );
     }
 
+    /// Poll wake-word utterance queue → same Agent path as top-bar mic.
+    fn start_voice_wake_poll(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            },
+            |view, _, ctx| {
+                view.poll_voice_wake_pending(ctx);
+            },
+        );
+    }
+
+    fn poll_voice_wake_pending(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(prompt) = wormhole_desktop_core::voice_wake_take_pending_prompt() {
+            let trimmed = prompt.trim().to_string();
+            if !trimmed.is_empty() {
+                self.ai_panel_open = true;
+                self.ai_output_lines
+                    .push(AiOutputLine::user(format!("芭乐：{trimmed}")));
+                self.ai_status = "执行中…".into();
+                ctx.notify();
+                self.start_ai_agent_task(ctx, trimmed);
+            }
+        }
+        // Keep polling while the app is open.
+        self.start_voice_wake_poll(ctx);
+    }
+
     fn purchase_balance(&mut self, ctx: &mut ViewContext<Self>) {
         self.ai_panel_open = false;
         self.purchase_modal_open = true;
@@ -1651,6 +1704,7 @@ impl AppShellView {
         let keyboard_focused = self.tab_bar_keyboard_focus && self.tab_focus == tab;
         let mono = self.mono;
         let label = Self::tab_label(tab);
+        let automation_label = label.clone();
         let mouse_state = self.tab_hover_mouse_states.for_tab(tab);
 
         Hoverable::new(mouse_state, move |state| {
@@ -1663,7 +1717,11 @@ impl AppShellView {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_child(icons::tab_button_content(
-                    tab, false, text_color, label, mono,
+                    tab,
+                    false,
+                    text_color,
+                    &label,
+                    mono,
                 ))
                 .finish();
 
@@ -1673,28 +1731,16 @@ impl AppShellView {
                 .with_border(Border::right(1.0).with_border_fill(theme::border()));
             if keyboard_focused {
                 body = body.with_border(Border::all(2.0).with_border_color(theme::accent_cool()));
-            }
-
-            // Column (not Stack overlay): tab buttons live in a MainAxisSize::Min row, which
-            // passes infinite max width — Flex::Max + Expanded under Align panics there.
-            // Stretch the underline to the body width inside a finite-height column instead
-            // (HTML `.tab-btn.active::after { bottom:0; height:2px }` over `.tab-bar` border).
-            let mut column = Flex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .with_child(Expanded::new(1.0, body.finish()).finish());
-            if selected && !keyboard_focused {
-                column.add_child(
-                    ConstrainedBox::new(
-                        Container::new(Empty::new().finish())
-                            .with_background(theme::accent_cool())
-                            .finish(),
-                    )
-                    .with_height(TAB_ACTIVE_UNDERLINE_HEIGHT)
-                    .finish(),
+            } else if selected {
+                // Nested so right divider + bottom accent can use different fills.
+                // Border (not Flex Max hairline) — safe under infinite max width from the tab row.
+                body = Container::new(body.finish()).with_border(
+                    Border::bottom(TAB_ACTIVE_UNDERLINE_HEIGHT)
+                        .with_border_fill(theme::accent_cool()),
                 );
             }
-            let button = ConstrainedBox::new(column.finish())
+
+            let button = ConstrainedBox::new(body.finish())
                 .with_height(CHROME_ROW_HEIGHT)
                 .finish();
 
@@ -1730,6 +1776,8 @@ impl AppShellView {
         .on_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
         })
+        .with_automation_label(automation_label)
+        .with_automation_id(format!("tab:{}", tab.persist_id()))
         .finish()
     }
 
@@ -1802,39 +1850,32 @@ impl AppShellView {
             }
         }
 
-        // HTML `.tab-bar`: content fills height; border-bottom + glow sit at bottom:0 so the
-        // active tab underline (overlay) can paint on the same edge and highlight it.
-        let chrome = Container::new(tab_row.finish())
-            .with_background(theme::panel_elevated())
-            .with_horizontal_padding(4.0)
-            .finish();
-
-        let mut stack = Stack::new();
-        stack.add_child(
-            ConstrainedBox::new(chrome)
-                .with_height(CHROME_ROW_HEIGHT)
+        // HTML `.tab-bar` border-bottom — Border only (no Flex Max hairline; that panics
+        // when Stack/Align pass infinite horizontal max).
+        ConstrainedBox::new(
+            Container::new(tab_row.finish())
+                .with_background(theme::panel_elevated())
+                .with_border(
+                    Border::bottom(TAB_BAR_EDGE_HEIGHT).with_border_fill(theme::border_bright()),
+                )
+                .with_horizontal_padding(4.0)
                 .finish(),
-        );
-        // Behind the active-tab overlay underline (HTML border-bottom + ::after glow).
-        stack.add_child(chrome_bottom_hairline(
-            TAB_BAR_EDGE_HEIGHT,
-            theme::border_bright(),
-        ));
-        stack.add_child(chrome_bottom_hairline(
-            TAB_BAR_EDGE_HEIGHT,
-            theme::accent_cool_bg(90),
-        ));
-        stack.finish()
+        )
+        .with_height(CHROME_ROW_HEIGHT)
+        .finish()
     }
 
     fn onboarding_chip(&self, label: &str, tab: AppTab) -> Box<dyn Element> {
         let text = label.to_string();
+        let automation_id = format!("shell:onboarding_{}", tab.persist_id());
         Container::new(
             EventHandler::new(
-                ui_text::body(text, self.font)
+                ui_text::body(text.clone(), self.font)
                     .with_color(theme::accent_cool())
                     .finish(),
             )
+            .with_automation_label(text)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(AppShellAction::SelectTab(tab, TabSelectSource::Mouse));
                 DispatchEventResult::StopPropagation
@@ -1873,6 +1914,8 @@ impl AppShellView {
                         .with_color(theme::placeholder())
                         .finish(),
                 )
+                .with_automation_label("稍后再说")
+                .with_automation_id("shell:onboarding_dismiss")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(AppShellAction::DismissOnboarding);
                     DispatchEventResult::StopPropagation
@@ -1991,6 +2034,8 @@ impl View for AppShellView {
         if self.ai_panel_open && !self.redeem_modal_open && !self.purchase_modal_open {
             stack.add_child(
                 EventHandler::new(Container::new(Flex::column().finish()).finish())
+                    .with_automation_label("关闭 AI 面板")
+                    .with_automation_id("shell:close_ai_scrim")
                     .on_left_mouse_down(|ctx, _, _| {
                         ctx.dispatch_typed_action(AppShellAction::CloseAiPanel);
                         DispatchEventResult::StopPropagation
@@ -2078,16 +2123,18 @@ impl View for AppShellView {
     }
 
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
+        let tab = Self::tab_label(self.tab);
         Some(AccessibilityContent::new(
-            format!("Wormhole，当前标签：{}", Self::tab_label(self.tab)),
+            wormhole_i18n::t_args("tab.a11y.current", &[("tab", &tab)]),
             "Ctrl 加数字 1 到 5 切换标签。非输入焦点时左右方向键切换相邻标签；文本框内方向键不切换标签。Home 与 End 跳到首尾标签。",
             WarpA11yRole::WindowRole,
         ))
     }
 
     fn accessibility_data(&self, _ctx: &mut ViewContext<Self>) -> Option<AccessibilityData> {
+        let tab = Self::tab_label(self.tab);
         Some(AccessibilityData {
-            content: format!("Wormhole 主窗口，{}", Self::tab_label(self.tab)),
+            content: wormhole_i18n::t_args("tab.a11y.window", &[("tab", &tab)]),
         })
     }
 }
@@ -2153,6 +2200,7 @@ impl TypedActionView for AppShellView {
             AppShellAction::RedeemCodeEdit(edit) => self.edit_redeem_code(edit, ctx),
             AppShellAction::FocusRedeemCode => self.focus_redeem_code(ctx),
             AppShellAction::SubmitRedeem => self.submit_redeem(ctx),
+            AppShellAction::OpenSettingsMemory => self.open_settings_memory(ctx),
         }
     }
 
@@ -2162,10 +2210,13 @@ impl TypedActionView for AppShellView {
         _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         let content = match action {
-            AppShellAction::SelectTab(tab, _) => AccessibilityContent::new_without_help(
-                format!("切换到{}", Self::tab_label(*tab)),
-                WarpA11yRole::MenuItemRole,
-            ),
+            AppShellAction::SelectTab(tab, _) => {
+                let label = Self::tab_label(*tab);
+                AccessibilityContent::new_without_help(
+                    wormhole_i18n::t_args("tab.a11y.switch_to", &[("tab", &label)]),
+                    WarpA11yRole::MenuItemRole,
+                )
+            }
             AppShellAction::DismissOnboarding => {
                 AccessibilityContent::new_without_help("关闭快速开始引导", WarpA11yRole::ButtonRole)
             }
@@ -2231,6 +2282,10 @@ impl TypedActionView for AppShellView {
             AppShellAction::SubmitRedeem => {
                 AccessibilityContent::new_without_help("确定兑换", WarpA11yRole::ButtonRole)
             }
+            AppShellAction::OpenSettingsMemory => AccessibilityContent::new_without_help(
+                "打开设置中的记忆页",
+                WarpA11yRole::ButtonRole,
+            ),
         };
         ActionAccessibilityContent::Custom(content)
     }
@@ -2238,32 +2293,8 @@ impl TypedActionView for AppShellView {
 
 /// HTML `.tab-bar` border-bottom height.
 const TAB_BAR_EDGE_HEIGHT: f32 = 1.0;
-/// HTML `.tab-btn.active::after` underline height (paints over the chrome edge).
+/// HTML `.tab-btn.active::after` underline height.
 const TAB_ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
-
-/// Full-width hairline pinned to the bottom of a [`Stack`] (HTML `bottom: 0`).
-fn chrome_bottom_hairline(height: f32, fill: ColorU) -> Box<dyn Element> {
-    Align::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_child(
-                Expanded::new(
-                    1.0,
-                    ConstrainedBox::new(
-                        Container::new(Empty::new().finish())
-                            .with_background(fill)
-                            .finish(),
-                    )
-                    .with_height(height)
-                    .finish(),
-                )
-                .finish(),
-            )
-            .finish(),
-    )
-    .bottom_left()
-    .finish()
-}
 
 /// Top-bar tab colors aligned with Warp icon-button press feedback.
 /// Priority: pressed > selected > hovered > idle (instant style swap, no scale/ripple).

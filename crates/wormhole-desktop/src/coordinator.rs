@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use crate::ui::window_options::desktop_popout_window_options;
@@ -8,6 +8,7 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::elements::{ConstrainedBox, Rect};
 use warpui::platform::TerminationMode;
+use warpui::ui_automation::{format_outline, UiAutomationNode, UiTapSelector};
 use warpui::{
     AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext, WindowId,
 };
@@ -118,12 +119,49 @@ pub enum UiCommand {
     FocusWorkspaceHud {
         window_key: String,
     },
+    UiOutline {
+        format: String,
+        reply: mpsc::SyncSender<Result<UiOutlineResult, String>>,
+    },
+    UiTap {
+        selector: String,
+        reply: mpsc::SyncSender<Result<UiTapResult, String>>,
+    },
+    UiType {
+        text: String,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+    UiAppState {
+        reply: mpsc::SyncSender<Result<UiAppStateResult, String>>,
+    },
     RunWarpRemotePrompt {
         task_id: String,
         agent: PreferredAgent,
         prompt: String,
     },
     Shutdown,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiOutlineResult {
+    pub format: String,
+    pub outline: String,
+    pub nodes: Vec<UiAutomationNode>,
+    pub window_id: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiTapResult {
+    pub alias: u32,
+    pub label: String,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiAppStateResult {
+    pub main_window_id: Option<usize>,
+    pub target_count: usize,
 }
 
 pub struct CoordinatorState {
@@ -140,6 +178,8 @@ pub struct CoordinatorState {
     rdp_runtime: Arc<tokio::sync::Mutex<RdpRuntime>>,
     pending_warp_focus: Option<PreferredAgent>,
     main_shell_window: Option<WindowId>,
+    /// Last `ui_outline` nodes for `@N` resolution until the next outline.
+    last_ui_outline: Vec<UiAutomationNode>,
 }
 
 impl CoordinatorState {
@@ -159,6 +199,7 @@ impl CoordinatorState {
             rdp_runtime: Arc::new(tokio::sync::Mutex::new(RdpRuntime::new(rdp_data_dir))),
             pending_warp_focus: None,
             main_shell_window: None,
+            last_ui_outline: Vec::new(),
         }
     }
 
@@ -359,6 +400,18 @@ impl CoordinatorView {
                 UiCommand::FocusWorkspaceHud { window_key } => {
                     self.focus_workspace_hud_window(ctx, &window_key);
                 }
+                UiCommand::UiOutline { format, reply } => {
+                    let _ = reply.send(self.handle_ui_outline(ctx, &format));
+                }
+                UiCommand::UiTap { selector, reply } => {
+                    let _ = reply.send(self.handle_ui_tap(ctx, &selector));
+                }
+                UiCommand::UiType { text, reply } => {
+                    let _ = reply.send(self.handle_ui_type(ctx, &text));
+                }
+                UiCommand::UiAppState { reply } => {
+                    let _ = reply.send(self.handle_ui_app_state(ctx));
+                }
                 UiCommand::RunWarpRemotePrompt { agent, .. } => {
                     if let Ok(mut guard) = self.state.lock() {
                         guard.focus_warp_agent(agent);
@@ -369,6 +422,99 @@ impl CoordinatorView {
                 }
             }
         }
+    }
+
+    fn main_window_id(&self) -> Result<WindowId, String> {
+        self.state
+            .lock()
+            .expect("coordinator lock")
+            .main_shell_window()
+            .ok_or_else(|| "main shell window not ready".into())
+    }
+
+    fn handle_ui_outline(
+        &self,
+        ctx: &mut ViewContext<Self>,
+        format: &str,
+    ) -> Result<UiOutlineResult, String> {
+        let window_id = self.main_window_id()?;
+        let nodes = ctx.ui_automation_snapshot(window_id)?;
+        let outline = if format.eq_ignore_ascii_case("json") {
+            serde_json::to_string_pretty(&nodes).map_err(|e| e.to_string())?
+        } else {
+            format_outline(&nodes)
+        };
+        {
+            let mut guard = self.state.lock().expect("coordinator lock");
+            guard.last_ui_outline = nodes.clone();
+        }
+        Ok(UiOutlineResult {
+            format: if format.eq_ignore_ascii_case("json") {
+                "json".into()
+            } else {
+                "text".into()
+            },
+            outline,
+            nodes,
+            window_id: window_id.to_usize(),
+        })
+    }
+
+    fn handle_ui_tap(
+        &self,
+        ctx: &mut ViewContext<Self>,
+        selector: &str,
+    ) -> Result<UiTapResult, String> {
+        let window_id = self.main_window_id()?;
+        // Refresh snapshot so unlabeled layout changes are visible, but resolve
+        // against the last outline when using @N (stale aliases must fail clearly).
+        let fresh = ctx.ui_automation_snapshot(window_id)?;
+        let sel = UiTapSelector::parse(selector)?;
+        let node = {
+            let guard = self.state.lock().expect("coordinator lock");
+            let cached = if matches!(sel, UiTapSelector::Alias(_)) {
+                &guard.last_ui_outline
+            } else {
+                &fresh
+            };
+            sel.resolve(cached)?.clone()
+        };
+        let center = node.center();
+        ctx.ui_automation_click_at(window_id, center)?;
+        {
+            let mut guard = self.state.lock().expect("coordinator lock");
+            guard.last_ui_outline = fresh;
+        }
+        Ok(UiTapResult {
+            alias: node.alias,
+            label: node.label,
+            x: center.x(),
+            y: center.y(),
+        })
+    }
+
+    fn handle_ui_type(&self, ctx: &mut ViewContext<Self>, text: &str) -> Result<(), String> {
+        let window_id = self.main_window_id()?;
+        ctx.ui_automation_type_text(window_id, text)
+    }
+
+    fn handle_ui_app_state(&self, ctx: &mut ViewContext<Self>) -> Result<UiAppStateResult, String> {
+        let main = self
+            .state
+            .lock()
+            .expect("coordinator lock")
+            .main_shell_window();
+        let target_count = main
+            .map(|wid| {
+                ctx.ui_automation_snapshot(wid)
+                    .map(|n| n.len())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        Ok(UiAppStateResult {
+            main_window_id: main.map(|w| w.to_usize()),
+            target_count,
+        })
     }
 
     fn open_rdp_window(

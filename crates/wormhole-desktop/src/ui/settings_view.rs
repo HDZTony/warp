@@ -12,6 +12,8 @@ use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, Vi
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
+use crate::ui::clipboard::write_clipboard_text;
+use crate::ui::memory_view::MemoryView;
 use crate::ui::panel_primitives::{section_hint, status_line, tab_content_fill, StatusTone};
 use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
@@ -22,11 +24,25 @@ use crate::ui::plugins_view::PluginsView;
 use crate::ui::display_view::DisplayView;
 use crate::ui::toolbox_view::ToolboxView;
 use crate::ui_text;
+use wormhole_desktop_core::account_profile_prefs;
+use wormhole_desktop_core::account_profile_sync;
 use wormhole_desktop_core::cluster_commands::cluster_status_fast;
 use wormhole_desktop_core::email_connector_commands::{
     email_connector_disconnect, email_connector_list, email_connector_start_oauth,
     email_connector_test_read, EmailConnectorDto,
 };
+use wormhole_desktop_core::integrations_commands::{
+    composio_authorize, composio_create_trigger, composio_delete_connection,
+    composio_disable_trigger, composio_drain_triggers, composio_list_capabilities,
+    composio_list_connections, composio_list_trigger_history, composio_list_triggers,
+    composio_list_toolkits, composio_sync, get_channel_prefs, get_trigger_notify_prefs,
+    mcp_install_entry, mcp_list_installed, mcp_search, mcp_uninstall, set_channel_prefs,
+    set_trigger_notify_prefs, skills_install, skills_list_installed, skills_search,
+    skills_uninstall, ComposioAuthorizeParams, ComposioConnectionIdParams,
+    ComposioTriggerIdParams, McpIdParams, McpSearchParams, McpServerEntry, SetChannelPrefsParams,
+    SkillCatalogEntry, TriggerNotifyPrefs,
+};
+
 use wormhole_desktop_core::settings_cache_commands::{
     clear_settings_cache, settings_cache_status, ClearSettingsCacheParams, SettingsCacheStatusDto,
 };
@@ -43,7 +59,9 @@ use wormhole_desktop_core::{
 pub enum SettingsPage {
     Account,
     Email,
+    Connections,
     Agent,
+    Memory,
     Cluster,
     Relay,
     SharedPath,
@@ -53,7 +71,51 @@ pub enum SettingsPage {
     RdpHost,
     Display,
     Plugins,
+    Language,
     About,
+}
+
+/// Local UI row for Composio toolkit catalog (avoids a direct wormhole-integrations dep).
+#[derive(Debug, Clone)]
+struct ComposioCatalogItem {
+    slug: String,
+    name: String,
+    description: String,
+    native: bool,
+}
+
+/// Local UI row for an active Composio connection.
+#[derive(Debug, Clone)]
+struct ComposioConnectionItem {
+    id: String,
+    toolkit: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveTriggerItem {
+    id: String,
+    slug: String,
+    toolkit: String,
+    state: String,
+}
+
+#[derive(Debug, Clone)]
+struct McpCatalogItem {
+    id: String,
+    name: String,
+    description: String,
+    source: String,
+    entry: McpServerEntry,
+}
+
+#[derive(Debug, Clone)]
+struct SkillCatalogItem {
+    id: String,
+    name: String,
+    description: String,
+    entry: SkillCatalogEntry,
 }
 
 impl SettingsPage {
@@ -61,7 +123,9 @@ impl SettingsPage {
         &[
             SettingsPage::Account,
             SettingsPage::Email,
+            SettingsPage::Connections,
             SettingsPage::Agent,
+            SettingsPage::Memory,
             SettingsPage::Cluster,
             SettingsPage::Relay,
             SettingsPage::SharedPath,
@@ -71,61 +135,106 @@ impl SettingsPage {
             SettingsPage::RdpHost,
             SettingsPage::Display,
             SettingsPage::Plugins,
+            SettingsPage::Language,
             SettingsPage::About,
         ]
     }
 
-    fn title(self) -> &'static str {
+    fn nav_automation_id(self) -> &'static str {
         match self {
-            SettingsPage::Account => "账号",
-            SettingsPage::Email => "邮箱",
-            SettingsPage::Agent => "Agent",
-            SettingsPage::Cluster => "设置集群",
-            SettingsPage::Relay => "P2P Relay",
-            SettingsPage::SharedPath => "共享文件",
-            SettingsPage::Cache => "清理缓存",
-            SettingsPage::Archive => "历史归档",
-            SettingsPage::VirtualMachine => "虚拟机",
-            SettingsPage::RdpHost => "远程桌面 Host",
-            SettingsPage::Display => "虚拟显示器",
-            SettingsPage::Plugins => "插件",
-            SettingsPage::About => "关于",
+            SettingsPage::Account => "settings:nav_account",
+            SettingsPage::Email => "settings:nav_email",
+            SettingsPage::Connections => "settings:nav_connections",
+            SettingsPage::Agent => "settings:nav_agent",
+            SettingsPage::Memory => "settings:nav_memory",
+            SettingsPage::Cluster => "settings:nav_cluster",
+            SettingsPage::Relay => "settings:nav_relay",
+            SettingsPage::SharedPath => "settings:nav_shared_path",
+            SettingsPage::Cache => "settings:nav_cache",
+            SettingsPage::Archive => "settings:nav_archive",
+            SettingsPage::VirtualMachine => "settings:nav_vm",
+            SettingsPage::RdpHost => "settings:nav_rdp_host",
+            SettingsPage::Display => "settings:nav_display",
+            SettingsPage::Plugins => "settings:nav_plugins",
+            SettingsPage::Language => "settings:nav_language",
+            SettingsPage::About => "settings:nav_about",
         }
     }
 
-    fn eyebrow(self) -> (&'static str, &'static str) {
+    fn title(self) -> String {
+        let key = match self {
+            SettingsPage::Account => "settings.page.account",
+            SettingsPage::Email => "settings.page.email",
+            SettingsPage::Connections => "settings.page.connections",
+            SettingsPage::Agent => "settings.page.agent",
+            SettingsPage::Memory => "settings.page.memory",
+            SettingsPage::Cluster => "settings.page.cluster",
+            SettingsPage::Relay => "settings.page.relay",
+            SettingsPage::SharedPath => "settings.page.shared_path",
+            SettingsPage::Cache => "settings.page.cache",
+            SettingsPage::Archive => "settings.page.archive",
+            SettingsPage::VirtualMachine => "settings.page.vm",
+            SettingsPage::RdpHost => "settings.page.rdp_host",
+            SettingsPage::Display => "settings.page.display",
+            SettingsPage::Plugins => "settings.page.plugins",
+            SettingsPage::Language => "settings.page.language",
+            SettingsPage::About => "settings.page.about",
+        };
+        wormhole_i18n::t(key)
+    }
+
+    fn eyebrow(self) -> (&'static str, String) {
         match self {
-            SettingsPage::Account => ("ACCOUNT", "账号"),
-            SettingsPage::Email => ("CONNECTORS", "邮箱"),
-            SettingsPage::Agent => ("AGENT", "CODEX 供应商"),
-            SettingsPage::Cluster => ("CLUSTER", "设置集群"),
-            SettingsPage::Relay => ("P2P", "Relay"),
-            SettingsPage::SharedPath => ("DATA", "共享文件存放位置"),
-            SettingsPage::Cache => ("CACHE", "清理缓存"),
-            SettingsPage::Archive => ("ARCHIVE", "历史对话归档"),
-            SettingsPage::VirtualMachine => ("SYSTEM", "虚拟机"),
-            SettingsPage::RdpHost => ("RDP", "远程桌面 Host"),
-            SettingsPage::Display => ("DISPLAY", "虚拟显示器"),
-            SettingsPage::Plugins => ("PLUGIN", "市场与浏览器"),
-            SettingsPage::About => ("APP", "版本与更新"),
+            SettingsPage::Account => ("ACCOUNT", wormhole_i18n::t("settings.eyebrow.account")),
+            SettingsPage::Email => ("CONNECTORS", wormhole_i18n::t("settings.eyebrow.email")),
+            SettingsPage::Connections => {
+                ("CONNECTIONS", wormhole_i18n::t("settings.eyebrow.connections"))
+            }
+            SettingsPage::Agent => ("AGENT", wormhole_i18n::t("settings.eyebrow.agent")),
+            SettingsPage::Memory => ("MEMORY", wormhole_i18n::t("settings.eyebrow.memory")),
+            SettingsPage::Cluster => ("CLUSTER", wormhole_i18n::t("settings.eyebrow.cluster")),
+            SettingsPage::Relay => ("P2P", wormhole_i18n::t("settings.eyebrow.relay")),
+            SettingsPage::SharedPath => ("DATA", wormhole_i18n::t("settings.eyebrow.shared_path")),
+            SettingsPage::Cache => ("CACHE", wormhole_i18n::t("settings.eyebrow.cache")),
+            SettingsPage::Archive => ("ARCHIVE", wormhole_i18n::t("settings.eyebrow.archive")),
+            SettingsPage::VirtualMachine => ("SYSTEM", wormhole_i18n::t("settings.eyebrow.vm")),
+            SettingsPage::RdpHost => ("RDP", wormhole_i18n::t("settings.eyebrow.rdp_host")),
+            SettingsPage::Display => ("DISPLAY", wormhole_i18n::t("settings.eyebrow.display")),
+            SettingsPage::Plugins => ("PLUGIN", wormhole_i18n::t("settings.eyebrow.plugins")),
+            SettingsPage::Language => ("LANG", wormhole_i18n::t("settings.eyebrow.language")),
+            SettingsPage::About => ("APP", wormhole_i18n::t("settings.eyebrow.about")),
         }
     }
 
-    fn group(self) -> &'static str {
+    fn group_key(self) -> &'static str {
         match self {
-            SettingsPage::Account | SettingsPage::Email | SettingsPage::Agent => "常规",
-            SettingsPage::Cluster | SettingsPage::Relay => "集群",
-            SettingsPage::SharedPath => "数据",
-            SettingsPage::Cache | SettingsPage::Archive => "存储",
-            SettingsPage::VirtualMachine | SettingsPage::RdpHost | SettingsPage::Display
-            | SettingsPage::Plugins | SettingsPage::About => "系统",
+            SettingsPage::Account
+            | SettingsPage::Email
+            | SettingsPage::Connections
+            | SettingsPage::Agent
+            | SettingsPage::Memory => "settings.nav.group.general",
+            SettingsPage::Cluster | SettingsPage::Relay => "settings.nav.group.cluster",
+            SettingsPage::SharedPath => "settings.nav.group.data",
+            SettingsPage::Cache | SettingsPage::Archive => "settings.nav.group.storage",
+            SettingsPage::VirtualMachine
+            | SettingsPage::RdpHost
+            | SettingsPage::Display
+            | SettingsPage::Plugins
+            | SettingsPage::Language
+            | SettingsPage::About => "settings.nav.group.system",
         }
+    }
+
+    fn group(self) -> String {
+        wormhole_i18n::t(self.group_key())
     }
 
     fn icon_path(self) -> &'static str {
         match self {
             SettingsPage::Account | SettingsPage::Email => "agent-user.svg",
+            SettingsPage::Connections => "tab-toolbox.svg",
             SettingsPage::Agent => "tab-agent.svg",
+            SettingsPage::Memory => "share-file.svg",
             SettingsPage::Cluster => "tab-devices.svg",
             SettingsPage::Relay => "cluster-refresh.svg",
             SettingsPage::SharedPath => "share-file.svg",
@@ -135,6 +244,7 @@ impl SettingsPage {
             SettingsPage::RdpHost => "device-pc.svg",
             SettingsPage::Display => "tab-devices.svg",
             SettingsPage::Plugins => "tab-toolbox.svg",
+            SettingsPage::Language => "cluster-refresh.svg",
             SettingsPage::About => "cluster-refresh.svg",
         }
     }
@@ -145,9 +255,19 @@ impl SettingsPage {
         if self == SettingsPage::Email {
             haystack.push_str(" email gmail outlook");
         }
+        if self == SettingsPage::Connections {
+            haystack.push_str(
+                " composio gmail github notion mcp skills triggers channels telegram discord 连接 集成",
+            );
+        }
         if self == SettingsPage::Agent {
             haystack.push_str(
                 " codex llm api key byok kimi zai deepseek openai anthropic qwen minimax 供应商 provider",
+            );
+        }
+        if self == SettingsPage::Memory {
+            haystack.push_str(
+                " memory wiki obsidian vault tinycortex 记忆 笔记 reindex sources",
             );
         }
         if self == SettingsPage::VirtualMachine {
@@ -164,6 +284,9 @@ impl SettingsPage {
                 " bb-browser chromium browser mcp plugin 插件 插件市场 marketplace codex",
             );
         }
+        if self == SettingsPage::Language {
+            haystack.push_str(" language locale 语言 中文 english zh en i18n");
+        }
         if self == SettingsPage::About {
             haystack.push_str(" update version 更新 检查更新 版本");
         }
@@ -179,16 +302,22 @@ impl SettingsPage {
     }
 }
 
-/// Ordered unique group labels for the settings sidebar.
-fn settings_nav_groups() -> &'static [&'static str] {
-    &["常规", "集群", "数据", "存储", "系统"]
+/// Ordered unique group keys for the settings sidebar.
+fn settings_nav_group_keys() -> &'static [&'static str] {
+    &[
+        "settings.nav.group.general",
+        "settings.nav.group.cluster",
+        "settings.nav.group.data",
+        "settings.nav.group.storage",
+        "settings.nav.group.system",
+    ]
 }
 
-fn settings_pages_in_group(group: &str) -> Vec<SettingsPage> {
+fn settings_pages_in_group_key(group_key: &str) -> Vec<SettingsPage> {
     SettingsPage::all()
         .iter()
         .copied()
-        .filter(|page| page.group() == group)
+        .filter(|page| page.group_key() == group_key)
         .collect()
 }
 
@@ -219,10 +348,29 @@ pub enum SettingsAction {
     OpenPurchase,
     OpenRedeem,
     RefreshAccount,
+    FocusAccountDisplayName,
+    AccountDisplayNameEdit(TextFieldEditAction),
+    SaveAccountDisplayName,
     RefreshEmailConnectors,
     ConnectEmail(String),
     DisconnectEmail(String),
     TestEmail(String),
+    RefreshConnections,
+    SelectConnectionsTab(u8),
+    ConnectComposio(String),
+    DisconnectComposio(String),
+    ToggleTriggerNotifyAgent,
+    DrainTriggers,
+    SyncIntegrations,
+    DisableTrigger(String),
+    CreateTriggerForConnection(String),
+    BrowseMcpCatalog,
+    InstallMcp(usize),
+    UninstallMcp(String),
+    BrowseSkillsCatalog,
+    InstallSkill(usize),
+    UninstallSkill(String),
+    SetDefaultChannel(String),
     ToggleClusterSection,
     OpenClusterManagement,
     ToggleRelaySection,
@@ -238,6 +386,10 @@ pub enum SettingsAction {
     CheckDesktopUpdate,
     OpenUpdateDownload(String),
     OpenRdpHostControl,
+    CopyUserId,
+    CopyDeviceId,
+    /// Persist UI language (`system` / `zh-CN` / `en`) and refresh locale.
+    SetUiLanguage(String),
 }
 
 pub struct SettingsView {
@@ -259,10 +411,28 @@ pub struct SettingsView {
     auth_status_tone: StatusTone,
     auth_busy: bool,
     auth_device_id: Option<String>,
+    account_display_name: String,
+    account_display_name_field: TextFieldState,
+    account_display_name_focused: bool,
+    account_display_name_busy: bool,
     email_connectors: Vec<EmailConnectorDto>,
     email_busy: bool,
     email_message: String,
     email_tone: StatusTone,
+    connections_tab: u8,
+    composio_catalog: Vec<ComposioCatalogItem>,
+    composio_connections: Vec<ComposioConnectionItem>,
+    connections_busy: bool,
+    connections_message: String,
+    connections_tone: StatusTone,
+    trigger_notify_agent: bool,
+    trigger_history_preview: String,
+    active_triggers: Vec<ActiveTriggerItem>,
+    mcp_installed_preview: String,
+    skills_installed_preview: String,
+    mcp_catalog: Vec<McpCatalogItem>,
+    skills_catalog: Vec<SkillCatalogItem>,
+    channel_default: String,
     cluster_expanded: bool,
     cluster_id: Option<String>,
     cluster_name: Option<String>,
@@ -288,6 +458,7 @@ pub struct SettingsView {
     display: ViewHandle<DisplayView>,
     agent_providers: ViewHandle<AgentProvidersView>,
     plugins: ViewHandle<PluginsView>,
+    memory: ViewHandle<MemoryView>,
 }
 
 impl SettingsView {
@@ -310,6 +481,7 @@ impl SettingsView {
         let agent_providers =
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let plugins = ctx.add_typed_action_view(|ctx| PluginsView::new(ctx, core.clone()));
+        let memory = ctx.add_typed_action_view(|ctx| MemoryView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -329,10 +501,28 @@ impl SettingsView {
             auth_status_tone: StatusTone::Placeholder,
             auth_busy: false,
             auth_device_id: None,
+            account_display_name: String::new(),
+            account_display_name_field: TextFieldState::new(),
+            account_display_name_focused: false,
+            account_display_name_busy: false,
             email_connectors: Vec::new(),
             email_busy: false,
             email_message: String::new(),
             email_tone: StatusTone::Placeholder,
+            connections_tab: 0,
+            composio_catalog: Vec::new(),
+            composio_connections: Vec::new(),
+            connections_busy: false,
+            connections_message: String::new(),
+            connections_tone: StatusTone::Placeholder,
+            trigger_notify_agent: false,
+            trigger_history_preview: String::new(),
+            active_triggers: Vec::new(),
+            mcp_installed_preview: String::new(),
+            skills_installed_preview: String::new(),
+            mcp_catalog: Vec::new(),
+            skills_catalog: Vec::new(),
+            channel_default: "web".into(),
             cluster_expanded: false,
             cluster_id: None,
             cluster_name: None,
@@ -358,10 +548,12 @@ impl SettingsView {
             display,
             agent_providers,
             plugins,
+            memory,
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
         view.refresh_email_connectors(ctx);
+        view.refresh_connections(ctx);
         view.refresh_cluster(ctx);
         view.refresh_relay(ctx);
         view.refresh_cache(ctx);
@@ -376,6 +568,14 @@ impl SettingsView {
         ctx.notify();
     }
 
+    /// Open the Memory settings page (Agent composer chip / deep link).
+    pub fn select_memory(&mut self, ctx: &mut ViewContext<Self>) {
+        self.selected_page = SettingsPage::Memory;
+        self.search_focused = false;
+        self.storage_focused = false;
+        ctx.notify();
+    }
+
     pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
         self.auth_busy = true;
         ctx.notify();
@@ -383,14 +583,23 @@ impl SettingsView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                cloud_auth_status(&state).await
+                let status = cloud_auth_status(&state).await?;
+                let account_id = status.user_id.clone().unwrap_or_default();
+                let profile = if status.authenticated && !account_id.trim().is_empty() {
+                    account_profile_sync::sync_account_profile(&state, &account_id).await?
+                } else {
+                    account_profile_prefs::AccountProfileRecord::default()
+                };
+                Ok::<_, String>((status, profile))
             },
             |view, output, ctx| {
                 view.auth_busy = false;
                 match output {
-                    Ok(status) => {
+                    Ok((status, profile)) => {
                         view.auth_user_id = status.user_id;
                         view.auth_device_id = status.device_id;
+                        view.account_display_name = profile.display_name;
+                        view.account_display_name_field = TextFieldState::new();
                         if status.authenticated && view.auth_device_id.is_some() {
                             view.auth_status = "已登录".into();
                             view.auth_status_tone = StatusTone::Success;
@@ -404,6 +613,57 @@ impl SettingsView {
                     }
                     Err(err) => {
                         view.auth_status = format!("读取登录状态失败: {err}");
+                        view.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn edit_account_display_name(
+        &mut self,
+        edit: &TextFieldEditAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.account_display_name_field
+            .apply(&mut self.account_display_name, edit);
+        self.account_display_name_focused = true;
+        ctx.notify();
+    }
+
+    fn save_account_display_name(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(user_id) = self.auth_user_id.clone() else {
+            self.auth_status = wormhole_i18n::t("settings.auth.login_required_for_name");
+            self.auth_status_tone = StatusTone::Warn;
+            ctx.notify();
+            return;
+        };
+        if self.account_display_name_busy {
+            return;
+        }
+        self.account_display_name_busy = true;
+        self.auth_status = wormhole_i18n::t("settings.auth.saving_display_name");
+        self.auth_status_tone = StatusTone::Placeholder;
+        ctx.notify();
+        let core = self.core.clone();
+        let display_name = self.account_display_name.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                account_profile_sync::save_account_display_name(&state, &user_id, &display_name)
+                    .await
+            },
+            |view, output, ctx| {
+                view.account_display_name_busy = false;
+                match output {
+                    Ok(record) => {
+                        view.account_display_name = record.display_name;
+                        view.auth_status = wormhole_i18n::t("settings.auth.display_name_saved");
+                        view.auth_status_tone = StatusTone::Success;
+                    }
+                    Err(err) => {
+                        view.auth_status = err;
                         view.auth_status_tone = StatusTone::Danger;
                     }
                 }
@@ -438,6 +698,329 @@ impl SettingsView {
                         view.email_message = format!("读取邮箱连接器失败: {error}");
                         view.email_tone = StatusTone::Danger;
                     }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_connections(&mut self, ctx: &mut ViewContext<Self>) {
+        self.connections_busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                let toolkits = composio_list_toolkits(&state).await;
+                let connections = composio_list_connections(&state).await;
+                let caps = composio_list_capabilities();
+                let prefs = get_trigger_notify_prefs(&state).unwrap_or_default();
+                let history = composio_list_trigger_history(&state, Some(12));
+                let triggers = composio_list_triggers(&state).await;
+                let mcp = mcp_list_installed(&state);
+                let skills = skills_list_installed(&state);
+                let mcp_browse = mcp_search(McpSearchParams {
+                    query: String::new(),
+                    limit: Some(12),
+                })
+                .await;
+                let skills_browse = skills_search(
+                    &state,
+                    McpSearchParams {
+                        query: String::new(),
+                        limit: Some(12),
+                    },
+                )
+                .await;
+                let channels = get_channel_prefs(&state);
+                let _ = wormhole_desktop_core::integrations_commands::refresh_prompt_fragment_cache(
+                    &state,
+                )
+                .await;
+                (
+                    toolkits,
+                    connections,
+                    caps,
+                    prefs,
+                    history,
+                    triggers,
+                    mcp,
+                    skills,
+                    mcp_browse,
+                    skills_browse,
+                    channels,
+                )
+            },
+            |view, output, ctx| {
+                view.connections_busy = false;
+                let (
+                    toolkits,
+                    connections,
+                    caps,
+                    prefs,
+                    history,
+                    triggers,
+                    mcp,
+                    skills,
+                    mcp_browse,
+                    skills_browse,
+                    channels,
+                ) = output;
+                view.trigger_notify_agent = prefs.notify_agent;
+                view.channel_default = channels
+                    .as_ref()
+                    .map(|c| c.default_channel.as_str().to_string())
+                    .unwrap_or_else(|_| "web".into());
+
+                let native_slugs: std::collections::HashSet<String> = caps
+                    .capabilities
+                    .iter()
+                    .filter(|c| c.native_provider)
+                    .map(|c| c.toolkit.to_ascii_lowercase())
+                    .collect();
+
+                let mut catalog = Vec::new();
+                let mut catalog_errors = Vec::new();
+                match toolkits {
+                    Ok(resp) if !resp.catalog.is_empty() => {
+                        catalog = resp
+                            .catalog
+                            .into_iter()
+                            .map(|entry| {
+                                let name = if entry.name.is_empty() {
+                                    entry.slug.clone()
+                                } else {
+                                    entry.name
+                                };
+                                let native = native_slugs.contains(&entry.slug.to_ascii_lowercase());
+                                ComposioCatalogItem {
+                                    slug: entry.slug,
+                                    name,
+                                    description: entry.description.unwrap_or_default(),
+                                    native,
+                                }
+                            })
+                            .collect();
+                    }
+                    Ok(resp) if !resp.toolkits.is_empty() => {
+                        catalog = resp
+                            .toolkits
+                            .into_iter()
+                            .map(|slug| {
+                                let native = native_slugs.contains(&slug.to_ascii_lowercase());
+                                ComposioCatalogItem {
+                                    name: slug.clone(),
+                                    slug,
+                                    description: String::new(),
+                                    native,
+                                }
+                            })
+                            .collect();
+                    }
+                    Ok(_) => {}
+                    Err(error) => catalog_errors.push(format!("toolkits: {error}")),
+                }
+                if catalog.is_empty() {
+                    catalog = caps
+                        .capabilities
+                        .iter()
+                        .map(|cap| ComposioCatalogItem {
+                            slug: cap.toolkit.clone(),
+                            name: cap.toolkit.clone(),
+                            description: cap.description.clone(),
+                            native: cap.native_provider,
+                        })
+                        .collect();
+                }
+                view.composio_catalog = catalog;
+
+                match connections {
+                    Ok(resp) => {
+                        view.composio_connections = resp
+                            .connections
+                            .into_iter()
+                            .map(|conn| {
+                                let detail = conn
+                                    .account_email
+                                    .or(conn.username)
+                                    .or(conn.workspace)
+                                    .unwrap_or_else(|| conn.status.clone());
+                                ComposioConnectionItem {
+                                    id: conn.id,
+                                    toolkit: conn.toolkit,
+                                    status: conn.status,
+                                    detail,
+                                }
+                            })
+                            .collect();
+                    }
+                    Err(error) => {
+                        view.composio_connections.clear();
+                        catalog_errors.push(format!("connections: {error}"));
+                    }
+                }
+
+                match history {
+                    Ok(result) => {
+                        if result.entries.is_empty() {
+                            view.trigger_history_preview =
+                                wormhole_i18n::t("settings.connections.triggers.empty");
+                        } else {
+                            view.trigger_history_preview = result
+                                .entries
+                                .iter()
+                                .take(8)
+                                .map(|entry| {
+                                    format!(
+                                        "{} · {} · {}",
+                                        entry.archived_at, entry.toolkit, entry.trigger_slug
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                        }
+                    }
+                    Err(error) => {
+                        view.trigger_history_preview = format!("history: {error}");
+                    }
+                }
+
+                match triggers {
+                    Ok(resp) => {
+                        view.active_triggers = resp
+                            .get("triggers")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter_map(|item| {
+                                let id = item.get("id")?.as_str()?.to_string();
+                                if id.is_empty() {
+                                    return None;
+                                }
+                                Some(ActiveTriggerItem {
+                                    id,
+                                    slug: item
+                                        .get("slug")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    toolkit: item
+                                        .get("toolkit")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    state: item
+                                        .get("state")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("active")
+                                        .to_string(),
+                                })
+                            })
+                            .collect();
+                    }
+                    Err(error) => {
+                        view.active_triggers.clear();
+                        catalog_errors.push(format!("triggers: {error}"));
+                    }
+                }
+
+                match mcp {
+                    Ok(servers) if servers.is_empty() => {
+                        view.mcp_installed_preview =
+                            wormhole_i18n::t("settings.connections.mcp.empty");
+                    }
+                    Ok(servers) => {
+                        view.mcp_installed_preview = format!(
+                            "{} ({})\n{}",
+                            wormhole_i18n::t("settings.connections.mcp.installed"),
+                            servers.len(),
+                            servers
+                                .iter()
+                                .map(|s| format!("• {} [{}]", s.name, s.id))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        );
+                    }
+                    Err(error) => {
+                        view.mcp_installed_preview = format!("mcp: {error}");
+                    }
+                }
+
+                match mcp_browse {
+                    Ok(result) => {
+                        view.mcp_catalog = result
+                            .servers
+                            .into_iter()
+                            .map(|entry| McpCatalogItem {
+                                id: entry.id.clone(),
+                                name: entry.name.clone(),
+                                description: entry.description.clone().unwrap_or_default(),
+                                source: entry.source.clone(),
+                                entry,
+                            })
+                            .collect();
+                    }
+                    Err(error) => {
+                        view.mcp_catalog.clear();
+                        catalog_errors.push(format!("mcp browse: {error}"));
+                    }
+                }
+
+                match skills {
+                    Ok(items) if items.is_empty() => {
+                        view.skills_installed_preview =
+                            wormhole_i18n::t("settings.connections.skills.empty");
+                    }
+                    Ok(items) => {
+                        view.skills_installed_preview = format!(
+                            "{} ({})\n{}",
+                            wormhole_i18n::t("settings.connections.skills.installed"),
+                            items.len(),
+                            items
+                                .iter()
+                                .map(|s| format!("• {} [{}]", s.name, s.id))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        );
+                    }
+                    Err(error) => {
+                        view.skills_installed_preview = format!("skills: {error}");
+                    }
+                }
+
+                match skills_browse {
+                    Ok(result) => {
+                        view.skills_catalog = result
+                            .skills
+                            .into_iter()
+                            .map(|entry| SkillCatalogItem {
+                                id: entry.id.clone(),
+                                name: entry.name.clone(),
+                                description: entry.description.clone().unwrap_or_default(),
+                                entry,
+                            })
+                            .collect();
+                    }
+                    Err(error) => {
+                        view.skills_catalog.clear();
+                        catalog_errors.push(format!("skills browse: {error}"));
+                    }
+                }
+
+                if let Err(error) = channels {
+                    catalog_errors.push(format!("channels: {error}"));
+                }
+
+                if catalog_errors.is_empty() {
+                    if view.connections_message.is_empty() {
+                        view.connections_message =
+                            wormhole_i18n::t("settings.connections.ready");
+                        view.connections_tone = StatusTone::Placeholder;
+                    }
+                } else {
+                    view.connections_message = catalog_errors.join("; ");
+                    view.connections_tone = StatusTone::Danger;
                 }
                 ctx.notify();
             },
@@ -676,13 +1259,13 @@ impl SettingsView {
     fn search_box(&self) -> Box<dyn Element> {
         let draft = self.search_query.clone();
         let marked = self.search_field.marked_text.clone();
-        let placeholder = "搜索设置...";
+        let placeholder = wormhole_i18n::t("settings.search.placeholder");
         let field = TextFieldInput::builder(
             EventHandler::new(
                 Container::new(render_field_with_caret(
                     &draft,
                     &marked,
-                    placeholder,
+                    &placeholder,
                     self.font,
                     self.search_focused,
                     false,
@@ -700,6 +1283,8 @@ impl SettingsView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                 .finish(),
             )
+            .with_automation_label("搜索设置")
+            .with_automation_id("settings:search")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(SettingsAction::FocusSearch);
                 DispatchEventResult::StopPropagation
@@ -720,6 +1305,8 @@ impl SettingsView {
         let selected = self.selected_page == page;
         let mouse_state: MouseStateHandle = Arc::new(Mutex::new(MouseState::default()));
         let label = page.title().to_string();
+        let nav_label = label.clone();
+        let automation_id = page.nav_automation_id().to_string();
         let icon_path = page.icon_path();
         let font = self.font;
         Hoverable::new(mouse_state, move |state| {
@@ -762,6 +1349,8 @@ impl SettingsView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                 .finish()
         })
+        .with_automation_label(nav_label)
+        .with_automation_id(automation_id)
         .on_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(SettingsAction::SelectPage(page));
         })
@@ -773,8 +1362,8 @@ impl SettingsView {
         col.add_child(self.search_box());
 
         let mut visible_total = 0usize;
-        for group in settings_nav_groups() {
-            let pages: Vec<SettingsPage> = settings_pages_in_group(group)
+        for group_key in settings_nav_group_keys() {
+            let pages: Vec<SettingsPage> = settings_pages_in_group_key(group_key)
                 .into_iter()
                 .filter(|page| page.matches_query(&self.search_query))
                 .collect();
@@ -782,9 +1371,10 @@ impl SettingsView {
                 continue;
             }
             visible_total += pages.len();
+            let group_label = wormhole_i18n::t(group_key);
             col.add_child(
                 Container::new(
-                    ui_text::mono(group.to_string(), self.font)
+                    ui_text::mono(group_label, self.font)
                         .with_color(theme::muted())
                         .finish(),
                 )
@@ -804,7 +1394,7 @@ impl SettingsView {
         if visible_total == 0 {
             col.add_child(
                 Container::new(
-                    ui_text::mono("无匹配的设置项", self.font)
+                    ui_text::mono(wormhole_i18n::t("settings.search.empty"), self.font)
                         .with_color(theme::muted())
                         .finish(),
                 )
@@ -831,7 +1421,9 @@ impl SettingsView {
         match self.selected_page {
             SettingsPage::Account => col.add_child(self.account_block()),
             SettingsPage::Email => col.add_child(self.email_connectors_block()),
+            SettingsPage::Connections => col.add_child(self.connections_block()),
             SettingsPage::Agent => col.add_child(ChildView::new(&self.agent_providers).finish()),
+            SettingsPage::Memory => col.add_child(ChildView::new(&self.memory).finish()),
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
             SettingsPage::Relay => col.add_child(self.relay_block()),
             SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
@@ -841,6 +1433,7 @@ impl SettingsView {
             SettingsPage::RdpHost => col.add_child(self.rdp_host_block()),
             SettingsPage::Display => col.add_child(ChildView::new(&self.display).finish()),
             SettingsPage::Plugins => col.add_child(ChildView::new(&self.plugins).finish()),
+            SettingsPage::Language => col.add_child(self.language_block()),
             SettingsPage::About => col.add_child(self.about_block()),
         }
         col.add_child(
@@ -874,6 +1467,33 @@ impl SettingsView {
         self.stateful_action_button(label, action, false, false)
     }
 
+    fn copyable_id_row(
+        &self,
+        label: &str,
+        automation_id: &str,
+        action: SettingsAction,
+    ) -> Box<dyn Element> {
+        let label = label.to_string();
+        let automation_id = automation_id.to_string();
+        Container::new(
+            EventHandler::new(
+                ui_text::mono(label.clone(), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_padding_top(4.0)
+        .with_padding_bottom(4.0)
+        .finish()
+    }
+
     fn stateful_action_button(
         &self,
         label: &str,
@@ -882,12 +1502,15 @@ impl SettingsView {
         primary: bool,
     ) -> Box<dyn Element> {
         let label = label.to_string();
+        let automation_id = format!("settings:btn:{label}");
         Container::new(
             EventHandler::new(
-                ui_text::body(label, self.font)
+                ui_text::body(label.clone(), self.font)
                     .with_color(theme::text())
                     .finish(),
             )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 if disabled {
                     return DispatchEventResult::StopPropagation;
@@ -915,14 +1538,15 @@ impl SettingsView {
         let selected = self.relay_mode == mode;
         let disabled = self.relay_busy;
         let mode = mode.to_string();
-        let label = if selected {
+        let display_label = if selected {
             format!("● {label}")
         } else {
             format!("○ {label}")
         };
+        let automation_id = format!("settings:relay:{mode}");
         Container::new(
             EventHandler::new(
-                ui_text::body(label, self.font)
+                ui_text::body(display_label, self.font)
                     .with_color(if selected {
                         theme::accent_cool()
                     } else {
@@ -930,6 +1554,8 @@ impl SettingsView {
                     })
                     .finish(),
             )
+            .with_automation_label(label.to_string())
+            .with_automation_id(automation_id)
             .on_left_mouse_down({
                 let mode = mode.clone();
                 move |ctx, _, _| {
@@ -995,6 +1621,8 @@ impl SettingsView {
         );
         row.add_child(Expanded::new(1.0, Flex::row().finish()).finish());
         row.add_child(self.fold_summary_badge(summary));
+        let fold_label = label.to_string();
+        let fold_id = format!("settings:fold:{fold_label}");
         let row = EventHandler::new(
             Container::new(row.finish())
                 .with_padding_left(12.0)
@@ -1006,6 +1634,8 @@ impl SettingsView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                 .finish(),
         )
+        .with_automation_label(fold_label)
+        .with_automation_id(fold_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -1181,6 +1811,8 @@ impl SettingsView {
                     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
                     .finish(),
                 )
+                .with_automation_label("共享目录路径")
+                .with_automation_id("settings:storage_path")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(SettingsAction::FocusPath);
                     DispatchEventResult::StopPropagation
@@ -1271,23 +1903,115 @@ impl SettingsView {
     fn account_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_hint(
-            "登录后本机会绑定硬件码并在云端保存设备身份；重装系统后可自动恢复同一设备。",
+            wormhole_i18n::t("settings.auth.device_bind_hint"),
             self.font,
         ));
         if let Some(user_id) = &self.auth_user_id {
-            col.add_child(
-                ui_text::mono(format!("用户 ID: {user_id}"), self.font)
-                    .with_color(theme::muted())
-                    .finish(),
-            );
+            col.add_child(self.copyable_id_row(
+                &wormhole_i18n::t_args("settings.auth.user_id", &[("id", user_id)]),
+                "settings:copy_user_id",
+                SettingsAction::CopyUserId,
+            ));
         }
         if let Some(device_id) = &self.auth_device_id {
+            col.add_child(self.copyable_id_row(
+                &wormhole_i18n::t_args("settings.auth.device_id", &[("id", device_id)]),
+                "settings:copy_device_id",
+                SettingsAction::CopyDeviceId,
+            ));
+        }
+        if self.auth_user_id.is_some() || self.auth_device_id.is_some() {
             col.add_child(
-                ui_text::mono(format!("设备 ID: {device_id}"), self.font)
+                ui_text::device_meta(wormhole_i18n::t("settings.auth.copy_id_hint"), self.font)
                     .with_color(theme::muted())
                     .finish(),
             );
         }
+
+        col.add_child(
+            Container::new(
+                ui_text::body(wormhole_i18n::t("settings.auth.display_name_label"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(12.0)
+            .finish(),
+        );
+        col.add_child(
+            ui_text::device_meta(
+                wormhole_i18n::t("settings.auth.display_name_hint"),
+                self.font,
+            )
+            .with_color(theme::placeholder())
+            .finish(),
+        );
+        let draft = self.account_display_name.clone();
+        let marked = self.account_display_name_field.marked_text.clone();
+        let placeholder = wormhole_i18n::t("settings.auth.display_name_placeholder");
+        let name_field = TextFieldInput::builder(
+            EventHandler::new(
+                Container::new(render_field_with_caret(
+                    &draft,
+                    &marked,
+                    &placeholder,
+                    self.font,
+                    self.account_display_name_focused,
+                    self.account_display_name_busy || self.auth_user_id.is_none(),
+                    true,
+                    self.account_display_name_field.cursor,
+                ))
+                .with_uniform_padding(10.0)
+                .with_background(theme::bg())
+                .with_border(Border::all(1.0).with_border_fill(
+                    if self.account_display_name_focused {
+                        theme::accent_cool()
+                    } else {
+                        theme::border()
+                    },
+                ))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
+            )
+            .with_automation_label(wormhole_i18n::t("settings.auth.display_name_label"))
+            .with_automation_id("settings:account_display_name")
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(SettingsAction::FocusAccountDisplayName);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+            |ctx, action| {
+                ctx.dispatch_typed_action(SettingsAction::AccountDisplayNameEdit(action));
+            },
+        )
+        .focused(self.account_display_name_focused)
+        .disabled(self.account_display_name_busy || self.auth_user_id.is_none())
+        .ime_preedit(!marked.is_empty())
+        .finish();
+        let mut name_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        name_row.add_child(Expanded::new(1.0, name_field).finish());
+        let save_label = if self.account_display_name_busy {
+            wormhole_i18n::t("settings.action.saving")
+        } else {
+            wormhole_i18n::t("settings.action.save")
+        };
+        name_row.add_child(
+            Container::new(self.stateful_action_button(
+                &save_label,
+                SettingsAction::SaveAccountDisplayName,
+                self.account_display_name_busy || self.auth_user_id.is_none(),
+                true,
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(name_row.finish())
+                .with_margin_top(8.0)
+                .finish(),
+        );
+
         if !self.auth_status.is_empty() {
             col.add_child(status_line(
                 self.auth_status.clone(),
@@ -1297,23 +2021,25 @@ impl SettingsView {
         }
         let mut auth_actions = Vec::new();
         if self.auth_user_id.is_none() {
+            let login_label = if self.auth_busy {
+                wormhole_i18n::t("settings.auth.logging_in")
+            } else {
+                wormhole_i18n::t("settings.auth.login")
+            };
             auth_actions.push(self.stateful_action_button(
-                if self.auth_busy {
-                    "正在读取账号…"
-                } else {
-                    "登录"
-                },
+                &login_label,
                 SettingsAction::Login,
                 self.auth_busy,
                 true,
             ));
         }
+        let logout_label = if self.auth_busy && self.auth_user_id.is_some() {
+            wormhole_i18n::t("settings.auth.signing_out")
+        } else {
+            wormhole_i18n::t("settings.auth.sign_out")
+        };
         auth_actions.push(self.stateful_action_button(
-            if self.auth_busy && self.auth_user_id.is_some() {
-                "正在退出…"
-            } else {
-                "退出登录"
-            },
+            &logout_label,
             SettingsAction::Logout,
             self.auth_busy || self.auth_user_id.is_none(),
             false,
@@ -1324,14 +2050,16 @@ impl SettingsView {
                 .finish(),
         );
         let mut credit_actions = Vec::new();
+        let purchase_label = wormhole_i18n::t("settings.action.purchase");
         credit_actions.push(self.stateful_action_button(
-            "购买",
+            &purchase_label,
             SettingsAction::OpenPurchase,
             self.auth_user_id.is_none(),
             true,
         ));
+        let redeem_label = wormhole_i18n::t("settings.action.redeem");
         credit_actions.push(self.stateful_action_button(
-            "兑换",
+            &redeem_label,
             SettingsAction::OpenRedeem,
             self.auth_user_id.is_none(),
             false,
@@ -1360,6 +2088,55 @@ impl SettingsView {
             .with_margin_top(12.0)
             .finish(),
         );
+        self.flat_section(col.finish())
+    }
+
+    fn language_block(&self) -> Box<dyn Element> {
+        let data_dir = self.core.data_dir();
+        let prefs = crate::ui::desktop_prefs::load(&data_dir);
+        let current = prefs
+            .ui_language
+            .as_deref()
+            .unwrap_or(wormhole_i18n::LOCALE_SYSTEM);
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            wormhole_i18n::t("settings.language.hint"),
+            self.font,
+        ));
+        col.add_child(
+            Container::new(
+                ui_text::mono(wormhole_i18n::t("settings.language.apply_hint"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        let choices = [
+            (wormhole_i18n::LOCALE_SYSTEM, "settings.language.system"),
+            (wormhole_i18n::LOCALE_ZH_CN, "settings.language.zh_cn"),
+            (wormhole_i18n::LOCALE_EN, "settings.language.en"),
+        ];
+        for (value, label_key) in choices {
+            let selected = current == value;
+            let label = wormhole_i18n::t(label_key);
+            let button_label = if selected {
+                format!("✓ {label}")
+            } else {
+                label
+            };
+            let action_value = value.to_string();
+            col.add_child(
+                Container::new(self.stateful_action_button(
+                    &button_label,
+                    SettingsAction::SetUiLanguage(action_value),
+                    false,
+                    !selected,
+                ))
+                .with_margin_top(10.0)
+                .finish(),
+            );
+        }
         self.flat_section(col.finish())
     }
 
@@ -1540,6 +2317,574 @@ impl SettingsView {
                 self.email_message.clone(),
                 self.font,
                 self.email_tone,
+            ));
+        }
+        self.flat_section(col.finish())
+    }
+
+    fn connections_tab_button(&self, tab: u8, label: &str, automation_id: &str) -> Box<dyn Element> {
+        let selected = self.connections_tab == tab;
+        let disabled = self.connections_busy;
+        let display_label = if selected {
+            format!("● {label}")
+        } else {
+            format!("○ {label}")
+        };
+        let automation_id = automation_id.to_string();
+        Container::new(
+            EventHandler::new(
+                ui_text::body(display_label, self.font)
+                    .with_color(if selected {
+                        theme::accent_cool()
+                    } else {
+                        theme::text()
+                    })
+                    .finish(),
+            )
+            .with_automation_label(label.to_string())
+            .with_automation_id(automation_id)
+            .on_left_mouse_down(move |ctx, _, _| {
+                if disabled {
+                    return DispatchEventResult::StopPropagation;
+                }
+                ctx.dispatch_typed_action(SettingsAction::SelectConnectionsTab(tab));
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_padding_left(10.0)
+        .with_padding_right(10.0)
+        .with_padding_top(6.0)
+        .with_padding_bottom(6.0)
+        .with_background(theme::accent_bg(if selected { 28 } else { 8 }))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+        .finish()
+    }
+
+    fn composio_catalog_row(&self, item: &ComposioCatalogItem) -> Box<dyn Element> {
+        let connected = self
+            .composio_connections
+            .iter()
+            .any(|conn| conn.toolkit.eq_ignore_ascii_case(&item.slug));
+        let mut labels = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let title = if item.native {
+            format!(
+                "{} · {}",
+                item.name,
+                wormhole_i18n::t("settings.connections.badge.native")
+            )
+        } else {
+            format!(
+                "{} · {}",
+                item.name,
+                wormhole_i18n::t("settings.connections.badge.proxied")
+            )
+        };
+        labels.add_child(
+            ui_text::body(title, self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        let detail = if item.description.is_empty() {
+            item.slug.clone()
+        } else {
+            format!("{} — {}", item.slug, item.description)
+        };
+        labels.add_child(
+            ui_text::mono(detail, self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, labels.finish()).finish());
+        let connect_label = if connected {
+            wormhole_i18n::t("settings.connections.manage")
+        } else {
+            wormhole_i18n::t("settings.connections.connect")
+        };
+        row.add_child(self.stateful_action_button(
+            &connect_label,
+            SettingsAction::ConnectComposio(item.slug.clone()),
+            self.connections_busy || connected,
+            !connected,
+        ));
+        Container::new(row.finish())
+            .with_uniform_padding(10.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .finish()
+    }
+
+    fn composio_connection_row(&self, item: &ComposioConnectionItem) -> Box<dyn Element> {
+        let mut labels = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        labels.add_child(
+            ui_text::body(item.toolkit.clone(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        labels.add_child(
+            ui_text::mono(
+                format!("{} · {}", item.status, item.detail),
+                self.font,
+            )
+            .with_color(theme::accent_cool())
+            .finish(),
+        );
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        row.add_child(Expanded::new(1.0, labels.finish()).finish());
+        let disconnect_label = wormhole_i18n::t("settings.connections.disconnect");
+        row.add_child(self.stateful_action_button(
+            &disconnect_label,
+            SettingsAction::DisconnectComposio(item.id.clone()),
+            self.connections_busy,
+            false,
+        ));
+        Container::new(row.finish())
+            .with_uniform_padding(10.0)
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+            .finish()
+    }
+
+    fn connections_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            wormhole_i18n::t("settings.connections.hint"),
+            self.font,
+        ));
+
+        let tab_integrations = wormhole_i18n::t("settings.connections.tab.integrations");
+        let tab_triggers = wormhole_i18n::t("settings.connections.tab.triggers");
+        let tab_mcp = wormhole_i18n::t("settings.connections.tab.mcp");
+        let tab_skills = wormhole_i18n::t("settings.connections.tab.skills");
+        let tab_channels = wormhole_i18n::t("settings.connections.tab.channels");
+        let tabs = self.inline_action_row(vec![
+            self.connections_tab_button(
+                0,
+                &tab_integrations,
+                "settings:connections_tab_integrations",
+            ),
+            self.connections_tab_button(
+                1,
+                &tab_triggers,
+                "settings:connections_tab_triggers",
+            ),
+            self.connections_tab_button(2, &tab_mcp, "settings:connections_tab_mcp"),
+            self.connections_tab_button(3, &tab_skills, "settings:connections_tab_skills"),
+            self.connections_tab_button(4, &tab_channels, "settings:connections_tab_channels"),
+        ]);
+        col.add_child(
+            Container::new(tabs)
+                .with_margin_top(10.0)
+                .with_margin_bottom(8.0)
+                .finish(),
+        );
+
+        match self.connections_tab {
+            0 => {
+                if self.composio_catalog.is_empty() {
+                    col.add_child(section_hint(
+                        wormhole_i18n::t("settings.connections.catalog.empty"),
+                        self.font,
+                    ));
+                } else {
+                    for (index, item) in self.composio_catalog.iter().enumerate() {
+                        let row = self.composio_catalog_row(item);
+                        col.add_child(if index == 0 {
+                            row
+                        } else {
+                            Container::new(row).with_margin_top(8.0).finish()
+                        });
+                    }
+                }
+                if !self.composio_connections.is_empty() {
+                    col.add_child(
+                        Container::new(
+                            ui_text::body(
+                                wormhole_i18n::t("settings.connections.active"),
+                                self.font,
+                            )
+                            .with_color(theme::muted())
+                            .finish(),
+                        )
+                        .with_margin_top(14.0)
+                        .with_margin_bottom(6.0)
+                        .finish(),
+                    );
+                    for (index, item) in self.composio_connections.iter().enumerate() {
+                        let row = self.composio_connection_row(item);
+                        col.add_child(if index == 0 {
+                            row
+                        } else {
+                            Container::new(row).with_margin_top(8.0).finish()
+                        });
+                    }
+                }
+                let refresh_label = if self.connections_busy {
+                    wormhole_i18n::t("settings.connections.refreshing")
+                } else {
+                    wormhole_i18n::t("settings.connections.refresh")
+                };
+                col.add_child(
+                    Container::new(self.stateful_action_button(
+                        &refresh_label,
+                        SettingsAction::RefreshConnections,
+                        self.connections_busy,
+                        false,
+                    ))
+                    .with_margin_top(10.0)
+                    .finish(),
+                );
+            }
+            1 => {
+                let notify_label = if self.trigger_notify_agent {
+                    wormhole_i18n::t("settings.connections.triggers.notify_on")
+                } else {
+                    wormhole_i18n::t("settings.connections.triggers.notify_off")
+                };
+                let drain_label = wormhole_i18n::t("settings.connections.triggers.drain");
+                let sync_label = wormhole_i18n::t("settings.connections.triggers.sync");
+                col.add_child(self.inline_action_row(vec![
+                    self.stateful_action_button(
+                        &notify_label,
+                        SettingsAction::ToggleTriggerNotifyAgent,
+                        self.connections_busy,
+                        false,
+                    ),
+                    self.stateful_action_button(
+                        &drain_label,
+                        SettingsAction::DrainTriggers,
+                        self.connections_busy,
+                        true,
+                    ),
+                    self.stateful_action_button(
+                        &sync_label,
+                        SettingsAction::SyncIntegrations,
+                        self.connections_busy,
+                        false,
+                    ),
+                ]));
+                if self.active_triggers.is_empty() {
+                    col.add_child(
+                        Container::new(section_hint(
+                            wormhole_i18n::t("settings.connections.triggers.active_empty"),
+                            self.font,
+                        ))
+                        .with_margin_top(10.0)
+                        .finish(),
+                    );
+                } else {
+                    for (index, item) in self.active_triggers.iter().enumerate() {
+                        let mut labels = Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                        labels.add_child(
+                            ui_text::body(
+                                format!("{} · {}", item.toolkit, item.slug),
+                                self.font,
+                            )
+                            .with_color(theme::text())
+                            .finish(),
+                        );
+                        labels.add_child(
+                            ui_text::mono(
+                                format!("{} · {}", item.state, item.id),
+                                self.font,
+                            )
+                            .with_color(theme::muted())
+                            .finish(),
+                        );
+                        let mut row = Flex::row()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_main_axis_size(MainAxisSize::Max);
+                        row.add_child(Expanded::new(1.0, labels.finish()).finish());
+                        let disable_label =
+                            wormhole_i18n::t("settings.connections.triggers.disable");
+                        row.add_child(self.stateful_action_button(
+                            &disable_label,
+                            SettingsAction::DisableTrigger(item.id.clone()),
+                            self.connections_busy,
+                            false,
+                        ));
+                        let card = Container::new(row.finish())
+                            .with_uniform_padding(10.0)
+                            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                            .finish();
+                        col.add_child(
+                            Container::new(card)
+                                .with_margin_top(if index == 0 { 10.0 } else { 8.0 })
+                                .finish(),
+                        );
+                    }
+                }
+                if !self.composio_connections.is_empty() {
+                    col.add_child(
+                        Container::new(
+                            ui_text::body(
+                                wormhole_i18n::t("settings.connections.triggers.create_hint"),
+                                self.font,
+                            )
+                            .with_color(theme::muted())
+                            .finish(),
+                        )
+                        .with_margin_top(12.0)
+                        .finish(),
+                    );
+                    for item in self.composio_connections.iter().take(6) {
+                        let label = format!(
+                            "{} · {}",
+                            wormhole_i18n::t("settings.connections.triggers.create"),
+                            item.toolkit
+                        );
+                        col.add_child(
+                            Container::new(self.stateful_action_button(
+                                &label,
+                                SettingsAction::CreateTriggerForConnection(item.id.clone()),
+                                self.connections_busy,
+                                true,
+                            ))
+                            .with_margin_top(6.0)
+                            .finish(),
+                        );
+                    }
+                }
+                col.add_child(
+                    Container::new(
+                        ui_text::mono(self.trigger_history_preview.clone(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(10.0)
+                    .with_uniform_padding(10.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                    .finish(),
+                );
+            }
+            2 => {
+                let browse_label = wormhole_i18n::t("settings.connections.mcp.browse");
+                col.add_child(self.stateful_action_button(
+                    &browse_label,
+                    SettingsAction::BrowseMcpCatalog,
+                    self.connections_busy,
+                    true,
+                ));
+                col.add_child(
+                    Container::new(
+                        ui_text::mono(self.mcp_installed_preview.clone(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(10.0)
+                    .with_uniform_padding(10.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                    .finish(),
+                );
+                for (index, item) in self.mcp_catalog.iter().enumerate() {
+                    let mut labels =
+                        Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                    labels.add_child(
+                        ui_text::body(item.name.clone(), self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    );
+                    let detail = if item.description.is_empty() {
+                        format!("{} · {}", item.source, item.id)
+                    } else {
+                        format!("{} · {} — {}", item.source, item.id, item.description)
+                    };
+                    labels.add_child(
+                        ui_text::mono(detail, self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    );
+                    let mut row = Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_main_axis_size(MainAxisSize::Max);
+                    row.add_child(Expanded::new(1.0, labels.finish()).finish());
+                    let install_label = wormhole_i18n::t("settings.connections.mcp.install");
+                    row.add_child(self.stateful_action_button(
+                        &install_label,
+                        SettingsAction::InstallMcp(index),
+                        self.connections_busy,
+                        true,
+                    ));
+                    let uninstall_label = wormhole_i18n::t("settings.connections.mcp.uninstall");
+                    row.add_child(self.stateful_action_button(
+                        &uninstall_label,
+                        SettingsAction::UninstallMcp(item.id.clone()),
+                        self.connections_busy,
+                        false,
+                    ));
+                    let card = Container::new(row.finish())
+                        .with_uniform_padding(10.0)
+                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                        .finish();
+                    col.add_child(
+                        Container::new(card)
+                            .with_margin_top(if index == 0 { 10.0 } else { 8.0 })
+                            .finish(),
+                    );
+                }
+            }
+            3 => {
+                let browse_label = wormhole_i18n::t("settings.connections.skills.browse");
+                col.add_child(self.stateful_action_button(
+                    &browse_label,
+                    SettingsAction::BrowseSkillsCatalog,
+                    self.connections_busy,
+                    true,
+                ));
+                col.add_child(
+                    Container::new(
+                        ui_text::mono(self.skills_installed_preview.clone(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_margin_top(10.0)
+                    .with_uniform_padding(10.0)
+                    .with_background(theme::bg())
+                    .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                    .finish(),
+                );
+                for (index, item) in self.skills_catalog.iter().enumerate() {
+                    let mut labels =
+                        Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                    labels.add_child(
+                        ui_text::body(item.name.clone(), self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    );
+                    let detail = if item.description.is_empty() {
+                        item.id.clone()
+                    } else {
+                        format!("{} — {}", item.id, item.description)
+                    };
+                    labels.add_child(
+                        ui_text::mono(detail, self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    );
+                    let mut row = Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_main_axis_size(MainAxisSize::Max);
+                    row.add_child(Expanded::new(1.0, labels.finish()).finish());
+                    let install_label = wormhole_i18n::t("settings.connections.skills.install");
+                    row.add_child(self.stateful_action_button(
+                        &install_label,
+                        SettingsAction::InstallSkill(index),
+                        self.connections_busy,
+                        true,
+                    ));
+                    let uninstall_label = wormhole_i18n::t("settings.connections.skills.uninstall");
+                    row.add_child(self.stateful_action_button(
+                        &uninstall_label,
+                        SettingsAction::UninstallSkill(item.id.clone()),
+                        self.connections_busy,
+                        false,
+                    ));
+                    let card = Container::new(row.finish())
+                        .with_uniform_padding(10.0)
+                        .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                        .finish();
+                    col.add_child(
+                        Container::new(card)
+                            .with_margin_top(if index == 0 { 10.0 } else { 8.0 })
+                            .finish(),
+                    );
+                }
+            }
+            _ => {
+                col.add_child(section_hint(
+                    wormhole_i18n::t("settings.connections.channels.hint"),
+                    self.font,
+                ));
+                let current = format!(
+                    "{}: {}",
+                    wormhole_i18n::t("settings.connections.channels.current"),
+                    self.channel_default
+                );
+                col.add_child(
+                    Container::new(
+                        ui_text::body(current, self.font)
+                            .with_color(theme::text())
+                            .finish(),
+                    )
+                    .with_margin_top(8.0)
+                    .finish(),
+                );
+                let web = wormhole_i18n::t("settings.connections.channels.web");
+                let telegram = wormhole_i18n::t("settings.connections.channels.telegram");
+                let discord = wormhole_i18n::t("settings.connections.channels.discord");
+                col.add_child(
+                    Container::new(self.inline_action_row(vec![
+                        self.stateful_action_button(
+                            &web,
+                            SettingsAction::SetDefaultChannel("web".into()),
+                            self.connections_busy,
+                            self.channel_default != "web",
+                        ),
+                        self.stateful_action_button(
+                            &telegram,
+                            SettingsAction::SetDefaultChannel("telegram".into()),
+                            self.connections_busy,
+                            self.channel_default != "telegram",
+                        ),
+                        self.stateful_action_button(
+                            &discord,
+                            SettingsAction::SetDefaultChannel("discord".into()),
+                            self.connections_busy,
+                            self.channel_default != "discord",
+                        ),
+                    ]))
+                    .with_margin_top(10.0)
+                    .finish(),
+                );
+                col.add_child(
+                    Container::new(section_hint(
+                        wormhole_i18n::t("settings.connections.channels.connect_hint"),
+                        self.font,
+                    ))
+                    .with_margin_top(12.0)
+                    .finish(),
+                );
+                col.add_child(
+                    Container::new(self.inline_action_row(vec![
+                        self.stateful_action_button(
+                            &telegram,
+                            SettingsAction::ConnectComposio("telegram".into()),
+                            self.connections_busy,
+                            true,
+                        ),
+                        self.stateful_action_button(
+                            &discord,
+                            SettingsAction::ConnectComposio("discord".into()),
+                            self.connections_busy,
+                            true,
+                        ),
+                    ]))
+                    .with_margin_top(8.0)
+                    .finish(),
+                );
+            }
+        }
+
+        if !self.connections_message.is_empty() {
+            col.add_child(status_line(
+                self.connections_message.clone(),
+                self.font,
+                self.connections_tone,
             ));
         }
         self.flat_section(col.finish())
@@ -1807,6 +3152,8 @@ impl SettingsView {
                         .with_color(theme::accent_cool())
                         .finish(),
                 )
+                .with_automation_label("恢复")
+                .with_automation_id(format!("settings:archive_restore:{session_id}"))
                 .on_left_mouse_down({
                     let id = session_id.clone();
                     move |ctx, _, _| {
@@ -1828,6 +3175,8 @@ impl SettingsView {
                         .with_color(theme::danger())
                         .finish(),
                 )
+                .with_automation_label("永久删除")
+                .with_automation_id(format!("settings:archive_delete:{session_id}"))
                 .on_left_mouse_down({
                     let id = session_id.clone();
                     move |ctx, _, _| {
@@ -1896,11 +3245,14 @@ impl TypedActionView for SettingsView {
                 self.selected_page = *page;
                 self.search_focused = false;
                 self.storage_focused = false;
+                self.account_display_name_focused = false;
                 match page {
                     SettingsPage::Cluster => self.cluster_expanded = true,
                     SettingsPage::Relay => self.relay_expanded = true,
                     SettingsPage::Cache => self.cache_expanded = true,
                     SettingsPage::Archive => self.archive_expanded = true,
+                    SettingsPage::Connections => self.refresh_connections(ctx),
+                    SettingsPage::Account => self.refresh_account(ctx),
                     _ => {}
                 }
                 ctx.notify();
@@ -1908,7 +3260,22 @@ impl TypedActionView for SettingsView {
             SettingsAction::FocusSearch => {
                 self.search_focused = true;
                 self.storage_focused = false;
+                self.account_display_name_focused = false;
                 ctx.notify();
+            }
+            SettingsAction::FocusAccountDisplayName => {
+                if !self.account_display_name_busy && self.auth_user_id.is_some() {
+                    self.account_display_name_focused = true;
+                    self.search_focused = false;
+                    self.storage_focused = false;
+                    ctx.notify();
+                }
+            }
+            SettingsAction::AccountDisplayNameEdit(action) => {
+                self.edit_account_display_name(action, ctx);
+            }
+            SettingsAction::SaveAccountDisplayName => {
+                self.save_account_display_name(ctx);
             }
             SettingsAction::SearchFieldEdit(action) => {
                 self.search_field.apply(&mut self.search_query, action);
@@ -1917,6 +3284,481 @@ impl TypedActionView for SettingsView {
             SettingsAction::Refresh => self.refresh(ctx),
             SettingsAction::RefreshAccount => self.refresh_account(ctx),
             SettingsAction::RefreshEmailConnectors => self.refresh_email_connectors(ctx),
+            SettingsAction::RefreshConnections => self.refresh_connections(ctx),
+            SettingsAction::SelectConnectionsTab(tab) => {
+                self.connections_tab = *tab;
+                ctx.notify();
+            }
+            SettingsAction::ConnectComposio(toolkit) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                self.connections_message = format!(
+                    "{}: {toolkit}",
+                    wormhole_i18n::t("settings.connections.authorizing")
+                );
+                self.connections_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                let toolkit = toolkit.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        let result = composio_authorize(
+                            &state,
+                            ComposioAuthorizeParams {
+                                toolkit,
+                                extra_params: None,
+                            },
+                        )
+                        .await?;
+                        tokio::task::spawn_blocking(move || {
+                            open_external_url(&result.connect_url)
+                        })
+                        .await
+                        .map_err(|error| format!("启动浏览器失败: {error}"))??;
+                        Ok::<(), String>(())
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(()) => {
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.authorize_opened");
+                                view.connections_tone = StatusTone::Placeholder;
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.connect_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::DisconnectComposio(connection_id) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let core = self.core.clone();
+                let connection_id = connection_id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        composio_delete_connection(
+                            &state,
+                            ComposioConnectionIdParams { connection_id },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(_) => {
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.disconnected");
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.disconnect_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::ToggleTriggerNotifyAgent => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let next = !self.trigger_notify_agent;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        set_trigger_notify_prefs(
+                            &state,
+                            TriggerNotifyPrefs {
+                                notify_agent: next,
+                            },
+                        )
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(prefs) => {
+                                view.trigger_notify_agent = prefs.notify_agent;
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.triggers.prefs_saved");
+                                view.connections_tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.triggers.prefs_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::DrainTriggers => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                self.connections_message =
+                    wormhole_i18n::t("settings.connections.triggers.draining");
+                self.connections_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        composio_drain_triggers(&state).await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(value) => {
+                                view.connections_message = format!(
+                                    "{}: {value}",
+                                    wormhole_i18n::t("settings.connections.triggers.drain_done")
+                                );
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.triggers.drain_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::SyncIntegrations => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                self.connections_message = wormhole_i18n::t("settings.connections.syncing");
+                self.connections_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        composio_sync(&state).await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(value) => {
+                                view.connections_message = format!(
+                                    "{}: {value}",
+                                    wormhole_i18n::t("settings.connections.sync_done")
+                                );
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.sync_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::DisableTrigger(trigger_id) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let core = self.core.clone();
+                let trigger_id = trigger_id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        composio_disable_trigger(
+                            &state,
+                            ComposioTriggerIdParams { trigger_id },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(_) => {
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.triggers.disabled");
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.triggers.disable_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::CreateTriggerForConnection(connection_id) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                self.connections_message =
+                    wormhole_i18n::t("settings.connections.triggers.creating");
+                self.connections_tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                let connection_id = connection_id.clone();
+                let toolkit = self
+                    .composio_connections
+                    .iter()
+                    .find(|c| c.id == connection_id)
+                    .map(|c| c.toolkit.clone())
+                    .unwrap_or_default();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        let available = wormhole_desktop_core::integrations_commands::composio_list_available_triggers(
+                            &state,
+                            Some(toolkit.clone()),
+                        )
+                        .await?;
+                        let slug = available
+                            .get("triggers")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|t| t.get("slug"))
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| "no available trigger for toolkit".to_string())?
+                            .to_string();
+                        let body = serde_json::json!({
+                            "slug": slug,
+                            "connectionId": connection_id,
+                        });
+                        composio_create_trigger(&state, body).await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(value) => {
+                                view.connections_message = format!(
+                                    "{}: {value}",
+                                    wormhole_i18n::t("settings.connections.triggers.created")
+                                );
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.triggers.create_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::BrowseMcpCatalog | SettingsAction::BrowseSkillsCatalog => {
+                self.refresh_connections(ctx);
+            }
+            SettingsAction::InstallMcp(index) => {
+                if self.connections_busy {
+                    return;
+                }
+                let Some(item) = self.mcp_catalog.get(*index).cloned() else {
+                    return;
+                };
+                self.connections_busy = true;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        mcp_install_entry(&state, item.entry)
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(server) => {
+                                view.connections_message = format!(
+                                    "{}: {}",
+                                    wormhole_i18n::t("settings.connections.mcp.installed_ok"),
+                                    server.name
+                                );
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.mcp.install_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::UninstallMcp(id) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let core = self.core.clone();
+                let id = id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        mcp_uninstall(&state, McpIdParams { id })
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(_) => {
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.mcp.uninstalled");
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!("mcp uninstall: {error}");
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::InstallSkill(index) => {
+                if self.connections_busy {
+                    return;
+                }
+                let Some(item) = self.skills_catalog.get(*index).cloned() else {
+                    return;
+                };
+                self.connections_busy = true;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        skills_install(&state, item.entry).await
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(skill) => {
+                                view.connections_message = format!(
+                                    "{}: {}",
+                                    wormhole_i18n::t("settings.connections.skills.installed_ok"),
+                                    skill.name
+                                );
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.connections.skills.install_failed")
+                                );
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::UninstallSkill(id) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let core = self.core.clone();
+                let id = id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        skills_uninstall(&state, McpIdParams { id })
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(_) => {
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.skills.uninstalled");
+                                view.connections_tone = StatusTone::Success;
+                                view.refresh_connections(ctx);
+                            }
+                            Err(error) => {
+                                view.connections_message = format!("skills uninstall: {error}");
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            SettingsAction::SetDefaultChannel(channel) => {
+                if self.connections_busy {
+                    return;
+                }
+                self.connections_busy = true;
+                let core = self.core.clone();
+                let channel = channel.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        set_channel_prefs(
+                            &state,
+                            SetChannelPrefsParams {
+                                default_channel: channel,
+                            },
+                        )
+                    },
+                    |view, output, ctx| {
+                        view.connections_busy = false;
+                        match output {
+                            Ok(prefs) => {
+                                view.channel_default = prefs.default_channel.as_str().to_string();
+                                view.connections_message =
+                                    wormhole_i18n::t("settings.connections.channels.saved");
+                                view.connections_tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.connections_message = format!("channel: {error}");
+                                view.connections_tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
             SettingsAction::ConnectEmail(provider) => {
                 if self.email_busy {
                     return;
@@ -2025,6 +3867,51 @@ impl TypedActionView for SettingsView {
             SettingsAction::OpenRdpHostControl => {
                 ctx.emit(SettingsEvent::OpenRdpHostControl);
             }
+            SettingsAction::CopyUserId => {
+                match self.auth_user_id.as_deref() {
+                    Some(user_id) if !user_id.is_empty() => match write_clipboard_text(user_id) {
+                        Ok(()) => {
+                            self.auth_status = wormhole_i18n::t("settings.auth.copied_user_id");
+                            self.auth_status_tone = StatusTone::Success;
+                        }
+                        Err(err) => {
+                            self.auth_status =
+                                format!("{}: {err}", wormhole_i18n::t("settings.auth.copy_failed"));
+                            self.auth_status_tone = StatusTone::Danger;
+                        }
+                    },
+                    _ => {
+                        self.auth_status = wormhole_i18n::t("settings.auth.copy_failed");
+                        self.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            }
+            SettingsAction::CopyDeviceId => {
+                match self.auth_device_id.as_deref() {
+                    Some(device_id) if !device_id.is_empty() => {
+                        match write_clipboard_text(device_id) {
+                            Ok(()) => {
+                                self.auth_status =
+                                    wormhole_i18n::t("settings.auth.copied_device_id");
+                                self.auth_status_tone = StatusTone::Success;
+                            }
+                            Err(err) => {
+                                self.auth_status = format!(
+                                    "{}: {err}",
+                                    wormhole_i18n::t("settings.auth.copy_failed")
+                                );
+                                self.auth_status_tone = StatusTone::Danger;
+                            }
+                        }
+                    }
+                    _ => {
+                        self.auth_status = wormhole_i18n::t("settings.auth.copy_failed");
+                        self.auth_status_tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            }
             SettingsAction::ToggleRelaySection => {
                 self.relay_expanded = !self.relay_expanded;
                 ctx.notify();
@@ -2099,6 +3986,9 @@ impl TypedActionView for SettingsView {
                             Ok(()) => {
                                 view.auth_user_id = None;
                                 view.auth_device_id = None;
+                                view.account_display_name.clear();
+                                view.account_display_name_field = TextFieldState::new();
+                                view.account_display_name_focused = false;
                                 view.auth_status = "已退出登录。".into();
                                 view.auth_status_tone = StatusTone::Placeholder;
                                 ctx.emit(SettingsEvent::AccountChanged {
@@ -2210,6 +4100,7 @@ impl TypedActionView for SettingsView {
                 if !self.busy {
                     self.storage_focused = true;
                     self.search_focused = false;
+                    self.account_display_name_focused = false;
                     ctx.notify();
                 }
             }
@@ -2281,6 +4172,14 @@ impl TypedActionView for SettingsView {
                         self.update_message = format!("打开下载链接失败: {error}");
                         self.update_tone = StatusTone::Danger;
                     }
+                }
+                ctx.notify();
+            }
+            SettingsAction::SetUiLanguage(language) => {
+                let data_dir = self.core.data_dir();
+                if let Err(err) = crate::ui::desktop_prefs::set_ui_language(&data_dir, language) {
+                    self.update_message = err;
+                    self.update_tone = StatusTone::Danger;
                 }
                 ctx.notify();
             }
@@ -2376,13 +4275,14 @@ fn format_cache_size(bytes: u64) -> String {
 mod tests {
     use super::{
         cache_summary_label, email_provider_label, format_cache_size, is_relay_mode,
-        relay_mode_label, settings_fold_chevron_path, settings_pages_in_group, storage_paths_differ,
-        SettingsPage,
+        relay_mode_label, settings_fold_chevron_path, settings_pages_in_group_key,
+        storage_paths_differ, SettingsPage,
     };
     use wormhole_desktop_core::settings_cache_commands::SettingsCacheStatusDto;
 
     #[test]
     fn settings_page_defaults_to_account_and_filters_search() {
+        wormhole_i18n::set_locale("zh-CN");
         assert_eq!(SettingsPage::Account.title(), "账号");
         assert!(SettingsPage::Account.matches_query(""));
         assert!(SettingsPage::Account.matches_query("账号"));
@@ -2399,24 +4299,26 @@ mod tests {
         assert!(SettingsPage::VirtualMachine.matches_query("指定人"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert_eq!(
-            settings_pages_in_group("常规"),
+            settings_pages_in_group_key("settings.nav.group.general"),
             vec![
                 SettingsPage::Account,
                 SettingsPage::Email,
-                SettingsPage::Agent
+                SettingsPage::Agent,
+                SettingsPage::Memory,
             ]
         );
         assert_eq!(
-            settings_pages_in_group("集群"),
+            settings_pages_in_group_key("settings.nav.group.cluster"),
             vec![SettingsPage::Cluster, SettingsPage::Relay]
         );
         assert_eq!(
-            settings_pages_in_group("系统"),
+            settings_pages_in_group_key("settings.nav.group.system"),
             vec![
                 SettingsPage::VirtualMachine,
                 SettingsPage::RdpHost,
                 SettingsPage::Display,
                 SettingsPage::Plugins,
+                SettingsPage::Language,
                 SettingsPage::About,
             ]
         );

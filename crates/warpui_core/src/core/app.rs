@@ -965,6 +965,83 @@ impl AppContext {
         self.presenters.get(&window_id).cloned()
     }
 
+    /// Snapshot interactive targets registered during the last paint of `window_id`.
+    pub fn ui_automation_snapshot(
+        &self,
+        window_id: WindowId,
+    ) -> Result<Vec<crate::ui_automation::UiAutomationNode>, String> {
+        let presenter = self
+            .presenter(window_id)
+            .ok_or_else(|| format!("no presenter for window {window_id}"))?;
+        let nodes = presenter.borrow().automation_cache().to_nodes();
+        Ok(nodes)
+    }
+
+    /// Synthesize a left click at window-local coordinates (pre-zoom), matching real pointer hit-tests.
+    pub fn ui_automation_click_at(
+        &mut self,
+        window_id: WindowId,
+        position: pathfinder_geometry::vector::Vector2F,
+    ) -> Result<(), String> {
+        let presenter = self
+            .presenter(window_id)
+            .ok_or_else(|| format!("no presenter for window {window_id}"))?;
+        let mouse_down = crate::Event::LeftMouseDown {
+            position,
+            modifiers: Default::default(),
+            click_count: 1,
+            is_first_mouse: false,
+        };
+        let mouse_up = crate::Event::LeftMouseUp {
+            position,
+            modifiers: Default::default(),
+        };
+        for event in [mouse_down, mouse_up] {
+            let _ = self.handle_non_keybound_event(event, window_id, presenter.clone());
+        }
+        Ok(())
+    }
+
+    /// Type UTF-8 text into the focused view.
+    ///
+    /// Emits one [`Event::KeyDown`] per character (so `on_keydown` consumers such as
+    /// the AI sidebar search receive input), then a trailing [`Event::TypedCharacters`]
+    /// for IME / [`TextFieldInput`]-style handlers.
+    pub fn ui_automation_type_text(
+        &mut self,
+        window_id: WindowId,
+        text: &str,
+    ) -> Result<(), String> {
+        if text.len() > 512 {
+            return Err("ui_automation_type_text: text exceeds 512 bytes".into());
+        }
+        let presenter = self
+            .presenter(window_id)
+            .ok_or_else(|| format!("no presenter for window {window_id}"))?;
+        for ch in text.chars() {
+            let key = ch.to_string();
+            let key_down = crate::Event::KeyDown {
+                keystroke: crate::keymap::Keystroke {
+                    ctrl: false,
+                    alt: false,
+                    shift: ch.is_uppercase(),
+                    cmd: false,
+                    meta: false,
+                    key: key.clone(),
+                },
+                chars: key,
+                details: crate::event::KeyEventDetails::default(),
+                is_composing: false,
+            };
+            let _ = self.handle_non_keybound_event(key_down, window_id, presenter.clone());
+        }
+        let typed = crate::Event::TypedCharacters {
+            chars: text.to_string(),
+        };
+        let _ = self.handle_non_keybound_event(typed, window_id, presenter);
+        Ok(())
+    }
+
     fn invalidate_all_views_for_window(&mut self, window_id: WindowId) {
         let Some(window) = self.windows.get(&window_id) else {
             return;

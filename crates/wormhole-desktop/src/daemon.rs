@@ -13,12 +13,13 @@ use crate::wormhole_native_ipc::{
     OpenHostControlWindowRequest, OpenHostControlWindowResponse, OpenLiveViewerWindowRequest,
     OpenLiveViewerWindowResponse, OpenRdpWindowRequest, OpenRdpWindowResponse,
     OpenWorkspaceHudWindowRequest, OpenWorkspaceHudWindowResponse, OpenWorkspaceRdpWindowRequest,
-    OpenWorkspaceRdpWindowResponse, FOCUS_AGENT_EVENTS_PATH, FOCUS_AGENT_PATH,
+    OpenWorkspaceRdpWindowResponse, UiAppStateResponse, UiOutlineRequest, UiOutlineResponse,
+    UiTapRequest, UiTapResponse, UiTypeRequest, FOCUS_AGENT_EVENTS_PATH, FOCUS_AGENT_PATH,
     FOCUS_COMPUTER_USE_PATH, FOCUS_HOST_CONTROL_PATH, FOCUS_LIVE_VIEWER_PATH, FOCUS_RDP_PATH,
     FOCUS_WORKSPACE_HUD_PATH, FOCUS_WORKSPACE_RDP_PATH, HEALTH_PATH, INVOKE_RDP_PATH,
     OPEN_AGENT_EVENTS_PATH, OPEN_AGENT_PATH, OPEN_COMPUTER_USE_PATH, OPEN_HOST_CONTROL_PATH,
     OPEN_LIVE_VIEWER_PATH, OPEN_RDP_PATH, OPEN_WORKSPACE_HUD_PATH, OPEN_WORKSPACE_RDP_PATH,
-    SHUTDOWN_PATH,
+    SHUTDOWN_PATH, UI_APP_STATE_PATH, UI_OUTLINE_PATH, UI_TAP_PATH, UI_TYPE_PATH,
 };
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -77,6 +78,10 @@ async fn run_async(coordinator: Arc<Mutex<CoordinatorState>>) -> anyhow::Result<
         .route(OPEN_WORKSPACE_HUD_PATH, post(open_workspace_hud))
         .route(FOCUS_WORKSPACE_HUD_PATH, post(focus_workspace_hud))
         .route(INVOKE_RDP_PATH, post(invoke_rdp))
+        .route(UI_OUTLINE_PATH, post(ui_outline))
+        .route(UI_TAP_PATH, post(ui_tap))
+        .route(UI_TYPE_PATH, post(ui_type))
+        .route(UI_APP_STATE_PATH, post(ui_app_state))
         .route(SHUTDOWN_PATH, post(shutdown))
         .with_state(DaemonState { coordinator, token });
 
@@ -648,6 +653,91 @@ async fn invoke_rdp(
     let runtime = runtime.lock().await;
     let response = rdp_invoke::dispatch(&runtime, body).await;
     Ok(axum::Json(response))
+}
+
+fn enqueue_and_wait<T: Send + 'static>(
+    state: &DaemonState,
+    build: impl FnOnce(std::sync::mpsc::SyncSender<Result<T, String>>) -> UiCommand,
+) -> Result<T, (StatusCode, axum::Json<ApiErrorBody>)> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    {
+        let mut guard = state.coordinator.lock().expect("coordinator lock");
+        guard.enqueue(build(tx));
+    }
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(ApiErrorBody { error }),
+        )),
+        Err(_) => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(ApiErrorBody {
+                error: "ui command timed out waiting for main thread".into(),
+            }),
+        )),
+    }
+}
+
+async fn ui_outline(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<UiOutlineRequest>,
+) -> Result<axum::Json<UiOutlineResponse>, (StatusCode, axum::Json<ApiErrorBody>)> {
+    authorize(&headers, &state.token)?;
+    let format = body.format;
+    let result = enqueue_and_wait(&state, |reply| UiCommand::UiOutline { format, reply })?;
+    let nodes = result
+        .nodes
+        .iter()
+        .filter_map(|n| serde_json::to_value(n).ok())
+        .collect();
+    Ok(axum::Json(UiOutlineResponse {
+        format: result.format,
+        outline: result.outline,
+        nodes,
+        window_id: result.window_id,
+    }))
+}
+
+async fn ui_tap(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<UiTapRequest>,
+) -> Result<axum::Json<UiTapResponse>, (StatusCode, axum::Json<ApiErrorBody>)> {
+    authorize(&headers, &state.token)?;
+    let selector = body.selector;
+    let result = enqueue_and_wait(&state, |reply| UiCommand::UiTap { selector, reply })?;
+    Ok(axum::Json(UiTapResponse {
+        alias: result.alias,
+        label: result.label,
+        x: result.x,
+        y: result.y,
+    }))
+}
+
+async fn ui_type(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<UiTypeRequest>,
+) -> Result<&'static str, (StatusCode, axum::Json<ApiErrorBody>)> {
+    authorize(&headers, &state.token)?;
+    let text = body.text;
+    enqueue_and_wait(&state, |reply| UiCommand::UiType { text, reply })?;
+    Ok("ok")
+}
+
+async fn ui_app_state(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<UiAppStateResponse>, (StatusCode, axum::Json<ApiErrorBody>)> {
+    authorize(&headers, &state.token)?;
+    let result = enqueue_and_wait(&state, |reply| UiCommand::UiAppState { reply })?;
+    Ok(axum::Json(UiAppStateResponse {
+        main_window_id: result.main_window_id,
+        pid: std::process::id(),
+        target_count: result.target_count,
+    }))
 }
 
 async fn shutdown(

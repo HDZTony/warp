@@ -22,10 +22,10 @@ use project_delete_modal::ProjectDeleteState;
 use transcript::{render_transcript, TranscriptLine, TranscriptViewModel};
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CrossAxisAlignment, DispatchEventResult, Empty, EventDispatchMode, EventHandler, Expanded,
-    Fill, Flex, MainAxisSize, MouseState, MouseStateHandle, ParentElement, ScrollbarWidth,
-    Shrinkable, Stack,
+    Align, AutomationTarget, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CrossAxisAlignment, DispatchEventResult, Empty, EventDispatchMode, EventHandler,
+    Expanded, Fill, Flex, MainAxisSize, MouseState, MouseStateHandle, ParentElement,
+    ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -46,8 +46,9 @@ use wormhole_desktop_core::warp_embed_prefs::{
 use wormhole_desktop_core::{
     agent_chat_with_codex_fallback, agent_launch_terminal_with_codex_fallback, agent_list_sessions,
     agent_read_local_session_events, agent_start_session_with_codex_fallback, agent_status,
-    agent_stop_session, cloud_auth_status, AgentSessionDto, AgentStartRequest, AgentTurnBackend,
-    CODEX_TURN_CANCELLED,
+    agent_stop_session, cloud_auth_status, emit_cue, emit_face, emit_listen_end, emit_listen_start,
+    pet_cue_from_reply, pet_cue_from_session_status, pet_subconscious, AgentSessionDto,
+    AgentStartRequest, AgentTurnBackend, CODEX_TURN_CANCELLED,
 };
 
 use crate::ui::clipboard::write_clipboard_text;
@@ -80,12 +81,22 @@ pub enum InteractionMode {
 }
 
 #[derive(Debug, Clone)]
+pub enum AgentPanelEvent {
+    /// Navigate AppShell to Settings → Memory.
+    OpenSettingsMemory,
+}
+
+#[derive(Debug, Clone)]
 pub enum AgentPanelAction {
     SetVisible(bool),
     SelectAccessMode(AgentAccessMode),
     ToggleAccessMenu,
     /// Toggle out-of-process Bevy Agent pet (`warp-embed.json` + spawn/stop).
     ToggleAgentPet,
+    ToggleAgentPetVcam,
+    ToggleAgentPetVoiceWake,
+    TriggerVoiceWakeManual,
+    DismissPetAttention,
     SelectModelRate(AgentModelRate),
     SelectAgentModel {
         provider_id: String,
@@ -158,6 +169,8 @@ pub enum AgentPanelAction {
     ArchiveActiveSession,
     ExpandAllProjects,
     CollapseAllProjects,
+    /// Open the synced Memory vault folder in the system file manager.
+    OpenMemoryVault,
     SetChatsSort(sidebar::ChatsSort),
     RestoreSession(String),
     DeleteSession(String),
@@ -207,6 +220,8 @@ struct PanelState {
     event_cursor: u64,
     polling_session: bool,
     input_focused: bool,
+    /// Composer typing listen pose already emitted (cleared on blur / send).
+    pet_composer_listening: bool,
     pending_send: bool,
     run_started_at: Option<SystemTime>,
     projects: Vec<sidebar::AgentProject>,
@@ -315,6 +330,12 @@ pub struct AgentPanelView {
     hide_capability_marquee: bool,
     /// Out-of-process Bevy 2D Agent pet (`warp-embed.json` `agent_pet_enabled`).
     agent_pet_enabled: bool,
+    /// Pet virtual-camera frame sink (`agent_pet_vcam_enabled`).
+    agent_pet_vcam_enabled: bool,
+    /// Wake-word「芭乐」spotting (`agent_pet_voice_wake_enabled`).
+    agent_pet_voice_wake_enabled: bool,
+    /// Latest dream / memory greeting (`agent/pet-attention.json`).
+    pet_attention: Option<String>,
     /// AI first-run preference overlay (`.ai-onboarding`).
     ai_onboarding_visible: bool,
     ai_onboarding_account: String,
@@ -331,6 +352,8 @@ impl AgentPanelView {
         let model_rate = prefs.model_rate;
         let hide_capability_marquee = prefs.hide_capability_marquee;
         let agent_pet_enabled = prefs.agent_pet_enabled;
+        let agent_pet_vcam_enabled = prefs.agent_pet_vcam_enabled;
+        let agent_pet_voice_wake_enabled = prefs.agent_pet_voice_wake_enabled;
         let (generation_notify_tx, generation_notify_rx) = async_channel::unbounded();
         let data_dir = core.data_dir();
         let ai_account = Self::resolve_ai_onboarding_account(&core);
@@ -358,6 +381,7 @@ impl AgentPanelView {
                 event_cursor: 0,
                 polling_session: false,
                 input_focused: false,
+                pet_composer_listening: false,
                 pending_send: false,
                 run_started_at: None,
                 projects,
@@ -417,6 +441,9 @@ impl AgentPanelView {
             marquee_chip_hovers: capability_marquee::ChipHoverBank::new(),
             hide_capability_marquee,
             agent_pet_enabled,
+            agent_pet_vcam_enabled,
+            agent_pet_voice_wake_enabled,
+            pet_attention: wormhole_desktop_core::read_attention_message(&data_dir),
             ai_onboarding_visible,
             ai_onboarding_account: ai_account,
             ai_onboarding_draft: AiOnboardingSelections::empty(),
@@ -946,6 +973,8 @@ impl AgentPanelView {
                             panel.busy = false;
                             panel.run_started_at = None;
                             panel.status = format!("任务{}", page.status);
+                            let data_dir = Self::pet_data_dir(&view.core);
+                            Self::pet_notify_session_status(&data_dir, &page.status);
                             if !panel.active_sidebar_session_id.is_empty() {
                                 let id = panel.active_sidebar_session_id.clone();
                                 if let Some(session) =
@@ -1159,6 +1188,8 @@ impl AgentPanelView {
                 panel.draft.clear();
                 panel.field_state.clear_marked();
                 panel.input_focused = false;
+                let data_dir = wormhole_desktop_core::state::default_data_dir();
+                Self::pet_clear_composer_listening(&mut panel, &data_dir);
             }
             "backspace" => return false,
             key if key.len() == 1 => return false,
@@ -2505,9 +2536,15 @@ impl AgentPanelView {
                 match result {
                     Ok(status) => {
                         view.agent_pet_enabled = status.enabled;
+                        view.agent_pet_voice_wake_enabled = status.voice_wake_enabled;
+                        view.pet_attention = status.attention.clone();
                         let mut state = view.state.lock().expect("agent panel state");
                         state.status = if status.running {
-                            "Agent 桌宠已启动".into()
+                            if let Some(attn) = status.attention.as_deref() {
+                                format!("Agent 桌宠已启动 · {attn}")
+                            } else {
+                                "Agent 桌宠已启动".into()
+                            }
                         } else if status.enabled {
                             if status.binary_available {
                                 "桌宠已开启，但进程未运行".into()
@@ -2515,6 +2552,7 @@ impl AgentPanelView {
                                 "桌宠已开启，但未找到 wormhole-agent-pet".into()
                             }
                         } else {
+                            view.pet_attention = None;
                             "Agent 桌宠已关闭".into()
                         };
                     }
@@ -2528,6 +2566,115 @@ impl AgentPanelView {
                 ctx.notify();
             },
         );
+        self.bump();
+        ctx.notify();
+    }
+
+    fn toggle_agent_pet_vcam(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.add_menu_open = false;
+        }
+        let enabled = !self.agent_pet_vcam_enabled;
+        self.agent_pet_vcam_enabled = enabled;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                wormhole_desktop_core::agent_pet_set_vcam_enabled(core.app_state(), enabled).await
+            },
+            move |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        view.agent_pet_vcam_enabled = status.vcam_enabled;
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = if status.vcam_enabled {
+                            format!(
+                                "桌宠会议摄像头已开启{}",
+                                status
+                                    .vcam_dir
+                                    .map(|d| format!("（{d}）"))
+                                    .unwrap_or_default()
+                            )
+                        } else {
+                            "桌宠会议摄像头已关闭".into()
+                        };
+                    }
+                    Err(err) => {
+                        view.agent_pet_vcam_enabled = !enabled;
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = format!("会议摄像头切换失败: {err}");
+                    }
+                }
+                view.bump();
+                ctx.notify();
+            },
+        );
+        self.bump();
+        ctx.notify();
+    }
+
+    fn toggle_agent_pet_voice_wake(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.add_menu_open = false;
+        }
+        let enabled = !self.agent_pet_voice_wake_enabled;
+        self.agent_pet_voice_wake_enabled = enabled;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                wormhole_desktop_core::voice_wake_set_enabled(core.app_state(), enabled).await
+            },
+            move |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        view.agent_pet_voice_wake_enabled = status.enabled;
+                        if status.enabled {
+                            view.agent_pet_enabled = true;
+                        }
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = if status.enabled {
+                            if status.spotting_supported {
+                                "语音唤醒已开启：说「芭乐」后下达指令".into()
+                            } else {
+                                "语音唤醒已开启：此平台请用「手动唤醒听写」".into()
+                            }
+                        } else {
+                            "语音唤醒已关闭".into()
+                        };
+                    }
+                    Err(err) => {
+                        view.agent_pet_voice_wake_enabled = !enabled;
+                        let mut state = view.state.lock().expect("agent panel state");
+                        state.status = format!("语音唤醒切换失败: {err}");
+                    }
+                }
+                view.bump();
+                ctx.notify();
+            },
+        );
+        self.bump();
+        ctx.notify();
+    }
+
+    fn trigger_voice_wake_manual(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Ok(mut panel) = self.state.lock() {
+            panel.access_menu_open = false;
+            panel.model_menu_open = false;
+            panel.add_menu_open = false;
+        }
+        match wormhole_desktop_core::voice_wake_trigger_manual() {
+            Ok(()) => {
+                let mut state = self.state.lock().expect("agent panel state");
+                state.status = "已手动唤醒，请说话…".into();
+            }
+            Err(err) => {
+                let mut state = self.state.lock().expect("agent panel state");
+                state.status = format!("手动唤醒失败: {err}");
+            }
+        }
         self.bump();
         ctx.notify();
     }
@@ -2617,6 +2764,7 @@ impl AgentPanelView {
         }
         let shared = Arc::clone(&self.state);
         let core = self.core.clone();
+        let core_pet = self.core.clone();
         ctx.spawn(
             async move { agent_status(core.app_state()).await },
             move |view, output, ctx| {
@@ -2628,6 +2776,82 @@ impl AgentPanelView {
                 view.reload_sidebar_sessions(ctx);
             },
         );
+        ctx.spawn(
+            async move { wormhole_desktop_core::agent_pet_status(core_pet.app_state()).await },
+            move |view, output, ctx| {
+                if let Ok(status) = output {
+                    view.agent_pet_enabled = status.enabled;
+                    view.agent_pet_vcam_enabled = status.vcam_enabled;
+                    view.agent_pet_voice_wake_enabled = status.voice_wake_enabled;
+                    if status.enabled {
+                        view.pet_attention = status.attention;
+                    } else if view.pet_attention.is_some() {
+                        view.pet_attention = None;
+                    }
+                    ctx.notify();
+                }
+            },
+        );
+    }
+
+    fn dismiss_pet_attention(&mut self, ctx: &mut ViewContext<Self>) {
+        self.pet_attention = None;
+        let data_dir = self.core.data_dir();
+        wormhole_desktop_core::clear_attention_snapshot(&data_dir);
+        self.bump();
+        ctx.notify();
+    }
+
+    fn render_pet_attention_banner(&self, message: &str) -> Box<dyn Element> {
+        let dismiss = AutomationTarget::new(
+            EventHandler::new(
+                Container::new(
+                    ui_text::body("×".to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_uniform_padding(4.0)
+                .finish(),
+            )
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(AgentPanelAction::DismissPetAttention);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_label("关闭桌宠提示")
+        .with_id("ai:pet_attention_dismiss")
+        .finish();
+
+        let body = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Expanded::new(
+                    1.0,
+                    ui_text::body(message.to_string(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_child(dismiss);
+
+        AutomationTarget::new(
+            Container::new(body.finish())
+                .with_margin_left(10.0)
+                .with_margin_right(10.0)
+                .with_margin_top(8.0)
+                .with_margin_bottom(4.0)
+                .with_uniform_padding(10.0)
+                .with_background(theme::accent_bg(22))
+                .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                    warpui::elements::Radius::Pixels(10.0),
+                ))
+                .finish(),
+        )
+        .with_label(message)
+        .with_id("ai:pet_attention")
+        .finish()
     }
 
     fn toggle_voice_ptt(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2705,6 +2929,53 @@ impl AgentPanelView {
         let _ = wormhole_desktop_core::voice_speak(&snippet);
     }
 
+    fn pet_data_dir(core: &CoreHandle) -> std::path::PathBuf {
+        core.data_dir()
+    }
+
+    /// Composer focused / typing → Listening (skipped while PTT owns the mic).
+    fn pet_ensure_composer_listening(panel: &mut PanelState, data_dir: &std::path::Path) {
+        if panel.voice_recording || panel.pet_composer_listening {
+            return;
+        }
+        panel.pet_composer_listening = true;
+        let _ = emit_listen_start(data_dir);
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
+    fn pet_clear_composer_listening(panel: &mut PanelState, data_dir: &std::path::Path) {
+        if !panel.pet_composer_listening {
+            return;
+        }
+        panel.pet_composer_listening = false;
+        if !panel.voice_recording {
+            let _ = emit_listen_end(data_dir);
+        }
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
+    fn pet_notify_turn_thinking(data_dir: &std::path::Path) {
+        let _ = emit_face(data_dir, "thinking");
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
+    fn pet_notify_turn_working(data_dir: &std::path::Path) {
+        let _ = emit_face(data_dir, "working");
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
+    fn pet_notify_turn_cue(data_dir: &std::path::Path, reply: &str, ok: bool) {
+        let cue = pet_cue_from_reply(reply, ok);
+        let _ = emit_cue(data_dir, cue.as_str());
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
+    fn pet_notify_session_status(data_dir: &std::path::Path, status: &str) {
+        let cue = pet_cue_from_session_status(status);
+        let _ = emit_cue(data_dir, cue.as_str());
+        pet_subconscious::bump_user_activity(data_dir);
+    }
+
     fn send_message(&mut self, ctx: &mut ViewContext<Self>) {
         let (prompt, mode) = {
             let mut state = self.state.lock().expect("agent panel state");
@@ -2721,6 +2992,9 @@ impl AgentPanelView {
             state.draft.clear();
             state.field_state.cursor = 0;
             state.field_state.clear_marked();
+            let data_dir = Self::pet_data_dir(&self.core);
+            Self::pet_clear_composer_listening(&mut state, &data_dir);
+            Self::pet_notify_turn_thinking(&data_dir);
             let title = Self::session_label_from_dto(&AgentSessionDto {
                 id: String::new(),
                 status: String::new(),
@@ -2860,6 +3134,8 @@ impl AgentPanelView {
                             &result.reply.content,
                         );
                         Self::speak_assistant_reply(&result.reply.content);
+                        let data_dir = Self::pet_data_dir(&view.core);
+                        Self::pet_notify_turn_cue(&data_dir, &result.reply.content, true);
                         panel.chat_messages.push(AgentLlmChatMessage {
                             role: "assistant".into(),
                             content: result.reply.content,
@@ -2873,7 +3149,9 @@ impl AgentPanelView {
                                 &mut panel,
                                 TranscriptLine::new("stderr", err.clone(), "error"),
                             );
-                            panel.status = err;
+                            panel.status = err.clone();
+                            let data_dir = Self::pet_data_dir(&view.core);
+                            Self::pet_notify_turn_cue(&data_dir, &err, false);
                         }
                     }
                 }
@@ -2960,6 +3238,8 @@ impl AgentPanelView {
                         panel.event_cursor = 0;
                         panel.polling_session = true;
                         panel.status = "任务运行中…".into();
+                        let data_dir = Self::pet_data_dir(&view.core);
+                        Self::pet_notify_turn_working(&data_dir);
                         let project_id = if panel.active_project_id.is_empty() {
                             None
                         } else {
@@ -2975,9 +3255,11 @@ impl AgentPanelView {
                             &mut panel,
                             TranscriptLine::new("stderr", err.clone(), "error"),
                         );
-                        panel.status = err;
+                        panel.status = err.clone();
                         panel.busy = false;
                         panel.run_started_at = None;
+                        let data_dir = Self::pet_data_dir(&view.core);
+                        Self::pet_notify_turn_cue(&data_dir, &err, false);
                     }
                 }
                 if panel.active_session_id.is_none() {
@@ -3085,6 +3367,8 @@ impl AgentPanelView {
                 .finish();
             let btn = Container::new(
                 EventHandler::new(label_el)
+                    .with_automation_label(label.to_string())
+                    .with_automation_id(format!("ai:segment:{idx}"))
                     .on_left_mouse_down(move |ctx, _, _| {
                         ctx.dispatch_typed_action(action_label.clone());
                         DispatchEventResult::StopPropagation
@@ -3130,6 +3414,8 @@ impl AgentPanelView {
             .finish();
         Container::new(
             EventHandler::new(label_el)
+                .with_automation_label(label.to_string())
+                .with_automation_id(format!("ai:toolbar:{label}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -3146,8 +3432,10 @@ impl AgentPanelView {
         label: impl Into<String>,
         action: Option<AgentPanelAction>,
         accent: bool,
+        automation_id: &str,
     ) -> Box<dyn Element> {
         let label = label.into();
+        let automation_label = label.clone();
         let text = ui_text::body(label, self.font)
             .with_color(if accent {
                 theme::text()
@@ -3157,6 +3445,8 @@ impl AgentPanelView {
             .finish();
         let inner = if let Some(action) = action {
             EventHandler::new(text)
+                .with_automation_label(automation_label)
+                .with_automation_id(automation_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -3178,10 +3468,14 @@ impl AgentPanelView {
         path: &'static str,
         color: ColorU,
         action: Option<AgentPanelAction>,
+        automation_label: &str,
+        automation_id: &str,
     ) -> Box<dyn Element> {
         let inner = icons::agent_composer_icon(path, color);
         let wrapped: Box<dyn Element> = if let Some(action) = action {
             EventHandler::new(inner)
+                .with_automation_label(automation_label)
+                .with_automation_id(automation_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -3204,8 +3498,10 @@ impl AgentPanelView {
         action: Option<AgentPanelAction>,
         leading_icon: Option<&'static str>,
         trailing_chevron: bool,
+        automation_id: &str,
     ) -> Box<dyn Element> {
         let label = label.into();
+        let automation_label = label.clone();
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         if let Some(path) = leading_icon {
             row.add_child(
@@ -3228,6 +3524,8 @@ impl AgentPanelView {
         }
         let inner: Box<dyn Element> = if let Some(action) = action {
             EventHandler::new(row.finish())
+                .with_automation_label(automation_label)
+                .with_automation_id(automation_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -3258,17 +3556,28 @@ impl AgentPanelView {
             Some(AgentPanelAction::ToggleAccessMenu),
             Some("agent-warn.svg"),
             true,
+            "ai:composer_access",
         );
         let model_chip = self.composer_labeled_chip(
             composer_model_chip_label(&self.model_choices, model_rate),
             Some(AgentPanelAction::ToggleModelMenu),
             None,
             true,
+            "ai:composer_model",
         );
         let add_btn = self.composer_icon_chip(
             "agent-plus.svg",
             theme::muted(),
             Some(AgentPanelAction::ToggleAddMenu),
+            "添加",
+            "ai:composer_add",
+        );
+        let memory_btn = self.composer_icon_chip(
+            "share-file.svg",
+            theme::accent_cool(),
+            Some(AgentPanelAction::OpenMemoryVault),
+            &wormhole_i18n::t("agent.memory.open_vault"),
+            "agent:memory_vault",
         );
         let mic_color = if !voice_stt_available {
             theme::muted()
@@ -3282,15 +3591,24 @@ impl AgentPanelView {
         } else {
             None
         };
-        let mic_btn = self.composer_icon_chip("chat-compose-mic.svg", mic_color, mic_action);
+        let mic_btn = self.composer_icon_chip(
+            "chat-compose-mic.svg",
+            mic_color,
+            mic_action,
+            "语音输入",
+            "ai:composer_mic",
+        );
         let stop_tts = self.composer_icon_chip(
             "agent-stop-tts.svg",
             theme::muted(),
             Some(AgentPanelAction::StopTts),
+            "停止朗读",
+            "ai:composer_stop_tts",
         );
         let bar = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(add_btn)
+            .with_child(memory_btn)
             .with_child(access_chip)
             .with_child(mic_btn)
             .with_child(stop_tts)
@@ -3588,6 +3906,8 @@ impl AgentPanelView {
                         self.font,
                         access_mode,
                         self.agent_pet_enabled,
+                        self.agent_pet_vcam_enabled,
+                        self.agent_pet_voice_wake_enabled,
                     ))
                         .with_margin_left(ACCESS_POPOVER_INSET_LEFT)
                         .with_margin_bottom(bar_lift)
@@ -3620,6 +3940,8 @@ impl AgentPanelView {
                 .with_background(ColorU::new(8, 7, 11, 150))
                 .finish(),
         )
+        .with_automation_label("关闭弹层")
+        .with_automation_id("ai:overlay_scrim")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(AgentPanelAction::CloseProjectCreateModal);
             ctx.dispatch_typed_action(AgentPanelAction::CloseSessionContextMenu);
@@ -3657,6 +3979,13 @@ impl AgentPanelView {
         } else {
             AgentPanelAction::FocusInput
         };
+        let (automation_label, automation_id) = if busy {
+            ("停止", "ai:stop")
+        } else if !draft_empty {
+            ("发送", "ai:send")
+        } else {
+            ("聚焦输入", "ai:focus_input")
+        };
         let btn = Container::new(
             ConstrainedBox::new(Align::new(icon).finish())
                 .with_width(BTN_SIZE)
@@ -3671,6 +4000,8 @@ impl AgentPanelView {
         Container::new(
             ConstrainedBox::new(
                 EventHandler::new(btn)
+                    .with_automation_label(automation_label)
+                    .with_automation_id(automation_id)
                     .on_left_mouse_down(move |ctx, _, _| {
                         ctx.dispatch_typed_action(action.clone());
                         DispatchEventResult::StopPropagation
@@ -3727,7 +4058,7 @@ impl AgentPanelView {
 }
 
 impl Entity for AgentPanelView {
-    type Event = ();
+    type Event = AgentPanelEvent;
 }
 
 impl View for AgentPanelView {
@@ -3810,41 +4141,55 @@ impl View for AgentPanelView {
 
         let mut composer_col =
             Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if let Some(attn) = self.pet_attention.as_deref().filter(|s| !s.is_empty()) {
+            composer_col.add_child(self.render_pet_attention_banner(attn));
+        }
         if let Some(chips) =
             composer_add::render_composer_chips(self.font, plan_mode, goal_mode, &attachments)
         {
             composer_col.add_child(chips);
         }
+        let composer_label = if draft.trim().is_empty() {
+            "AI对话框".to_string()
+        } else {
+            draft.clone()
+        };
         composer_col.add_child(
-            ConstrainedBox::new(
-                Container::new(
-                    EventHandler::new(self.agent_composer_input(
-                        &draft,
-                        &marked,
-                        input_focused,
-                        caret_blink,
-                        busy,
-                        placeholder,
-                        cursor,
-                    ))
-                    .on_left_mouse_down(|ctx, _, _| {
-                        ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
-                        DispatchEventResult::StopPropagation
-                    })
+            AutomationTarget::new(
+                ConstrainedBox::new(
+                    Container::new(
+                        EventHandler::new(self.agent_composer_input(
+                            &draft,
+                            &marked,
+                            input_focused,
+                            caret_blink,
+                            busy,
+                            placeholder,
+                            cursor,
+                        ))
+                        .skip_automation()
+                        .on_left_mouse_down(|ctx, _, _| {
+                            ctx.dispatch_typed_action(AgentPanelAction::FocusInput);
+                            DispatchEventResult::StopPropagation
+                        })
+                        .finish(),
+                    )
+                    .with_padding_left(16.0)
+                    .with_padding_right(16.0)
+                    .with_padding_top(14.0)
+                    .with_padding_bottom(8.0)
                     .finish(),
                 )
-                .with_padding_left(16.0)
-                .with_padding_right(16.0)
-                .with_padding_top(14.0)
-                .with_padding_bottom(8.0)
+                .with_min_width(0.0)
+                .with_height(input_height)
+                .with_max_height(multiline_input::box_height(
+                    &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
+                    multiline_input::DEFAULT_COLS,
+                ))
                 .finish(),
             )
-            .with_min_width(0.0)
-            .with_height(input_height)
-            .with_max_height(multiline_input::box_height(
-                &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
-                multiline_input::DEFAULT_COLS,
-            ))
+            .with_label(composer_label)
+            .with_id("ai:composer")
             .finish(),
         );
         composer_col.add_child(self.composer_bar(
@@ -4089,6 +4434,8 @@ impl View for AgentPanelView {
         tab_content_fill(
             EventHandler::new(root_stack.finish())
                 .with_always_handle()
+                .with_automation_label("关闭菜单")
+                .with_automation_id("ai:panel_background")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(AgentPanelAction::DismissSidebarMenus);
                     ctx.dispatch_typed_action(AgentPanelAction::CloseSessionContextMenu);
@@ -4169,6 +4516,10 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::SetVisible(visible) => self.set_tab_visible(*visible, ctx),
             AgentPanelAction::SelectAccessMode(mode) => self.select_access_mode(*mode, ctx),
             AgentPanelAction::ToggleAgentPet => self.toggle_agent_pet(ctx),
+            AgentPanelAction::ToggleAgentPetVoiceWake => self.toggle_agent_pet_voice_wake(ctx),
+            AgentPanelAction::TriggerVoiceWakeManual => self.trigger_voice_wake_manual(ctx),
+            AgentPanelAction::ToggleAgentPetVcam => self.toggle_agent_pet_vcam(ctx),
+            AgentPanelAction::DismissPetAttention => self.dismiss_pet_attention(ctx),
             AgentPanelAction::ToggleAccessMenu => self.toggle_access_menu(ctx),
             AgentPanelAction::SelectModelRate(rate) => self.select_model_rate(*rate, ctx),
             AgentPanelAction::SelectAgentModel {
@@ -4299,6 +4650,9 @@ impl TypedActionView for AgentPanelView {
             AgentPanelAction::DismissSidebarMenus => self.dismiss_sidebar_menus(ctx),
             AgentPanelAction::ArchiveAllStandaloneChats => self.archive_all_standalone_chats(ctx),
             AgentPanelAction::ExpandAllProjects => self.expand_or_collapse_all_projects(true, ctx),
+            AgentPanelAction::OpenMemoryVault => {
+                ctx.emit(AgentPanelEvent::OpenSettingsMemory);
+            }
             AgentPanelAction::CollapseAllProjects => {
                 self.expand_or_collapse_all_projects(false, ctx)
             }
@@ -4365,18 +4719,27 @@ impl TypedActionView for AgentPanelView {
                     panel.field_state.clear_marked();
                     panel.field_state.cursor = 0;
                     panel.input_focused = false;
+                    let data_dir = Self::pet_data_dir(&self.core);
+                    Self::pet_clear_composer_listening(&mut panel, &data_dir);
                 }
                 sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             AgentPanelAction::ToggleComposerFocus => {
                 if let Ok(mut panel) = self.state.lock() {
+                    let data_dir = Self::pet_data_dir(&self.core);
                     if panel.sidebar_search_focused {
                         panel.sidebar_search_focused = false;
                         panel.input_focused = true;
+                        Self::pet_ensure_composer_listening(&mut panel, &data_dir);
                     } else {
                         panel.input_focused = !panel.input_focused;
                         panel.sidebar_search_focused = false;
+                        if panel.input_focused {
+                            Self::pet_ensure_composer_listening(&mut panel, &data_dir);
+                        } else {
+                            Self::pet_clear_composer_listening(&mut panel, &data_dir);
+                        }
                     }
                 }
                 sync_caret_blink(self, ctx);
@@ -4402,6 +4765,8 @@ impl TypedActionView for AgentPanelView {
                     panel.field_state.apply(&mut draft, &edit);
                     panel.draft = draft;
                     panel.input_focused = true;
+                    let data_dir = Self::pet_data_dir(&self.core);
+                    Self::pet_ensure_composer_listening(&mut panel, &data_dir);
                     if typed_at {
                         at_mention_anchor(&panel.draft, panel.field_state.cursor)
                     } else {
@@ -4455,6 +4820,23 @@ impl TypedActionView for AgentPanelView {
             }
             AgentPanelAction::ToggleAgentPet => {
                 AccessibilityContent::new_without_help("切换 Agent 桌宠", WarpA11yRole::MenuItemRole)
+            }
+            AgentPanelAction::ToggleAgentPetVoiceWake => AccessibilityContent::new_without_help(
+                "切换桌宠语音唤醒芭乐",
+                WarpA11yRole::MenuItemRole,
+            ),
+            AgentPanelAction::TriggerVoiceWakeManual => AccessibilityContent::new_without_help(
+                "手动唤醒听写",
+                WarpA11yRole::MenuItemRole,
+            ),
+            AgentPanelAction::ToggleAgentPetVcam => {
+                AccessibilityContent::new_without_help(
+                    "切换桌宠会议摄像头",
+                    WarpA11yRole::MenuItemRole,
+                )
+            }
+            AgentPanelAction::DismissPetAttention => {
+                AccessibilityContent::new_without_help("关闭桌宠提示", WarpA11yRole::ButtonRole)
             }
             AgentPanelAction::ToggleAddMenu
             | AgentPanelAction::OpenFilesModal
@@ -4576,6 +4958,7 @@ impl TypedActionView for AgentPanelView {
             | AgentPanelAction::ArchiveActiveSession
             | AgentPanelAction::ExpandAllProjects
             | AgentPanelAction::CollapseAllProjects
+            | AgentPanelAction::OpenMemoryVault
             | AgentPanelAction::SetChatsSort(_)
             | AgentPanelAction::RestoreSession(_)
             | AgentPanelAction::DeleteSession(_) => {
@@ -4686,6 +5069,7 @@ mod tests {
             event_cursor: 0,
             polling_session: false,
             input_focused: false,
+            pet_composer_listening: false,
             pending_send: false,
             run_started_at: None,
             projects,

@@ -42,12 +42,12 @@ fn normalized_presence(online: bool, raw: &str) -> &'static str {
     }
 }
 
-fn presence_label(presence: &str) -> &'static str {
+fn presence_label(presence: &str) -> String {
     match presence {
-        "online" => "在线",
-        "recently_online" => "最近在线",
-        "offline" => "离线",
-        _ => "状态未知",
+        "online" => wormhole_i18n::t("chat.presence.online"),
+        "recently_online" => wormhole_i18n::t("chat.presence.recently_online"),
+        "offline" => wormhole_i18n::t("chat.presence.offline"),
+        _ => wormhole_i18n::t("chat.presence.unknown"),
     }
 }
 
@@ -125,8 +125,8 @@ impl ChatHeaderView {
             selection,
             shell_state,
             font,
-            title: "选择左侧终端".into(),
-            status: "从列表中选择会话".into(),
+            title: wormhole_i18n::t("chat.header.select_device"),
+            status: wormhole_i18n::t("chat.header.select_from_list"),
             online: false,
             presence: "unknown".into(),
             peer_endpoint: String::new(),
@@ -199,7 +199,7 @@ impl ChatHeaderView {
 
         if let Some(pending) = pending {
             self.title = pending.title;
-            self.status = "正在打开会话…".into();
+            self.status = wormhole_i18n::t("chat.header.opening");
             self.presence = pending.presence;
             self.online = self.presence == "online";
             self.os = pending.os;
@@ -213,8 +213,8 @@ impl ChatHeaderView {
         }
 
         if selected.is_none() {
-            self.title = "选择左侧终端".into();
-            self.status = "从列表中选择会话".into();
+            self.title = wormhole_i18n::t("chat.header.select_device");
+            self.status = wormhole_i18n::t("chat.header.select_from_list");
             self.online = false;
             self.presence = "unknown".into();
             self.peer_endpoint.clear();
@@ -331,7 +331,7 @@ impl ChatHeaderView {
             Some(id) => id,
             None => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("请先选择会话", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
                 }
                 ctx.notify();
                 return;
@@ -344,7 +344,7 @@ impl ChatHeaderView {
             .unwrap_or_else(|_| "idle".into());
         if phase == "idle" && !self.online {
             if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast("终端离线，无法发起视频通话", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.toast.peer_offline_video"), StatusTone::Muted);
             }
             ctx.notify();
             return;
@@ -365,7 +365,7 @@ impl ChatHeaderView {
                 view.status = video_status_to_header_line(&status.phase, view.online);
                 if status.phase == "ringing" {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("正在视频呼叫…", StatusTone::Neutral);
+                        state.show_toast(wormhole_i18n::t("chat.toast.video_ringing"), StatusTone::Neutral);
                     }
                 } else if status.phase == "active" && status.peer_live {
                     let peer = view.peer_endpoint.trim().to_string();
@@ -378,7 +378,7 @@ impl ChatHeaderView {
                     }
                 } else if status.phase == "idle" {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("视频通话已结束", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.call_ended"), StatusTone::Muted);
                         state.voice_live_peer = None;
                     }
                 }
@@ -452,7 +452,7 @@ impl ChatHeaderView {
             Some(id) => id,
             None => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("请先选择会话", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
                 }
                 ctx.notify();
                 return;
@@ -465,7 +465,7 @@ impl ChatHeaderView {
             .unwrap_or_else(|_| "idle".into());
         if phase == "idle" && !self.online {
             if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast("终端离线，无法发起语音通话", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.toast.peer_offline_voice"), StatusTone::Muted);
             }
             ctx.notify();
             return;
@@ -486,7 +486,7 @@ impl ChatHeaderView {
                 view.status = voice_status_to_header_line(&status.phase, view.online);
                 if status.phase == "ringing" {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("正在呼叫…", StatusTone::Neutral);
+                        state.show_toast(wormhole_i18n::t("chat.toast.call_ringing"), StatusTone::Neutral);
                     }
                 } else if status.phase == "active" && status.peer_live {
                     let peer = view.peer_endpoint.trim().to_string();
@@ -499,7 +499,7 @@ impl ChatHeaderView {
                     }
                 } else if status.phase == "idle" {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("语音通话已结束", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.call_ended"), StatusTone::Muted);
                         state.voice_live_peer = None;
                     }
                 }
@@ -567,7 +567,7 @@ impl ChatHeaderView {
                     apply_voice_status(&shell_state, &status);
                     view.status = voice_status_to_header_line(&status.phase, view.online);
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("已拒绝来电", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.call_declined"), StatusTone::Muted);
                     }
                     view.poll_voice_status(&conv_id, ctx);
                 }
@@ -587,7 +587,7 @@ impl ChatHeaderView {
             Some(id) => id,
             None => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("请先选择会话", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
                 }
                 ctx.notify();
                 return;
@@ -602,7 +602,7 @@ impl ChatHeaderView {
             async move {
                 let picked = tokio::task::spawn_blocking(|| {
                     rfd::FileDialog::new()
-                        .set_title("选择聊天壁纸")
+                        .set_title(wormhole_i18n::t("chat.wallpaper.picker_title"))
                         .add_filter("图片", &["png", "jpg", "jpeg", "webp", "gif", "bmp"])
                         .pick_file()
                 })
@@ -617,7 +617,7 @@ impl ChatHeaderView {
                     install_chat_wallpaper_from_path(&data_dir, &conv_id, path.as_path()).await?;
                 let rel = prefs
                     .wallpaper_path(&conv_id)
-                    .ok_or_else(|| "壁纸路径缺失".to_string())?;
+                    .ok_or_else(|| wormhole_i18n::t("chat.wallpaper.path_missing"))?;
                 let abs = wormhole_desktop_core::chat_wallpaper_storage::wallpaper_abs_path(
                     &data_dir, rel,
                 );
@@ -629,7 +629,7 @@ impl ChatHeaderView {
                     if insert_wallpaper_asset(ctx, &conv_id, bytes).is_ok() {
                         view.has_custom_wallpaper = true;
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.show_toast("壁纸已更新", StatusTone::Success);
+                            state.show_toast(wormhole_i18n::t("chat.wallpaper.updated"), StatusTone::Success);
                             state.bump_wallpaper_tick();
                             state.bump_prefs_tick();
                         }
@@ -639,7 +639,13 @@ impl ChatHeaderView {
                 Ok(None) => {}
                 Err(err) => {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast(format!("无法设置壁纸: {err}"), StatusTone::Danger);
+                        state.show_toast(
+                            wormhole_i18n::t_args(
+                                "chat.wallpaper.set_failed",
+                                &[("err", &err.to_string())],
+                            ),
+                            StatusTone::Danger,
+                        );
                     }
                     ctx.notify();
                 }
@@ -667,7 +673,7 @@ impl ChatHeaderView {
                 Ok(_) => {
                     view.has_custom_wallpaper = false;
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("已恢复默认壁纸", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.wallpaper.restored"), StatusTone::Muted);
                         state.bump_wallpaper_tick();
                         state.bump_prefs_tick();
                     }
@@ -675,7 +681,13 @@ impl ChatHeaderView {
                 }
                 Err(err) => {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast(format!("无法恢复壁纸: {err}"), StatusTone::Danger);
+                        state.show_toast(
+                            wormhole_i18n::t_args(
+                                "chat.wallpaper.clear_failed",
+                                &[("err", &err.to_string())],
+                            ),
+                            StatusTone::Danger,
+                        );
                     }
                     ctx.notify();
                 }
@@ -787,7 +799,7 @@ impl ChatHeaderView {
     }
 
     fn avatar_label(&self) -> String {
-        if self.title == "选择左侧终端" {
+        if self.title == wormhole_i18n::t("chat.header.select_device") {
             return "WH".to_string();
         }
         if !self.os.is_empty() {
@@ -893,6 +905,8 @@ impl View for ChatHeaderView {
                 .with_min_height(TG_AVATAR_SM_SIZE)
                 .finish(),
         )
+        .with_automation_label("聊天信息")
+        .with_automation_id("chat:header_info")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(ChatHeaderAction::OpenProfileFromInfo);
             DispatchEventResult::StopPropagation
@@ -1029,20 +1043,20 @@ impl TypedActionView for ChatHeaderView {
                 let peer = self.peer_endpoint.trim().to_string();
                 if peer.is_empty() {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("当前会话没有可连接的终端", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.no_rdp_peer"), StatusTone::Muted);
                     }
                     ctx.notify();
                     return;
                 }
                 if !self.online {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("终端离线，无法打开远程桌面", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.peer_offline_rdp"), StatusTone::Muted);
                     }
                     ctx.notify();
                     return;
                 }
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("正在打开远程桌面…", StatusTone::Neutral);
+                    state.show_toast(wormhole_i18n::t("chat.toast.opening_rdp"), StatusTone::Neutral);
                 }
                 ctx.emit(ChatHeaderEvent::OpenRemoteDesktop { peer });
                 self.refresh_from_selection(ctx);
@@ -1093,7 +1107,7 @@ impl TypedActionView for ChatHeaderView {
                 }
                 let Some(conv_id) = selected else {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("请先选择会话", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
                     }
                     ctx.notify();
                     return;
@@ -1113,17 +1127,20 @@ impl TypedActionView for ChatHeaderView {
                     |view, output, ctx| match output {
                         Ok(_) => {
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("已开启消息免打扰", StatusTone::Success);
+                                state.show_toast(wormhole_i18n::t("chat.toast.mute_on"), StatusTone::Success);
                                 state.bump_prefs_tick();
                             }
-                            view.status = "已静音".into();
+                            view.status = wormhole_i18n::t("chat.muted_status");
                             view.online = false;
                             ctx.notify();
                         }
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.show_toast(
-                                    format!("无法更新免打扰: {err}"),
+                                    wormhole_i18n::t_args(
+                                        "chat.toast.mute_update_failed",
+                                        &[("err", &err.to_string())],
+                                    ),
                                     StatusTone::Danger,
                                 );
                             }
@@ -1135,7 +1152,7 @@ impl TypedActionView for ChatHeaderView {
             }
             ChatHeaderAction::ClearHistory => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("历史记录已清空（演示）", StatusTone::Muted);
+                    state.show_toast(wormhole_i18n::t("chat.history_cleared"), StatusTone::Muted);
                     state.header_menu_open = false;
                     state.message_tick += 1;
                 }
@@ -1148,7 +1165,7 @@ impl TypedActionView for ChatHeaderView {
                 }
                 let Some(conv_id) = selected else {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("请先选择会话", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
                     }
                     ctx.notify();
                     return;
@@ -1171,7 +1188,7 @@ impl TypedActionView for ChatHeaderView {
                                 *guard = None;
                             }
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("已删除对话", StatusTone::Muted);
+                                state.show_toast(wormhole_i18n::t("chat.toast.conversation_deleted"), StatusTone::Muted);
                                 state.clear_pending_open();
                                 state.bump_selection_tick();
                                 state.bump_prefs_tick();
@@ -1186,7 +1203,13 @@ impl TypedActionView for ChatHeaderView {
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state
-                                    .show_toast(format!("无法删除对话: {err}"), StatusTone::Danger);
+                                    .show_toast(
+                                        wormhole_i18n::t_args(
+                                            "chat.toast.delete_failed",
+                                            &[("err", &err.to_string())],
+                                        ),
+                                        StatusTone::Danger,
+                                    );
                             }
                             ctx.notify();
                         }

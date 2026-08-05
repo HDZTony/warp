@@ -70,6 +70,8 @@ pub struct ChatShellState {
     /// Last failure from opening a placeholder conversation (shown under compose).
     pub open_error: Option<String>,
     pub pending_outgoing: Vec<PendingOutgoingMessage>,
+    /// When set, the open thread scrolls to this message id after load.
+    pub pending_jump_message_id: Option<String>,
 }
 
 impl Default for ChatShellState {
@@ -110,6 +112,7 @@ impl Default for ChatShellState {
             selected_summary: None,
             open_error: None,
             pending_outgoing: Vec::new(),
+            pending_jump_message_id: None,
         }
     }
 }
@@ -291,6 +294,15 @@ impl ChatShellState {
         if self.open_error.take().is_some() {
             self.bump_selection_tick();
         }
+    }
+
+    pub fn set_pending_jump_message(&mut self, message_id: impl Into<String>) {
+        self.pending_jump_message_id = Some(message_id.into());
+        self.bump_selection_tick();
+    }
+
+    pub fn take_pending_jump_message(&mut self) -> Option<String> {
+        self.pending_jump_message_id.take()
     }
 }
 

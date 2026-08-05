@@ -359,12 +359,16 @@ impl LoginModalView {
         } else {
             theme::border()
         };
+        let label = label.to_string();
+        let automation_id = format!("login:btn:{label}");
         Container::new(
             EventHandler::new(
-                ui_text::body(label.to_string(), self.font)
+                ui_text::body(label.clone(), self.font)
                     .with_color(text_color)
                     .finish(),
             )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -379,11 +383,15 @@ impl LoginModalView {
     }
 
     fn link_button(&self, label: &str, action: LoginModalAction) -> Box<dyn Element> {
+        let text = label.to_string();
+        let automation_id = format!("login:link:{text}");
         EventHandler::new(
-            ui_text::body(label.to_string(), self.font)
+            ui_text::body(text.clone(), self.font)
                 .with_color(theme::accent())
                 .finish(),
         )
+        .with_automation_label(text)
+        .with_automation_id(automation_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -430,7 +438,11 @@ impl LoginModalView {
             .finish(),
         );
 
+        let row_label = label.to_string();
+        let automation_id = format!("login:checkbox:{row_label}");
         EventHandler::new(row.finish())
+            .with_automation_label(row_label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -440,14 +452,16 @@ impl LoginModalView {
 
     fn login_options_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
+        let remember = wormhole_i18n::t("login.option.remember");
+        let auto_login = wormhole_i18n::t("login.option.auto_login");
         col.add_child(self.checkbox_row(
-            "记住账号密码",
+            &remember,
             self.remember,
             LoginModalAction::ToggleRemember,
         ));
         col.add_child(
             Container::new(self.checkbox_row(
-                "自动登录",
+                &auto_login,
                 self.auto_login,
                 LoginModalAction::ToggleAutoLogin,
             ))
@@ -462,32 +476,36 @@ impl LoginModalView {
     fn dialog(&self) -> Box<dyn Element> {
         let is_register = self.mode == AuthMode::Register;
         let title = if is_register {
-            "注册 Wormhole"
+            wormhole_i18n::t("login.title.sign_up")
         } else {
-            "登录 Wormhole"
+            wormhole_i18n::t("login.title.sign_in")
         };
         let description = if is_register {
-            "创建账号后绑定本机设备身份，即可使用 P2P 集群、聊天与同步。"
+            wormhole_i18n::t("login.desc.sign_up")
         } else {
-            "登录后绑定本机设备身份，可使用 P2P 集群、聊天与同步。"
+            wormhole_i18n::t("login.desc.sign_in")
         };
         let submit_label = if self.busy {
             if is_register {
-                "注册中…"
+                wormhole_i18n::t("login.action.signing_up")
             } else {
-                "登录中…"
+                wormhole_i18n::t("login.action.signing_in")
             }
         } else if is_register {
-            "注册"
+            wormhole_i18n::t("login.action.sign_up")
         } else {
-            "登录"
+            wormhole_i18n::t("login.action.sign_in")
         };
         let switch_prefix = if is_register {
-            "已有账号？"
+            wormhole_i18n::t("login.switch.have_account")
         } else {
-            "没有账号？"
+            wormhole_i18n::t("login.switch.no_account")
         };
-        let switch_label = if is_register { "登录" } else { "注册" };
+        let switch_label = if is_register {
+            wormhole_i18n::t("login.action.sign_in")
+        } else {
+            wormhole_i18n::t("login.action.sign_up")
+        };
 
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(
@@ -504,8 +522,17 @@ impl LoginModalView {
             .with_vertical_margin(8.0)
             .finish(),
         );
+        let email_label = wormhole_i18n::t("login.field.email");
+        let password_label = wormhole_i18n::t("login.field.password");
+        let confirm_label = wormhole_i18n::t("login.field.confirm_password");
+        let cancel_label = wormhole_i18n::t("login.action.cancel");
+        let resend_label = if self.busy {
+            wormhole_i18n::t("login.action.sending")
+        } else {
+            wormhole_i18n::t("login.action.resend")
+        };
         col.add_child(self.field_block(
-            "邮箱",
+            &email_label,
             &self.email,
             &self.email_field.marked_text,
             "name@example.com",
@@ -521,7 +548,7 @@ impl LoginModalView {
             LoginModalAction::FocusEmail
         };
         col.add_child(self.field_block(
-            "密码",
+            &password_label,
             &self.password,
             &self.password_field.marked_text,
             "••••••••",
@@ -533,7 +560,7 @@ impl LoginModalView {
         ));
         if is_register {
             col.add_child(self.field_block(
-                "确认密码",
+                &confirm_label,
                 &self.confirm_password,
                 &self.confirm_password_field.marked_text,
                 "••••••••",
@@ -560,11 +587,7 @@ impl LoginModalView {
         if self.pending_confirmation {
             col.add_child(
                 Container::new(self.link_button(
-                    if self.busy {
-                        "发送中…"
-                    } else {
-                        "重新发送确认邮件"
-                    },
+                    &resend_label,
                     LoginModalAction::ResendConfirmation,
                 ))
                 .with_vertical_margin(8.0)
@@ -576,13 +599,13 @@ impl LoginModalView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_alignment(MainAxisAlignment::End)
             .with_main_axis_size(MainAxisSize::Max);
-        actions.add_child(self.action_button("取消", LoginModalAction::Close, false));
+        actions.add_child(self.action_button(&cancel_label, LoginModalAction::Close, false));
         actions.add_child(
             Container::new(Flex::column().finish())
                 .with_horizontal_margin(8.0)
                 .finish(),
         );
-        actions.add_child(self.action_button(submit_label, LoginModalAction::Submit, true));
+        actions.add_child(self.action_button(&submit_label, LoginModalAction::Submit, true));
         col.add_child(
             Container::new(actions.finish())
                 .with_vertical_margin(14.0)
@@ -616,7 +639,7 @@ impl LoginModalView {
                 .finish(),
         );
         switch_row.add_child(
-            Container::new(self.link_button(switch_label, LoginModalAction::ToggleMode))
+            Container::new(self.link_button(&switch_label, LoginModalAction::ToggleMode))
                 .with_horizontal_margin(4.0)
                 .finish(),
         );
@@ -630,6 +653,8 @@ impl LoginModalView {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                 .finish(),
         )
+        .with_automation_label("登录对话框")
+        .with_automation_id("login:dialog")
         .with_always_handle()
         .on_keydown(|_, _, keystroke| {
             if Self::consumes_shell_navigation(keystroke) {
@@ -945,6 +970,8 @@ impl View for LoginModalView {
         Expanded::new(
             1.0,
             EventHandler::new(scrim)
+                .with_automation_label("关闭登录")
+                .with_automation_id("login:scrim")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(LoginModalAction::Close);
                     DispatchEventResult::StopPropagation

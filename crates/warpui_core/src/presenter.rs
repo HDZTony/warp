@@ -17,6 +17,7 @@ use crate::platform::Cursor;
 use crate::scene::{Scene, ZIndex};
 use crate::text_layout::LayoutCache;
 use crate::zoom::Scale;
+use crate::ui_automation::AutomationCache;
 use crate::{
     fonts, Action, AppContext, ClipBounds, EntityId, TaskId, View, ViewHandle, WindowId,
     WindowInvalidation,
@@ -31,6 +32,7 @@ pub struct Presenter {
     parents: HashMap<EntityId, EntityId>,
     text_layout_cache: LayoutCache,
     position_cache: PositionCache,
+    automation_cache: AutomationCache,
     highlighted_view: Option<EntityId>,
 }
 
@@ -53,6 +55,9 @@ pub struct PaintContext<'a> {
     pub font_cache: &'a FontCache,
     pub text_layout_cache: &'a LayoutCache,
     pub position_cache: &'a mut PositionCache,
+    pub automation_cache: &'a mut AutomationCache,
+    /// View currently being painted (for automation target attribution).
+    pub painting_view_id: Option<EntityId>,
     pub scene: &'a mut Scene,
     pub window_size: Vector2F,
     /// The maximum dimension size in pixels, either width or height, for a 2D-texture. `None`
@@ -307,6 +312,7 @@ impl Presenter {
             window_id,
             rendered_views: HashMap::new(),
             parents: HashMap::new(),
+            automation_cache: AutomationCache::default(),
             scene: None,
             text_layout_cache: LayoutCache::new(),
             position_cache: PositionCache::default(),
@@ -338,6 +344,7 @@ impl Presenter {
         ctx: &mut AppContext,
     ) -> Rc<Scene> {
         self.position_cache.clear_single_frame_positions();
+        self.automation_cache.clear();
 
         // Scale the window size by the zoom factor. We implement zoom by faking a window size that
         // is proportionally smaller based on the current zoom factor. Once we build up a scene
@@ -419,6 +426,8 @@ impl Presenter {
                 text_layout_cache: &self.text_layout_cache,
                 rendered_views: &mut self.rendered_views,
                 position_cache: &mut self.position_cache,
+                automation_cache: &mut self.automation_cache,
+                painting_view_id: None,
                 scene: &mut scene,
                 window_size,
                 max_texture_dimension_2d,
@@ -544,6 +553,10 @@ impl Presenter {
         &self.position_cache
     }
 
+    pub fn automation_cache(&self) -> &AutomationCache {
+        &self.automation_cache
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn position_cache_mut(&mut self) -> &mut PositionCache {
         &mut self.position_cache
@@ -624,7 +637,9 @@ impl PaintContext<'_> {
                 }
             }
             self.views_painted.insert(view_id);
+            let previous_view = self.painting_view_id.replace(view_id);
             tree.paint(origin, self, app);
+            self.painting_view_id = previous_view;
             self.rendered_views.insert(view_id, tree);
         }
     }

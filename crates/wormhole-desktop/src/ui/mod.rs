@@ -16,6 +16,7 @@ pub mod hud_avatar_panel;
 pub mod hud_effects;
 pub mod icons;
 pub mod login_modal;
+pub mod memory_view;
 pub mod multiline_input;
 pub mod panel_primitives;
 pub mod plugins_view;

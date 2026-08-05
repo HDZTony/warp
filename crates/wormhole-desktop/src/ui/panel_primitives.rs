@@ -34,6 +34,8 @@ pub const AGENT_THREAD_BOTTOM_PAD: f32 = 220.0;
 /// Position a popover / context menu at viewport coordinates (matches `devices_view`).
 pub fn positioned_context_menu(x: f32, y: f32, panel: Box<dyn Element>) -> Box<dyn Element> {
     let panel = EventHandler::new(panel)
+        .with_automation_label("上下文菜单")
+        .with_automation_id("shell:context_menu")
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish();
 
@@ -184,9 +186,9 @@ pub fn chat_item_active_bg() -> ColorU {
     ColorU::new(60, 58, 73, 255)
 }
 
-/// `.chat-sidebar-search-wrap` — canvas 65% + panel.
+/// `.chat-sidebar-search-wrap` — void canvas fill for contrast on `panel`.
 pub fn chat_sidebar_search_bg() -> ColorU {
-    ColorU::new(20, 18, 26, 255)
+    ColorU::new(8, 7, 11, 255)
 }
 
 /// Bordered search pill (`.chat-sidebar-search-wrap` / `.agent-search-wrap` / thread-search).
@@ -239,6 +241,8 @@ pub fn popover_shell_with_radius(
         .with_width(width)
         .finish(),
     )
+    .with_automation_label("弹出菜单")
+    .with_automation_id("shell:popover")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish()
 }
@@ -266,10 +270,11 @@ where
 {
     let title = title.into();
     let hint = hint.into();
+    let automation_label = title.clone();
     let text_col = Flex::column()
         .with_cross_axis_alignment(CrossAxisAlignment::Start)
         .with_child(
-            ui_text::body(title, font)
+            ui_text::body(title.clone(), font)
                 .with_color(theme::text())
                 .finish(),
         )
@@ -285,7 +290,13 @@ where
         .with_child(icon)
         .with_child(Container::new(text_col).with_margin_left(12.0).finish())
         .finish();
-    Container::new(EventHandler::new(row).on_left_mouse_down(on_click).finish())
+    Container::new(
+        EventHandler::new(row)
+            .with_automation_label(automation_label)
+            .with_automation_id(format!("shell:popover:{title}"))
+            .on_left_mouse_down(on_click)
+            .finish(),
+    )
         .with_padding_left(14.0)
         .with_padding_right(14.0)
         .with_padding_top(10.0)
@@ -303,13 +314,14 @@ pub fn popover_icon_label_option<F>(
 where
     F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
 {
+    let label = label.into();
     let row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Min)
         .with_child(icon)
         .with_child(
             Container::new(
-                ui_text::body(label.into(), font)
+                ui_text::body(label.clone(), font)
                     .with_color(theme::text())
                     .finish(),
             )
@@ -317,7 +329,14 @@ where
             .finish(),
         )
         .finish();
-    Container::new(EventHandler::new(row).on_left_mouse_down(on_click).finish())
+    let automation_label = label.clone();
+    Container::new(
+        EventHandler::new(row)
+            .with_automation_label(automation_label)
+            .with_automation_id(format!("shell:popover:{label}"))
+            .on_left_mouse_down(on_click)
+            .finish(),
+    )
         .with_padding_left(14.0)
         .with_padding_right(14.0)
         .with_padding_top(10.0)
@@ -356,11 +375,14 @@ where
                 .finish(),
         );
     }
+    let item_label = label.to_string();
     EventHandler::new(
         Container::new(row.finish())
             .with_uniform_padding(10.0)
             .finish(),
     )
+    .with_automation_label(item_label.clone())
+    .with_automation_id(format!("shell:menu:{item_label}"))
     .on_left_mouse_down(on_click)
     .finish()
 }

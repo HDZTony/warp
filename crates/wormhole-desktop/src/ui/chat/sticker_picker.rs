@@ -83,6 +83,8 @@ impl StickerPickerView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
             .finish(),
         )
+        .with_automation_label(emoji)
+        .with_automation_id(format!("chat:emoji:{emoji}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(StickerPickerAction::InsertEmoji(emoji));
             DispatchEventResult::StopPropagation

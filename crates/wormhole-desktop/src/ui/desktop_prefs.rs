@@ -48,6 +48,13 @@ pub struct DesktopUiPrefs {
     pub auth_email: Option<String>,
     #[serde(default)]
     pub auth_saved_password: Option<String>,
+    /// UI language preference: `system` (default), `zh-CN`, or `en`.
+    #[serde(default = "default_ui_language")]
+    pub ui_language: Option<String>,
+}
+
+fn default_ui_language() -> Option<String> {
+    Some(wormhole_i18n::LOCALE_SYSTEM.to_string())
 }
 
 impl Default for DesktopUiPrefs {
@@ -61,8 +68,27 @@ impl Default for DesktopUiPrefs {
             auth_auto_login: false,
             auth_email: None,
             auth_saved_password: None,
+            ui_language: default_ui_language(),
         }
     }
+}
+
+/// Apply prefs language (or system) to the process-wide `wormhole-i18n` locale.
+pub fn apply_ui_locale(prefs: &DesktopUiPrefs) {
+    let locale = wormhole_i18n::resolve_locale(
+        prefs.ui_language.as_deref(),
+        &wormhole_i18n::system_locale_tag(),
+    );
+    wormhole_i18n::set_locale(locale);
+}
+
+/// Persist `ui_language` and refresh the process locale.
+pub fn set_ui_language(data_dir: &Path, language: &str) -> Result<(), String> {
+    update(data_dir, |prefs| {
+        prefs.ui_language = Some(language.to_string());
+    })?;
+    apply_ui_locale(&load(data_dir));
+    Ok(())
 }
 
 /// Snapshot of login-modal remember / auto-login prefs.
@@ -249,11 +275,15 @@ pub fn load(data_dir: &Path) -> DesktopUiPrefs {
 }
 
 pub fn save(data_dir: &Path, prefs: &DesktopUiPrefs) -> Result<(), String> {
-    std::fs::create_dir_all(data_dir).map_err(|err| format!("无法创建数据目录: {err}"))?;
-    let bytes =
-        serde_json::to_vec_pretty(prefs).map_err(|err| format!("无法序列化桌面 UI 偏好: {err}"))?;
-    std::fs::write(data_dir.join(PREFS_FILE), bytes)
-        .map_err(|err| format!("无法写入桌面 UI 偏好: {err}"))
+    std::fs::create_dir_all(data_dir).map_err(|err| {
+        wormhole_i18n::t_args("error.prefs_mkdir", &[("err", &err.to_string())])
+    })?;
+    let bytes = serde_json::to_vec_pretty(prefs).map_err(|err| {
+        wormhole_i18n::t_args("error.prefs_serialize", &[("err", &err.to_string())])
+    })?;
+    std::fs::write(data_dir.join(PREFS_FILE), bytes).map_err(|err| {
+        wormhole_i18n::t_args("error.prefs_write", &[("err", &err.to_string())])
+    })
 }
 
 pub fn update(data_dir: &Path, mutate: impl FnOnce(&mut DesktopUiPrefs)) -> Result<(), String> {

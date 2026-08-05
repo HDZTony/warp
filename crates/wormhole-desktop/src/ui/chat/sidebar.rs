@@ -19,17 +19,23 @@ use crate::ui::device_gate_view::fetch_cluster_for_ui;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
     chat_item_active_bg, chat_search_pill, chat_sidebar_search_bg, positioned_context_menu,
-    tg_avatar, StatusTone, HUD_RADIUS,
+    tg_avatar, StatusTone, AGENT_ROW_RADIUS, HUD_RADIUS,
 };
 use crate::ui::text_field_input::{
-    render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click, CaretBlink,
-    CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
+    render_search_field_with_caret, sync_caret_blink, wrap_text_field_focus_on_click_with_label,
+    CaretBlink, CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
-    chat_config, chat_create_cluster_group, chat_list_conversations, chat_start_conversation,
-    ChatConversationDto, ChatGroupMemberDto, CreateClusterGroupParams, StartChatConversationParams,
+    chat_config, chat_create_cluster_group, chat_list_conversations, chat_search_sidebar,
+    chat_start_contact_conversation, chat_start_conversation, ChatConversationDto,
+    ChatGroupMemberDto, ChatSidebarHitDto, CreateClusterGroupParams, SearchChatSidebarParams,
+    StartChatContactParams, StartChatConversationParams,
+};
+use wormhole_desktop_core::chat_contacts::{
+    aggregate_cluster_contacts_by_account, chat_contacts_list_manual, merge_contact_rows,
+    ContactDto,
 };
 use wormhole_desktop_core::chat_ui_prefs::{
     load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
@@ -44,6 +50,86 @@ pub const TG_SIDEBAR_AVATAR: f32 = 46.0;
 const CHAT_ITEM_INNER_WIDTH: f32 = 276.0;
 const CTX_MENU_WIDTH: f32 = 160.0;
 const SIDEBAR_COL_WIDTH: f32 = 300.0;
+/// Header: 8px×2 padding + 34px menu + 6px gap → remaining search pill width.
+const SEARCH_PILL_WIDTH: f32 = SIDEBAR_COL_WIDTH - 16.0 - 34.0 - 6.0;
+
+/// Telegram-style search categories shown while the search field is focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchCategory {
+    Terminal,
+    Group,
+    Contact,
+    Image,
+    Video,
+    File,
+    Post,
+}
+
+impl SearchCategory {
+    const ALL: [SearchCategory; 7] = [
+        SearchCategory::Terminal,
+        SearchCategory::Group,
+        SearchCategory::Contact,
+        SearchCategory::Image,
+        SearchCategory::Video,
+        SearchCategory::File,
+        SearchCategory::Post,
+    ];
+
+    fn automation_id(self) -> &'static str {
+        match self {
+            Self::Terminal => "chat:search_cat:terminals",
+            Self::Group => "chat:search_cat:groups",
+            Self::Contact => "chat:search_cat:contacts",
+            Self::Image => "chat:search_cat:images",
+            Self::Video => "chat:search_cat:videos",
+            Self::File => "chat:search_cat:files",
+            Self::Post => "chat:search_cat:posts",
+        }
+    }
+
+    fn i18n_key(self) -> &'static str {
+        match self {
+            Self::Terminal => "chat.sidebar.tab.terminals",
+            Self::Group => "chat.sidebar.tab.groups",
+            Self::Contact => "chat.sidebar.tab.contacts",
+            Self::Image => "chat.sidebar.tab.images",
+            Self::Video => "chat.sidebar.tab.videos",
+            Self::File => "chat.sidebar.tab.files",
+            Self::Post => "chat.sidebar.tab.posts",
+        }
+    }
+
+    fn is_media(self) -> bool {
+        matches!(
+            self,
+            Self::Image | Self::Video | Self::File | Self::Post
+        )
+    }
+
+    fn sidebar_api_category(self) -> Option<&'static str> {
+        match self {
+            Self::Image => Some("image"),
+            Self::Video => Some("video"),
+            Self::File => Some("document"),
+            Self::Post => Some("posts"),
+            _ => None,
+        }
+    }
+}
+
+/// In-progress pointer drag on the search category bar (pan, not select-until-up).
+#[derive(Debug, Clone)]
+struct CategoryDrag {
+    down_x: f32,
+    scroll_at_down: f32,
+    moved: bool,
+    pending_select: Option<SearchCategory>,
+}
+
+const CATEGORY_DRAG_THRESHOLD_PX: f32 = 4.0;
+const CATEGORY_WHEEL_STEP_PX: f32 = 48.0;
+const CATEGORY_WHEEL_PRECISE_SCALE: f32 = 24.0;
 
 fn presence_state(online: bool, raw: &str) -> String {
     if online || raw == "online" {
@@ -57,6 +143,35 @@ fn presence_state(online: bool, raw: &str) -> String {
     }
 }
 
+fn sidebar_row_from_hit(hit: ChatSidebarHitDto) -> SidebarRow {
+    let preview = hit
+        .attachment_name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| hit.body.clone());
+    let os = match hit.attachment_kind.as_deref() {
+        Some("image") => "IMG",
+        Some("video") => "VID",
+        Some("document") => "DOC",
+        _ => "POST",
+    };
+    SidebarRow {
+        id: hit.conv_id.clone(),
+        title: hit.conv_title,
+        preview,
+        time: format_message_time_pub(hit.sent_at),
+        online: false,
+        presence: "unknown".into(),
+        unread: 0,
+        os: os.into(),
+        muted: false,
+        kind: SidebarRowKind::MediaHit,
+        message_id: Some(hit.message_id),
+        peer_user_id: None,
+        peer_endpoints: Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone)]
 enum ContextItemStyle {
     Normal,
@@ -67,10 +182,20 @@ enum ContextItemStyle {
 #[derive(Debug, Clone)]
 pub enum ChatSidebarAction {
     Select(String),
+    SelectHit { conv_id: String, message_id: String },
     SearchEdit(TextFieldEditAction),
     FocusSearch,
     ActivateSearch,
     BlurSearch,
+    SelectSearchCategory(SearchCategory),
+    CategoryPointerDown {
+        x: f32,
+        select: Option<SearchCategory>,
+    },
+    CategoryPointerMove {
+        x: f32,
+    },
+    CategoryPointerUp,
     OpenContextMenu { id: String, x: f32, y: f32 },
     CloseContextMenu,
     ContextOpen,
@@ -95,6 +220,16 @@ pub enum ChatSidebarEvent {
     OpenChannel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarRowKind {
+    Terminal,
+    Group,
+    Contact,
+    Channel,
+    MediaHit,
+}
+
+#[derive(Debug, Clone)]
 struct SidebarRow {
     id: String,
     title: String,
@@ -106,6 +241,12 @@ struct SidebarRow {
     /// OS label for avatar initials (`PC` / `iOS` / …).
     os: String,
     muted: bool,
+    kind: SidebarRowKind,
+    /// For media/post hits: jump target message id.
+    message_id: Option<String>,
+    /// Contact book rows carry peer user id for starting a contact DM.
+    peer_user_id: Option<String>,
+    peer_endpoints: Vec<(String, Vec<String>)>,
 }
 
 pub struct ChatSidebarView {
@@ -115,6 +256,8 @@ pub struct ChatSidebarView {
     font: FamilyId,
     emoji_font: FamilyId,
     rows: Vec<SidebarRow>,
+    hit_rows: Vec<SidebarRow>,
+    contacts: Vec<ContactDto>,
     conversations: Vec<ChatConversationDto>,
     cluster: Option<ClusterStatusDto>,
     remarks: BTreeMap<String, String>,
@@ -123,6 +266,10 @@ pub struct ChatSidebarView {
     search: String,
     search_field: TextFieldState,
     search_focused: bool,
+    search_category: SearchCategory,
+    category_scroll: ClippedScrollStateHandle,
+    category_drag: Option<CategoryDrag>,
+    hit_fetch_generation: u64,
     caret_blink: CaretBlink,
     status: String,
     scroll: ClippedScrollStateHandle,
@@ -150,6 +297,8 @@ impl ChatSidebarView {
             font,
             emoji_font,
             rows: Vec::new(),
+            hit_rows: Vec::new(),
+            contacts: Vec::new(),
             conversations: Vec::new(),
             cluster: None,
             remarks: BTreeMap::new(),
@@ -158,6 +307,10 @@ impl ChatSidebarView {
             search: String::new(),
             search_field: TextFieldState::new(),
             search_focused: false,
+            search_category: SearchCategory::Terminal,
+            category_scroll: ClippedScrollStateHandle::new(),
+            category_drag: None,
+            hit_fetch_generation: 0,
             caret_blink: CaretBlink::new(),
             status: String::new(),
             scroll: ClippedScrollStateHandle::new(),
@@ -232,11 +385,37 @@ impl ChatSidebarView {
                 let ui_prefs = load_chat_ui_prefs(&state.data_dir)
                     .await
                     .unwrap_or_default();
-                (cfg, list, cluster, remarks, ui_prefs)
+                let manual = chat_contacts_list_manual(&state.data_dir)
+                    .await
+                    .unwrap_or_default();
+                let local_endpoint = state
+                    .manager
+                    .node_if_ready()
+                    .map(|n| n.endpoint_id().to_string())
+                    .unwrap_or_default();
+                let contacts = match &cluster {
+                    Ok(status) => {
+                        let local_user_id = status
+                            .nodes
+                            .iter()
+                            .find(|node| node.node_id == status.local_node_id)
+                            .and_then(|node| node.user_id.clone());
+                        let cluster_rows = aggregate_cluster_contacts_by_account(
+                            &status.nodes,
+                            &status.local_node_id,
+                            local_user_id.as_deref(),
+                            &local_endpoint,
+                            &remarks,
+                        );
+                        merge_contact_rows(cluster_rows, manual)
+                    }
+                    Err(_) => merge_contact_rows(Vec::new(), manual),
+                };
+                (cfg, list, cluster, remarks, ui_prefs, contacts)
             },
             |view, output, ctx| {
                 view.refresh_in_flight = false;
-                let (cfg, list, cluster, remarks, ui_prefs) = output;
+                let (cfg, list, cluster, remarks, ui_prefs, contacts) = output;
                 if let Ok(c) = cfg {
                     view.status = c.display_name;
                 }
@@ -248,8 +427,10 @@ impl ChatSidebarView {
                 }
                 view.remarks = remarks;
                 view.ui_prefs = ui_prefs;
+                view.contacts = contacts;
                 view.rows = view.build_rows(conversations, view.cluster.as_ref());
                 view.refresh_selected_summary();
+                view.refresh_category_hits(ctx);
                 ctx.notify();
                 if view.refresh_pending {
                     view.refresh_pending = false;
@@ -262,14 +443,14 @@ impl ChatSidebarView {
     fn create_default_cluster_group(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(cluster) = self.cluster.clone() else {
             if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast("请先加入家庭集群", StatusTone::Danger);
+                state.show_toast(wormhole_i18n::t("error.need_cluster"), StatusTone::Danger);
             }
             ctx.notify();
             return;
         };
         let Some(cluster_id) = cluster.cluster_id.clone() else {
             if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast("请先加入家庭集群", StatusTone::Danger);
+                state.show_toast(wormhole_i18n::t("error.need_cluster"), StatusTone::Danger);
             }
             ctx.notify();
             return;
@@ -293,13 +474,13 @@ impl ChatSidebarView {
             .collect();
         if members.len() < 2 {
             if let Ok(mut state) = self.shell_state.lock() {
-                state.show_toast("集群成员不足，无法建群", StatusTone::Danger);
+                state.show_toast(wormhole_i18n::t("chat.toast.insufficient_members"), StatusTone::Danger);
             }
             ctx.notify();
             return;
         }
         let core = self.core.clone();
-        let title = "集群群聊".to_string();
+        let title = wormhole_i18n::t("chat.cluster_group");
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
@@ -320,13 +501,19 @@ impl ChatSidebarView {
                 Ok(conv) => {
                     view.apply_selection(conv.id, ctx);
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast("已创建群组", StatusTone::Success);
+                        state.show_toast(wormhole_i18n::t("chat.toast.group_created"), StatusTone::Success);
                     }
                     view.refresh(ctx);
                 }
                 Err(err) => {
                     if let Ok(mut state) = view.shell_state.lock() {
-                        state.show_toast(format!("建群失败: {err}"), StatusTone::Danger);
+                        state.show_toast(
+                            wormhole_i18n::t_args(
+                                "chat.toast.group_create_failed",
+                                &[("err", &err.to_string())],
+                            ),
+                            StatusTone::Danger,
+                        );
                     }
                     ctx.notify();
                 }
@@ -415,7 +602,7 @@ impl ChatSidebarView {
         let title = display_name
             .clone()
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "打开会话…".into());
+            .unwrap_or_else(|| wormhole_i18n::t("chat.opening_conversation"));
         let (os, presence) = self
             .cluster
             .as_ref()
@@ -464,7 +651,10 @@ impl ChatSidebarView {
                     Err(err) => {
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.clear_pending_open();
-                            let message = format!("无法开始会话: {err}");
+                            let message = wormhole_i18n::t_args(
+                                "chat.toast.start_conversation_failed",
+                                &[("err", &err.to_string())],
+                            );
                             state.set_open_error(message.clone());
                             state.show_toast(message, StatusTone::Danger);
                         }
@@ -513,17 +703,17 @@ impl ChatSidebarView {
                 conv.title
                     .clone()
                     .or_else(|| conv.peer_display_name.clone())
-                    .unwrap_or_else(|| "联系人".into())
+                    .unwrap_or_else(|| wormhole_i18n::t("chat.label.contact"))
             } else if conv.kind == "channel" {
                 conv.title
                     .clone()
                     .or_else(|| conv.peer_display_name.clone())
-                    .unwrap_or_else(|| "频道".into())
+                    .unwrap_or_else(|| wormhole_i18n::t("chat.label.channel"))
             } else if conv.kind == "cluster_group" {
                 conv.title
                     .clone()
                     .or_else(|| conv.peer_display_name.clone())
-                    .unwrap_or_else(|| "群组".into())
+                    .unwrap_or_else(|| wormhole_i18n::t("chat.label.group"))
             } else {
                 let remark = find_cluster_node(conv, cluster)
                     .and_then(|node| self.remarks.get(&node.node_id).map(String::as_str));
@@ -540,6 +730,12 @@ impl ChatSidebarView {
             let presence = find_cluster_node(conv, cluster)
                 .map(|node| presence_state(node.online, &node.presence_status))
                 .unwrap_or_else(|| "unknown".into());
+            let kind = match conv.kind.as_str() {
+                "contact_direct" => SidebarRowKind::Contact,
+                "cluster_group" => SidebarRowKind::Group,
+                "channel" => SidebarRowKind::Channel,
+                _ => SidebarRowKind::Terminal,
+            };
             rows.push(SidebarRow {
                 id: conv.id.clone(),
                 title,
@@ -550,6 +746,10 @@ impl ChatSidebarView {
                 unread: 0,
                 os: conversation_os_label(conv, cluster),
                 muted: self.ui_prefs.is_muted(&conv.id),
+                kind,
+                message_id: None,
+                peer_user_id: conv.peer_user_id.clone(),
+                peer_endpoints: Vec::new(),
             });
         }
         if let Some(cluster) = cluster {
@@ -578,9 +778,9 @@ impl ChatSidebarView {
                     id: id.clone(),
                     title,
                     preview: if node.online {
-                        "在线 · 等待消息…".into()
+                        wormhole_i18n::t("chat.waiting")
                     } else {
-                        "离线".into()
+                        wormhole_i18n::t("common.offline")
                     },
                     time: String::new(),
                     online: node.online,
@@ -588,6 +788,10 @@ impl ChatSidebarView {
                     unread: 0,
                     os: node.os.clone(),
                     muted: self.ui_prefs.is_muted(&id),
+                    kind: SidebarRowKind::Terminal,
+                    message_id: None,
+                    peer_user_id: None,
+                    peer_endpoints: Vec::new(),
                 });
             }
         }
@@ -602,7 +806,7 @@ impl ChatSidebarView {
         if let Some(cluster) = self.cluster.as_ref() {
             if node_id == cluster.local_node_id {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast("无法给本机发信息", StatusTone::Danger);
+                    state.show_toast(wormhole_i18n::t("chat.toast.cannot_message_self"), StatusTone::Danger);
                 }
                 ctx.notify();
                 return;
@@ -617,7 +821,7 @@ impl ChatSidebarView {
                     .filter(|id| !id.trim().is_empty())
                 else {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                        state.show_toast(wormhole_i18n::t("chat.toast.no_chat_endpoint"), StatusTone::Danger);
                     }
                     ctx.notify();
                     return;
@@ -678,7 +882,7 @@ impl ChatSidebarView {
                         view.rows = view.build_rows(conversations, Some(&cluster));
                         if node_id == cluster.local_node_id {
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("无法给本机发信息", StatusTone::Danger);
+                                state.show_toast(wormhole_i18n::t("chat.toast.cannot_message_self"), StatusTone::Danger);
                             }
                             ctx.notify();
                             return;
@@ -707,7 +911,7 @@ impl ChatSidebarView {
                                 }
                             }
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("未找到该终端", StatusTone::Danger);
+                                state.show_toast(wormhole_i18n::t("chat.toast.device_not_found"), StatusTone::Danger);
                             }
                             ctx.notify();
                             return;
@@ -718,7 +922,7 @@ impl ChatSidebarView {
                             .filter(|id| !id.trim().is_empty())
                         else {
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                                state.show_toast(wormhole_i18n::t("chat.toast.no_chat_endpoint"), StatusTone::Danger);
                             }
                             ctx.notify();
                             return;
@@ -737,7 +941,13 @@ impl ChatSidebarView {
                     }
                     Err(err) => {
                         if let Ok(mut state) = view.shell_state.lock() {
-                            state.show_toast(format!("无法打开聊天: {err}"), StatusTone::Danger);
+                            state.show_toast(
+                                wormhole_i18n::t_args(
+                                    "chat.toast.open_chat_failed",
+                                    &[("err", &err.to_string())],
+                                ),
+                                StatusTone::Danger,
+                            );
                         }
                         ctx.notify();
                     }
@@ -747,29 +957,265 @@ impl ChatSidebarView {
         ctx.notify();
     }
 
-    fn filtered_rows(&self) -> Vec<&SidebarRow> {
+    fn filtered_rows(&self) -> Vec<SidebarRow> {
         let q = self.search.trim().to_lowercase();
         let favorites_only = self
             .shell_state
             .lock()
             .map(|s| s.favorites_only)
             .unwrap_or(false);
+        if favorites_only {
+            return Vec::new();
+        }
+
+        if self.search_focused && self.search_category.is_media() {
+            return self
+                .hit_rows
+                .iter()
+                .filter(|row| {
+                    q.is_empty()
+                        || row.title.to_lowercase().contains(&q)
+                        || row.preview.to_lowercase().contains(&q)
+                })
+                .cloned()
+                .collect();
+        }
+
+        if self.search_focused && self.search_category == SearchCategory::Contact {
+            return self.contact_category_rows(q.as_str());
+        }
+
+        let category_filter = if self.search_focused {
+            Some(self.search_category)
+        } else {
+            None
+        };
+
         self.rows
             .iter()
             .filter(|row| {
-                if favorites_only {
-                    // No favorites prefs yet — empty list when filter is on.
-                    return false;
+                if let Some(category) = category_filter {
+                    let matches_kind = match category {
+                        SearchCategory::Terminal => row.kind == SidebarRowKind::Terminal,
+                        SearchCategory::Group => row.kind == SidebarRowKind::Group,
+                        SearchCategory::Contact => row.kind == SidebarRowKind::Contact,
+                        _ => true,
+                    };
+                    if !matches_kind {
+                        return false;
+                    }
                 }
                 q.is_empty()
                     || row.title.to_lowercase().contains(&q)
                     || row.preview.to_lowercase().contains(&q)
             })
+            .cloned()
             .collect()
     }
 
+    fn contact_category_rows(&self, q: &str) -> Vec<SidebarRow> {
+        let mut out: Vec<SidebarRow> = self
+            .rows
+            .iter()
+            .filter(|row| row.kind == SidebarRowKind::Contact)
+            .filter(|row| {
+                q.is_empty()
+                    || row.title.to_lowercase().contains(q)
+                    || row.preview.to_lowercase().contains(q)
+            })
+            .cloned()
+            .collect();
+
+        let existing_user_ids: std::collections::HashSet<String> = out
+            .iter()
+            .filter_map(|row| row.peer_user_id.clone())
+            .collect();
+        let existing_conv_peers: std::collections::HashSet<String> = self
+            .conversations
+            .iter()
+            .filter(|conv| conv.kind == "contact_direct")
+            .filter_map(|conv| conv.peer_user_id.clone())
+            .collect();
+
+        for contact in &self.contacts {
+            if !contact.can_chat {
+                continue;
+            }
+            let Some(user_id) = contact.user_id.clone() else {
+                continue;
+            };
+            if existing_user_ids.contains(&user_id) || existing_conv_peers.contains(&user_id) {
+                continue;
+            }
+            if !q.is_empty()
+                && !contact.display_name.to_lowercase().contains(q)
+                && !user_id.to_lowercase().contains(q)
+            {
+                continue;
+            }
+            let endpoints: Vec<(String, Vec<String>)> = contact
+                .endpoints
+                .iter()
+                .cloned()
+                .zip(contact.endpoint_bootstraps.iter().cloned())
+                .collect();
+            out.push(SidebarRow {
+                id: contact.id.clone(),
+                title: contact.display_name.clone(),
+                preview: if contact.device_count > 1 {
+                    format!("{} devices", contact.device_count)
+                } else {
+                    wormhole_i18n::t("chat.label.contact")
+                },
+                time: String::new(),
+                online: false,
+                presence: "unknown".into(),
+                unread: 0,
+                os: "CT".into(),
+                muted: false,
+                kind: SidebarRowKind::Contact,
+                message_id: None,
+                peer_user_id: Some(user_id),
+                peer_endpoints: endpoints,
+            });
+        }
+        out
+    }
+
+    fn refresh_category_hits(&mut self, ctx: &mut ViewContext<Self>) {
+        if !(self.search_focused && self.search_category.is_media()) {
+            self.hit_rows.clear();
+            return;
+        }
+        let Some(api_category) = self.search_category.sidebar_api_category() else {
+            return;
+        };
+        self.hit_fetch_generation = self.hit_fetch_generation.saturating_add(1);
+        let generation = self.hit_fetch_generation;
+        let query = self.search.clone();
+        let category = api_category.to_string();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                chat_search_sidebar(
+                    runtime.ctx.as_ref(),
+                    &runtime.state,
+                    SearchChatSidebarParams {
+                        category,
+                        query: if query.trim().is_empty() {
+                            None
+                        } else {
+                            Some(query)
+                        },
+                        cursor: None,
+                        limit: Some(50),
+                    },
+                )
+                .await
+            },
+            move |view, result, ctx| {
+                if view.hit_fetch_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(page) => {
+                        view.hit_rows = page
+                            .hits
+                            .into_iter()
+                            .map(|hit| sidebar_row_from_hit(hit))
+                            .collect();
+                    }
+                    Err(err) => {
+                        view.hit_rows.clear();
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.show_toast(
+                                wormhole_i18n::t_args(
+                                    "chat.toast.open_chat_failed",
+                                    &[("err", &err.to_string())],
+                                ),
+                                StatusTone::Danger,
+                            );
+                        }
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn set_search_category(&mut self, category: SearchCategory, ctx: &mut ViewContext<Self>) {
+        if self.search_category == category {
+            return;
+        }
+        self.search_category = category;
+        self.refresh_category_hits(ctx);
+        ctx.notify();
+    }
+
+    fn blur_search(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.search_focused {
+            return;
+        }
+        self.search_focused = false;
+        self.search_category = SearchCategory::Terminal;
+        self.hit_rows.clear();
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+    }
+
+    fn start_contact_conversation_for_row(
+        &mut self,
+        row: &SidebarRow,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(peer_user_id) = row.peer_user_id.clone() else {
+            self.apply_selection(row.id.clone(), ctx);
+            return;
+        };
+        self.selecting = Some(row.id.clone());
+        let display_name = Some(row.title.clone());
+        let peer_endpoints = row.peer_endpoints.clone();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                chat_start_contact_conversation(
+                    runtime.ctx.as_ref(),
+                    &runtime.state,
+                    StartChatContactParams {
+                        peer_user_id,
+                        peer_display_name: display_name,
+                        peer_endpoints,
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.selecting = None;
+                match output {
+                    Ok(conv) => {
+                        view.apply_selection(conv.id, ctx);
+                        view.refresh(ctx);
+                    }
+                    Err(err) => {
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            let message = wormhole_i18n::t_args(
+                                "chat.toast.start_conversation_failed",
+                                &[("err", &err.to_string())],
+                            );
+                            state.set_open_error(message.clone());
+                            state.show_toast(message, StatusTone::Danger);
+                        }
+                        ctx.notify();
+                    }
+                }
+            },
+        );
+        ctx.notify();
+    }
+
     fn chat_item(&self, row: &SidebarRow, selected: bool) -> Box<dyn Element> {
-        let id = row.id.clone();
         let menu_id = row.id.clone();
         let title_color = if row.muted {
             theme::muted()
@@ -850,13 +1296,28 @@ impl ChatSidebarView {
             .with_child(Container::new(col.finish()).with_margin_left(10.0).finish())
             .finish();
 
+        let row_title = row.title.clone();
+        let message_id = row.message_id.clone();
+        let is_media_hit = row.kind == SidebarRowKind::MediaHit;
+        let select_id = row.id.clone();
         let interactive = EventHandler::new(
             ConstrainedBox::new(row_body)
                 .with_width(CHAT_ITEM_INNER_WIDTH)
                 .finish(),
         )
+        .with_automation_label(row_title)
+        .with_automation_id(format!("chat:conversation:{select_id}"))
         .on_left_mouse_down(move |ctx, _, _| {
-            ctx.dispatch_typed_action(ChatSidebarAction::Select(id.clone()));
+            if is_media_hit {
+                if let Some(message_id) = message_id.clone() {
+                    ctx.dispatch_typed_action(ChatSidebarAction::SelectHit {
+                        conv_id: select_id.clone(),
+                        message_id,
+                    });
+                }
+            } else {
+                ctx.dispatch_typed_action(ChatSidebarAction::Select(select_id.clone()));
+            }
             DispatchEventResult::StopPropagation
         })
         .on_right_mouse_down(move |ctx, _, position| {
@@ -886,10 +1347,11 @@ impl ChatSidebarView {
         let search_focused = self.search_focused;
         let draft = self.search.clone();
         let marked = self.search_field.marked_text.clone();
+        let search_placeholder = wormhole_i18n::t("chat.search.placeholder");
         let field = render_search_field_with_caret(
             &draft,
             &marked,
-            "搜索",
+            &search_placeholder,
             self.font,
             search_focused,
             false,
@@ -909,9 +1371,22 @@ impl ChatSidebarView {
             DispatchEventResult::PropagateToParent
         })
         .finish();
-        let input = wrap_text_field_focus_on_click(input, |ctx| {
+        let input = wrap_text_field_focus_on_click_with_label(
+            input,
+            wormhole_i18n::t("chat.search.placeholder"),
+            |ctx| {
             ctx.dispatch_typed_action(ChatSidebarAction::ActivateSearch);
-        });
+        },
+        );
+        // Stable id for sim-use (label alone may be nested under TextFieldInput).
+        let input = EventHandler::new(input)
+            .with_automation_label(wormhole_i18n::t("chat.search.placeholder"))
+            .with_automation_id("chat:sidebar_search")
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::ActivateSearch);
+                DispatchEventResult::PropagateToParent
+            })
+            .finish();
 
         let border_color = if search_focused {
             theme::accent_cool()
@@ -930,14 +1405,16 @@ impl ChatSidebarView {
             .with_child(Expanded::new(1.0, input).finish())
             .finish();
 
-        chat_search_pill(
+        ConstrainedBox::new(chat_search_pill(
             row,
             chat_sidebar_search_bg(),
             border_color,
             7.0,
             10.0,
-            999.0,
-        )
+            AGENT_ROW_RADIUS,
+        ))
+        .with_width(SEARCH_PILL_WIDTH)
+        .finish()
     }
 
     fn context_menu_divider() -> Box<dyn Element> {
@@ -950,7 +1427,7 @@ impl ChatSidebarView {
 
     fn context_menu_item(
         &self,
-        label: &str,
+        label: String,
         action: ChatSidebarAction,
         style: ContextItemStyle,
         enabled: bool,
@@ -964,9 +1441,11 @@ impl ChatSidebarView {
                 ContextItemStyle::Danger => theme::danger(),
             }
         };
+        let menu_label = label.clone();
+        let menu_id = format!("chat:sidebar_menu:{menu_label}");
         let handler = EventHandler::new(
             Container::new(
-                ui_text::body(label.to_string(), self.font)
+                ui_text::body(label, self.font)
                     .with_color(color)
                     .finish(),
             )
@@ -978,6 +1457,8 @@ impl ChatSidebarView {
         );
         if enabled {
             handler
+                .with_automation_label(menu_label)
+                .with_automation_id(menu_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation
@@ -995,16 +1476,16 @@ impl ChatSidebarView {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         menu.add_child(self.context_menu_item(
-            "打开对话",
+            wormhole_i18n::t("chat.context.open"),
             ChatSidebarAction::ContextOpen,
             ContextItemStyle::Normal,
             true,
         ));
         menu.add_child(self.context_menu_item(
             if muted {
-                "取消免打扰"
+                wormhole_i18n::t("chat.context.unmute")
             } else {
-                "消息免打扰"
+                wormhole_i18n::t("chat.context.mute")
             },
             ChatSidebarAction::ContextToggleMute,
             ContextItemStyle::Accent,
@@ -1012,7 +1493,7 @@ impl ChatSidebarView {
         ));
         menu.add_child(Self::context_menu_divider());
         menu.add_child(self.context_menu_item(
-            "删除对话",
+            wormhole_i18n::t("chat.context.delete"),
             ChatSidebarAction::ContextDelete,
             ContextItemStyle::Danger,
             true,
@@ -1033,19 +1514,20 @@ impl ChatSidebarView {
 
     fn sidebar_menu_item(
         &self,
-        label: &str,
+        label: String,
         icon_path: &'static str,
         hover_key: &'static str,
         action: ChatSidebarAction,
     ) -> Box<dyn Element> {
         let hovered = self.menu_hover == Some(hover_key);
+        let menu_label = label.clone();
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(icons::chat_sidebar_menu_row_icon(icon_path, theme::muted()))
             .with_child(
                 Container::new(
-                    ui_text::chat_sidebar_name(label.to_string(), self.font)
+                    ui_text::chat_sidebar_name(menu_label.clone(), self.font)
                         .with_color(theme::text())
                         .finish(),
                 )
@@ -1068,6 +1550,8 @@ impl ChatSidebarView {
             .with_min_height(48.0)
             .finish(),
         )
+        .with_automation_label(menu_label)
+        .with_automation_id(format!("chat:sidebar_nav:{hover_key}"))
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(ChatSidebarAction::MenuHover(Some(hover_key)));
@@ -1091,31 +1575,31 @@ impl ChatSidebarView {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_main_axis_size(MainAxisSize::Min);
         menu.add_child(self.sidebar_menu_item(
-            "新建群组",
+            wormhole_i18n::t("chat.sidebar.menu.new_group"),
             "chat-menu-new-group.svg",
             "new-group",
             ChatSidebarAction::MenuNewGroup,
         ));
         menu.add_child(self.sidebar_menu_item(
-            "新建频道",
+            wormhole_i18n::t("chat.sidebar.menu.new_channel"),
             "chat-menu-new-channel.svg",
             "new-channel",
             ChatSidebarAction::MenuNewChannel,
         ));
         menu.add_child(self.sidebar_menu_item(
-            "联系人",
+            wormhole_i18n::t("chat.sidebar.menu.contacts"),
             "chat-menu-contacts.svg",
             "contacts",
             ChatSidebarAction::MenuContacts,
         ));
         menu.add_child(self.sidebar_menu_item(
-            "通话",
+            wormhole_i18n::t("chat.sidebar.menu.calls"),
             "chat-menu-calls.svg",
             "calls",
             ChatSidebarAction::MenuCalls,
         ));
         menu.add_child(self.sidebar_menu_item(
-            "我的收藏",
+            wormhole_i18n::t("chat.sidebar.menu.favorites"),
             "chat-menu-favorites.svg",
             "favorites",
             ChatSidebarAction::MenuFavorites,
@@ -1132,23 +1616,21 @@ impl ChatSidebarView {
     }
 
     fn search_categories(&self) -> Box<dyn Element> {
+        use warpui_core::units::Pixels;
+
         let mut row = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
-        for (label, active, enabled) in [
-            ("聊天", true, true),
-            ("频道", false, false),
-            ("应用", false, false),
-        ] {
+        for category in SearchCategory::ALL {
+            let active = self.search_category == category;
+            let label = wormhole_i18n::t(category.i18n_key());
             let color = if active {
                 theme::accent_cool()
-            } else if enabled {
-                theme::muted()
             } else {
-                theme::placeholder()
+                theme::muted()
             };
             let mut tab = Container::new(
-                ui_text::device_meta(label.to_string(), self.font)
+                ui_text::device_meta(label.clone(), self.font)
                     .with_color(color)
                     .finish(),
             )
@@ -1157,15 +1639,88 @@ impl ChatSidebarView {
             if active {
                 tab = tab.with_border(Border::bottom(2.0).with_border_fill(theme::accent_cool()));
             }
-            row.add_child(
+            let tab = EventHandler::new(
                 Container::new(tab.finish())
                     .with_margin_right(18.0)
                     .finish(),
-            );
+            )
+            .with_automation_label(label)
+            .with_automation_id(category.automation_id())
+            .on_left_mouse_down(move |ctx, _, position| {
+                ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerDown {
+                    x: position.x(),
+                    select: Some(category),
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .on_mouse_dragged(|ctx, _, position| {
+                ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerMove {
+                    x: position.x(),
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .on_left_mouse_up(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerUp);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+            row.add_child(tab);
         }
-        Container::new(row.finish())
-            .with_margin_top(8.0)
-            .finish()
+        let scrolled = ClippedScrollable::horizontal(
+            self.category_scroll.clone(),
+            row.finish(),
+            ScrollbarWidth::None,
+            Fill::None,
+            Fill::None,
+            Fill::None,
+        )
+        .finish();
+        let category_scroll = self.category_scroll.clone();
+        // Horizontal ClippedScrollable consumes ScrollWheel (with x=0 for vertical
+        // notches) before this handler runs; always_handle keeps pan mapping alive.
+        EventHandler::new(
+            Container::new(scrolled)
+                .with_margin_top(8.0)
+                .finish(),
+        )
+        .with_always_handle()
+        .on_left_mouse_down(|ctx, _, position| {
+            ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerDown {
+                x: position.x(),
+                select: None,
+            });
+            DispatchEventResult::StopPropagation
+        })
+        .on_mouse_dragged(|ctx, _, position| {
+            ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerMove {
+                x: position.x(),
+            });
+            DispatchEventResult::StopPropagation
+        })
+        .on_left_mouse_up(|ctx, _, _| {
+            ctx.dispatch_typed_action(ChatSidebarAction::CategoryPointerUp);
+            DispatchEventResult::StopPropagation
+        })
+        .on_scroll_wheel(move |ctx, _, delta, _| {
+            let direction = if delta.y().abs() >= delta.x().abs() {
+                delta.y()
+            } else {
+                delta.x()
+            };
+            if direction == 0.0 {
+                return DispatchEventResult::PropagateToParent;
+            }
+            // Discrete notches are large; trackpad/precision deltas stay small.
+            let pixels = if direction.abs() <= 2.0 {
+                direction * CATEGORY_WHEEL_PRECISE_SCALE
+            } else {
+                direction.signum() * CATEGORY_WHEEL_STEP_PX
+            };
+            category_scroll.scroll_by(Pixels::new(pixels));
+            ctx.notify();
+            DispatchEventResult::StopPropagation
+        })
+        .finish()
     }
 
     fn clear_selection_if_matches(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
@@ -1218,21 +1773,24 @@ impl View for ChatSidebarView {
             list.add_child(
                 Container::new(
                     ui_text::body(
-                        if self.search.is_empty() {
+                        if self.search.is_empty() && !self.search_focused {
                             let favorites_only = self
                                 .shell_state
                                 .lock()
                                 .map(|s| s.favorites_only)
                                 .unwrap_or(false);
                             if favorites_only {
-                                "暂无收藏".to_string()
+                                wormhole_i18n::t("common.empty.no_favorites")
                             } else if self.status.is_empty() {
-                                "暂无会话".to_string()
+                                wormhole_i18n::t("common.empty.no_conversations")
                             } else {
-                                format!("暂无会话 · {}", self.status)
+                                wormhole_i18n::t_args(
+                                    "chat.empty.no_conversations_with_status",
+                                    &[("status", &self.status)],
+                                )
                             }
                         } else {
-                            "无匹配结果".to_string()
+                            wormhole_i18n::t("chat.empty.no_matches")
                         },
                         self.font,
                     )
@@ -1243,7 +1801,7 @@ impl View for ChatSidebarView {
                 .finish(),
             );
         } else {
-            for row in rows {
+            for row in &rows {
                 let active = self.row_is_active(row, selected.as_deref());
                 list.add_child(self.chat_item(row, active));
             }
@@ -1277,6 +1835,8 @@ impl View for ChatSidebarView {
             })
             .finish(),
         )
+        .with_automation_label("侧边栏菜单")
+        .with_automation_id("chat:sidebar_menu_btn")
         .on_mouse_in(
             |ctx, _, _| {
                 ctx.dispatch_typed_action(ChatSidebarAction::MenuBtnHover(true));
@@ -1336,6 +1896,8 @@ impl View for ChatSidebarView {
             .with_border(Border::right(1.0).with_border_fill(theme::border()))
             .finish(),
         )
+        .with_automation_label("会话列表")
+        .with_automation_id("chat:conversation_list")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
             DispatchEventResult::PropagateToParent
@@ -1350,6 +1912,8 @@ impl View for ChatSidebarView {
                     .with_background(ColorU::new(0, 0, 0, 0))
                     .finish(),
             )
+            .with_automation_label("关闭侧边栏菜单")
+            .with_automation_id("chat:sidebar_menu_scrim")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(ChatSidebarAction::BlurSearch);
                 ctx.dispatch_typed_action(ChatSidebarAction::CloseSidebarMenu);
@@ -1422,11 +1986,22 @@ impl TypedActionView for ChatSidebarView {
     fn handle_action(&mut self, action: &ChatSidebarAction, ctx: &mut ViewContext<Self>) {
         match action {
             ChatSidebarAction::Select(id) => {
-                if self.search_focused {
-                    self.search_focused = false;
-                    sync_caret_blink(self, ctx);
-                }
                 if self.selecting.is_some() {
+                    return;
+                }
+                let contact_row = self
+                    .contact_category_rows("")
+                    .into_iter()
+                    .find(|row| {
+                        row.id == *id
+                            && row.peer_user_id.is_some()
+                            && !self.conversations.iter().any(|conv| conv.id == row.id)
+                    });
+                if self.search_focused {
+                    self.blur_search(ctx);
+                }
+                if let Some(row) = contact_row {
+                    self.start_contact_conversation_for_row(&row, ctx);
                     return;
                 }
                 match resolve_select_target(id, &self.conversations, self.cluster.as_ref()) {
@@ -1442,42 +2017,98 @@ impl TypedActionView for ChatSidebarView {
                     }
                     SelectTarget::MissingChatEndpoint => {
                         if let Ok(mut state) = self.shell_state.lock() {
-                            state.set_open_error("该终端尚无聊天地址");
-                            state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                            state.set_open_error(wormhole_i18n::t("chat.toast.no_chat_endpoint"));
+                            state.show_toast(wormhole_i18n::t("chat.toast.no_chat_endpoint"), StatusTone::Danger);
                         }
                         ctx.notify();
                     }
                 }
             }
+            ChatSidebarAction::SelectHit {
+                conv_id,
+                message_id,
+            } => {
+                if self.search_focused {
+                    self.blur_search(ctx);
+                }
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.set_pending_jump_message(message_id.clone());
+                }
+                self.apply_selection(conv_id.clone(), ctx);
+            }
             ChatSidebarAction::FocusSearch => {
                 self.search_focused = !self.search_focused;
+                if !self.search_focused {
+                    self.search_category = SearchCategory::Terminal;
+                    self.hit_rows.clear();
+                } else {
+                    self.refresh_category_hits(ctx);
+                }
                 sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ChatSidebarAction::ActivateSearch => {
                 if !self.search_focused {
                     self.search_focused = true;
+                    self.refresh_category_hits(ctx);
                     sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
             }
             ChatSidebarAction::BlurSearch => {
-                if self.search_focused {
-                    self.search_focused = false;
-                    sync_caret_blink(self, ctx);
+                self.blur_search(ctx);
+            }
+            ChatSidebarAction::SelectSearchCategory(category) => {
+                self.search_focused = true;
+                self.set_search_category(*category, ctx);
+                sync_caret_blink(self, ctx);
+            }
+            ChatSidebarAction::CategoryPointerDown { x, select } => {
+                self.category_drag = Some(CategoryDrag {
+                    down_x: *x,
+                    scroll_at_down: self.category_scroll.scroll_start().as_f32(),
+                    moved: false,
+                    pending_select: *select,
+                });
+            }
+            ChatSidebarAction::CategoryPointerMove { x } => {
+                use warpui_core::units::Pixels;
+                let Some(drag) = self.category_drag.as_mut() else {
+                    return;
+                };
+                let dx = *x - drag.down_x;
+                if dx.abs() > CATEGORY_DRAG_THRESHOLD_PX {
+                    drag.moved = true;
+                }
+                if drag.moved {
+                    self.category_scroll
+                        .scroll_to(Pixels::new(drag.scroll_at_down - dx));
                     ctx.notify();
                 }
+            }
+            ChatSidebarAction::CategoryPointerUp => {
+                let Some(drag) = self.category_drag.take() else {
+                    return;
+                };
+                if !drag.moved {
+                    if let Some(category) = drag.pending_select {
+                        self.search_focused = true;
+                        self.set_search_category(category, ctx);
+                        sync_caret_blink(self, ctx);
+                    }
+                }
+                ctx.notify();
             }
             ChatSidebarAction::SearchEdit(edit) => {
                 self.search_field.apply(&mut self.search, edit);
                 self.search_focused = true;
+                self.refresh_category_hits(ctx);
                 sync_caret_blink(self, ctx);
                 ctx.notify();
             }
             ChatSidebarAction::OpenContextMenu { id, x, y } => {
                 if self.search_focused {
-                    self.search_focused = false;
-                    sync_caret_blink(self, ctx);
+                    self.blur_search(ctx);
                 }
                 self.context_menu = Some((id.clone(), *x, *y));
                 ctx.notify();
@@ -1508,8 +2139,8 @@ impl TypedActionView for ChatSidebarView {
                     }
                     SelectTarget::MissingChatEndpoint => {
                         if let Ok(mut state) = self.shell_state.lock() {
-                            state.set_open_error("该终端尚无聊天地址");
-                            state.show_toast("该终端尚无聊天地址", StatusTone::Danger);
+                            state.set_open_error(wormhole_i18n::t("chat.toast.no_chat_endpoint"));
+                            state.show_toast(wormhole_i18n::t("chat.toast.no_chat_endpoint"), StatusTone::Danger);
                         }
                         ctx.notify();
                     }
@@ -1535,9 +2166,9 @@ impl TypedActionView for ChatSidebarView {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.show_toast(
                                     if next {
-                                        "已开启消息免打扰"
+                                        wormhole_i18n::t("chat.toast.mute_on")
                                     } else {
-                                        "已取消免打扰"
+                                        wormhole_i18n::t("chat.toast.mute_off")
                                     },
                                     StatusTone::Success,
                                 );
@@ -1547,7 +2178,10 @@ impl TypedActionView for ChatSidebarView {
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state.show_toast(
-                                    format!("无法更新免打扰: {err}"),
+                                    wormhole_i18n::t_args(
+                                        "chat.toast.mute_update_failed",
+                                        &[("err", &err.to_string())],
+                                    ),
                                     StatusTone::Danger,
                                 );
                             }
@@ -1575,14 +2209,20 @@ impl TypedActionView for ChatSidebarView {
                             view.clear_selection_if_matches(&id, ctx);
                             view.apply_ui_prefs(prefs, ctx);
                             if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast("已删除对话", StatusTone::Muted);
+                                state.show_toast(wormhole_i18n::t("chat.toast.conversation_deleted"), StatusTone::Muted);
                             }
                             ctx.notify();
                         }
                         Err(err) => {
                             if let Ok(mut state) = view.shell_state.lock() {
                                 state
-                                    .show_toast(format!("无法删除对话: {err}"), StatusTone::Danger);
+                                    .show_toast(
+                                        wormhole_i18n::t_args(
+                                            "chat.toast.delete_failed",
+                                            &[("err", &err.to_string())],
+                                        ),
+                                        StatusTone::Danger,
+                                    );
                             }
                             ctx.notify();
                         }
@@ -1655,9 +2295,9 @@ impl TypedActionView for ChatSidebarView {
                     let on = state.favorites_only;
                     state.show_toast(
                         if on {
-                            "仅显示收藏（暂无收藏）"
+                            wormhole_i18n::t("chat.toast.favorites_only")
                         } else {
-                            "显示全部会话"
+                            wormhole_i18n::t("chat.toast.show_all")
                         },
                         StatusTone::Muted,
                     );
@@ -1895,6 +2535,7 @@ mod tests {
                 server_member_confirmed: false,
                 same_account: false,
                 user_id: None,
+                account_display_name: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: Vec::new(),
@@ -1955,6 +2596,7 @@ mod tests {
                 server_member_confirmed: false,
                 same_account: false,
                 user_id: None,
+                account_display_name: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: Vec::new(),
@@ -2039,6 +2681,7 @@ mod tests {
             server_member_confirmed: false,
             same_account: local,
             user_id: None,
+            account_display_name: None,
             pending_handshake: false,
             handshake_error: None,
             share_volumes: Vec::new(),

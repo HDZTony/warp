@@ -717,6 +717,8 @@ impl View for CallsPanelView {
                 .with_background(ColorU::new(0, 0, 0, 140))
                 .finish(),
         )
+        .with_automation_label("关闭通话")
+        .with_automation_id("chat:calls_scrim")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(CallsPanelAction::Close);
             DispatchEventResult::StopPropagation
@@ -728,6 +730,8 @@ impl View for CallsPanelView {
             .with_height(DIALOG_HEIGHT)
             .finish();
         let dialog = EventHandler::new(dialog)
+            .with_automation_label("通话")
+            .with_automation_id("chat:calls_dialog")
             .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
             .finish();
         let centered = Align::new(dialog)
@@ -815,6 +819,8 @@ impl CallsPanelView {
                     .with_uniform_padding(8.0)
                     .finish(),
                 )
+                .with_automation_label("返回")
+                .with_automation_id("chat:calls_back")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(CallsPanelAction::BackFromSub);
                     DispatchEventResult::StopPropagation
@@ -836,6 +842,8 @@ impl CallsPanelView {
                     .with_uniform_padding(8.0)
                     .finish(),
                 )
+                .with_automation_label("更多")
+                .with_automation_id("chat:calls_more")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(CallsPanelAction::ToggleMoreMenu);
                     DispatchEventResult::StopPropagation
@@ -853,6 +861,8 @@ impl CallsPanelView {
                 .with_uniform_padding(8.0)
                 .finish(),
             )
+            .with_automation_label("关闭")
+            .with_automation_id("chat:calls_close")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(CallsPanelAction::Close);
                 DispatchEventResult::StopPropagation
@@ -897,6 +907,8 @@ impl CallsPanelView {
                     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                     .finish(),
                 )
+                .with_automation_label("开始新通话")
+                .with_automation_id("chat:calls_start_new")
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(CallsPanelAction::OpenPicker);
                     DispatchEventResult::StopPropagation
@@ -1033,6 +1045,8 @@ impl CallsPanelView {
             return row;
         }
         EventHandler::new(row)
+            .with_automation_label("重新加入")
+            .with_automation_id(format!("chat:calls_rejoin:{call_id}"))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(CallsPanelAction::RejoinHistory {
                     call_id: call_id.clone(),
@@ -1134,6 +1148,8 @@ impl CallsPanelView {
                     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
                     .finish(),
                 )
+                .with_automation_label("准备通话")
+                .with_automation_id("chat:calls_prepare")
                 .on_left_mouse_down(move |ctx, _, _| {
                     if enabled {
                         ctx.dispatch_typed_action(CallsPanelAction::PrepareCall);
@@ -1151,9 +1167,10 @@ impl CallsPanelView {
     }
 
     fn type_btn(&self, label: &str, voice: bool, pressed: bool) -> Box<dyn Element> {
+        let btn_label = label.to_string();
         EventHandler::new(
             Container::new(
-                ui_text::body(label.to_string(), self.font)
+                ui_text::body(btn_label.clone(), self.font)
                     .with_color(if pressed {
                         theme::text()
                     } else {
@@ -1170,6 +1187,12 @@ impl CallsPanelView {
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
             .finish(),
         )
+        .with_automation_label(btn_label)
+        .with_automation_id(if voice {
+            "chat:calls_type_voice"
+        } else {
+            "chat:calls_type_video"
+        })
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(CallsPanelAction::SetCallType(voice));
             DispatchEventResult::StopPropagation
@@ -1226,6 +1249,7 @@ impl CallsPanelView {
                     .with_color(theme::accent_cool())
                     .finish(),
             );
+        let participant_name = c.display_name.clone();
         EventHandler::new(
             Container::new(row.finish())
                 .with_padding_left(14.0)
@@ -1239,6 +1263,8 @@ impl CallsPanelView {
                 })
                 .finish(),
         )
+        .with_automation_label(participant_name)
+        .with_automation_id(format!("chat:calls_participant:{id}"))
         .on_left_mouse_down(move |ctx, _, _| {
             if !at_limit || selected {
                 ctx.dispatch_typed_action(CallsPanelAction::ToggleParticipant(id.clone()));
@@ -1286,6 +1312,7 @@ impl CallsPanelView {
     }
 
     fn toggle_row(&self, label: &str, on: bool, action: CallsPanelAction) -> Box<dyn Element> {
+        let row_label = label.to_string();
         EventHandler::new(
             Container::new(
                 Flex::row()
@@ -1293,7 +1320,7 @@ impl CallsPanelView {
                     .with_child(
                         Expanded::new(
                             1.0,
-                            ui_text::body(label.to_string(), self.font)
+                            ui_text::body(row_label.clone(), self.font)
                                 .with_color(theme::text())
                                 .finish(),
                         )
@@ -1310,6 +1337,12 @@ impl CallsPanelView {
             .with_border(Border::bottom(1.0).with_border_fill(theme::border()))
             .finish(),
         )
+        .with_automation_label(row_label)
+        .with_automation_id(match &action {
+            CallsPanelAction::ToggleMicMuted => "chat:calls_toggle_mic",
+            CallsPanelAction::ToggleCameraMuted => "chat:calls_toggle_camera",
+            _ => "chat:calls_toggle",
+        })
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -1385,6 +1418,8 @@ impl CallsPanelView {
                 .with_uniform_padding(12.0)
                 .finish(),
             )
+            .with_automation_label("取消")
+            .with_automation_id("chat:calls_clear_cancel")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(CallsPanelAction::BackFromSub);
                 DispatchEventResult::StopPropagation
@@ -1394,13 +1429,26 @@ impl CallsPanelView {
         actions.add_child(
             EventHandler::new(
                 Container::new(
-                    ui_text::body(if self.clearing { "清除中…".to_string() } else { "清除我的记录".to_string() }, self.font)
-                        .with_color(theme::danger())
-                        .finish(),
+                    ui_text::body(
+                        if self.clearing {
+                            "清除中…".to_string()
+                        } else {
+                            "清除我的记录".to_string()
+                        },
+                        self.font,
+                    )
+                    .with_color(theme::danger())
+                    .finish(),
                 )
                 .with_uniform_padding(12.0)
                 .finish(),
             )
+            .with_automation_label(if self.clearing {
+                "清除中…"
+            } else {
+                "清除我的记录"
+            })
+            .with_automation_id("chat:calls_clear_confirm")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(CallsPanelAction::ConfirmClear);
                 DispatchEventResult::StopPropagation
@@ -1423,16 +1471,25 @@ impl CallsPanelView {
             ("通话隐私", CallsPanelAction::OpenPrivacy),
             ("清除我的记录", CallsPanelAction::OpenConfirmClear),
         ] {
+            let menu_label = label.to_string();
+            let menu_id = match &action {
+                CallsPanelAction::OpenSettings => "chat:calls_menu_settings",
+                CallsPanelAction::OpenPrivacy => "chat:calls_menu_privacy",
+                CallsPanelAction::OpenConfirmClear => "chat:calls_menu_clear",
+                _ => "chat:calls_menu_item",
+            };
             menu.add_child(
                 EventHandler::new(
                     Container::new(
-                        ui_text::body(label.to_string(), self.font)
+                        ui_text::body(menu_label.clone(), self.font)
                             .with_color(theme::text())
                             .finish(),
                     )
                     .with_uniform_padding(12.0)
                     .finish(),
                 )
+                .with_automation_label(menu_label)
+                .with_automation_id(menu_id)
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(action.clone());
                     DispatchEventResult::StopPropagation

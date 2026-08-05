@@ -49,6 +49,8 @@ fn cancel_button(font: FamilyId) -> Box<dyn Element> {
         .with_height(34.0)
         .finish(),
     )
+    .with_automation_label("取消")
+    .with_automation_id("ai:project_delete_cancel")
     .on_left_mouse_down(|ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::CloseProjectDeleteModal);
         DispatchEventResult::StopPropagation
@@ -77,6 +79,8 @@ fn confirm_button(font: FamilyId) -> Box<dyn Element> {
         .with_height(34.0)
         .finish(),
     )
+    .with_automation_label("确认删除")
+    .with_automation_id("ai:project_delete_confirm")
     .on_left_mouse_down(|ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::ConfirmDeleteProject);
         DispatchEventResult::StopPropagation
@@ -171,6 +175,12 @@ fn delete_option(
     }
 
     EventHandler::new(row)
+        .with_automation_label(title)
+        .with_automation_id(if danger {
+            "ai:project_delete_local"
+        } else {
+            "ai:project_delete_reference"
+        })
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -298,6 +308,8 @@ pub fn render_project_delete_modal(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
         .finish(),
     )
+    .with_automation_label("删除项目对话框")
+    .with_automation_id("ai:project_delete_dialog")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish();
 
@@ -306,6 +318,8 @@ pub fn render_project_delete_modal(
             .with_background(ColorU::new(8, 7, 11, 180))
             .finish(),
     )
+    .with_automation_label("关闭删除项目")
+    .with_automation_id("ai:project_delete_scrim")
     .on_left_mouse_down(|ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::CloseProjectDeleteModal);
         DispatchEventResult::StopPropagation

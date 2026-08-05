@@ -251,6 +251,8 @@ fn capability_chip(
                 .with_padding_bottom(CHIP_PAD_Y)
                 .finish(),
             )
+            .with_automation_label("以后不再显示")
+            .with_automation_id("ai:capability_marquee_dismiss")
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::DismissCapabilityMarquee);
                 DispatchEventResult::StopPropagation

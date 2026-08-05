@@ -110,6 +110,7 @@ fn add_menu_item(
     desc: Option<&str>,
     active: bool,
     action: AgentPanelAction,
+    automation_id: impl Into<String>,
 ) -> Box<dyn Element> {
     let mut text_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     text_col.add_child(
@@ -149,6 +150,8 @@ fn add_menu_item(
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
             .finish(),
     )
+    .with_automation_label(title)
+    .with_automation_id(automation_id)
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation
@@ -167,6 +170,7 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
             None,
             false,
             AgentPanelAction::OpenFilesModal,
+            "ai:add_files",
         ))
         .with_horizontal_padding(4.0)
         .finish(),
@@ -179,6 +183,7 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
             Some("插件"),
             false,
             AgentPanelAction::OpenPluginsPicker,
+            "ai:add_plugins",
         ))
         .with_horizontal_padding(4.0)
         .finish(),
@@ -191,6 +196,7 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
             Some("设置智能体将持续努力实现的目标"),
             goal_on,
             AgentPanelAction::ToggleGoalMode,
+            "ai:add_goal",
         ))
         .with_horizontal_padding(4.0)
         .finish(),
@@ -203,6 +209,7 @@ pub fn render_add_menu(font: FamilyId, goal_on: bool, plan_on: bool) -> Box<dyn 
             Some("开启计划模式"),
             plan_on,
             AgentPanelAction::TogglePlanMode,
+            "ai:add_plan",
         ))
         .with_horizontal_padding(4.0)
         .with_padding_bottom(4.0)
@@ -216,6 +223,7 @@ fn mode_chip(
     icon: &'static str,
     label: &str,
     remove: AgentPanelAction,
+    automation_id: &str,
 ) -> Box<dyn Element> {
     let remove_action = remove.clone();
     EventHandler::new(
@@ -239,6 +247,7 @@ fn mode_chip(
                                 .with_color(theme::muted())
                                 .finish(),
                         )
+                        .skip_automation()
                         .on_left_mouse_down(move |ctx, _, _| {
                             ctx.dispatch_typed_action(remove_action.clone());
                             DispatchEventResult::StopPropagation
@@ -259,6 +268,8 @@ fn mode_chip(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
         .finish(),
     )
+    .with_automation_label(label)
+    .with_automation_id(automation_id)
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(remove.clone());
         DispatchEventResult::StopPropagation
@@ -300,6 +311,8 @@ fn attach_chip(font: FamilyId, item: &ComposerAttachment, index: usize) -> Box<d
                     .with_padding_left(4.0)
                     .finish(),
                 )
+                .with_automation_label("移除附件")
+                .with_automation_id(format!("ai:attach_remove:{index}"))
                 .on_left_mouse_down(move |ctx, _, _| {
                     ctx.dispatch_typed_action(remove.clone());
                     DispatchEventResult::StopPropagation
@@ -335,6 +348,7 @@ pub fn render_composer_chips(
                 "agent-plan.svg",
                 "计划模式",
                 AgentPanelAction::ClearPlanMode,
+                "ai:chip_plan",
             ))
             .with_margin_right(8.0)
             .finish(),
@@ -347,6 +361,7 @@ pub fn render_composer_chips(
                 "agent-goal.svg",
                 "目标",
                 AgentPanelAction::ClearGoalMode,
+                "ai:chip_goal",
             ))
             .with_margin_right(8.0)
             .finish(),
@@ -386,6 +401,8 @@ fn modal_close_btn(font: FamilyId, action: AgentPanelAction) -> Box<dyn Element>
         .with_height(28.0)
         .finish(),
     )
+    .with_automation_label("关闭")
+    .with_automation_id("ai:files_modal_close")
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation
@@ -399,6 +416,7 @@ fn modal_foot_btn(
     primary: bool,
     enabled: bool,
     action: AgentPanelAction,
+    automation_id: &str,
 ) -> Box<dyn Element> {
     let color = if !enabled {
         theme::placeholder()
@@ -439,6 +457,8 @@ fn modal_foot_btn(
         return btn;
     }
     EventHandler::new(btn)
+        .with_automation_label(label)
+        .with_automation_id(automation_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -497,6 +517,8 @@ fn file_list_row(
     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
     .finish();
     EventHandler::new(row)
+        .with_automation_label(item.name)
+        .with_automation_id(format!("ai:file_row:{index}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(AgentPanelAction::SelectDemoFile(index));
             DispatchEventResult::StopPropagation
@@ -595,6 +617,7 @@ pub fn render_files_modal(
                     false,
                     true,
                     AgentPanelAction::CloseFilesModal,
+                    "ai:files_modal_cancel",
                 ))
                 .with_child(
                     Container::new(modal_foot_btn(
@@ -603,6 +626,7 @@ pub fn render_files_modal(
                         true,
                         true,
                         AgentPanelAction::ConfirmFilesModal,
+                        "ai:files_modal_confirm",
                     ))
                     .with_margin_left(8.0)
                     .finish(),
@@ -626,6 +650,8 @@ pub fn render_files_modal(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(12.0)))
         .finish(),
     )
+    .with_automation_label("文件对话框")
+    .with_automation_id("ai:files_modal_dialog")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish();
 
@@ -634,6 +660,8 @@ pub fn render_files_modal(
             .with_background(ColorU::new(8, 7, 11, 180))
             .finish(),
     )
+    .with_automation_label("关闭文件对话框")
+    .with_automation_id("ai:files_modal_scrim")
     .on_left_mouse_down(|ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::CloseFilesModal);
         DispatchEventResult::StopPropagation
@@ -715,7 +743,8 @@ pub fn render_plugins_picker(
                         &title,
                         desc.as_deref(),
                         false,
-                        AgentPanelAction::SelectPlugin(id),
+                        AgentPanelAction::SelectPlugin(id.clone()),
+                        format!("ai:plugin_select:{id}"),
                     ))
                     .with_horizontal_padding(4.0)
                     .finish(),
@@ -750,7 +779,8 @@ pub fn render_plugins_picker(
                         &title,
                         desc.as_deref(),
                         false,
-                        AgentPanelAction::InstallPlugin(id),
+                        AgentPanelAction::InstallPlugin(id.clone()),
+                        format!("ai:plugin_install:{id}"),
                     ))
                     .with_horizontal_padding(4.0)
                     .finish(),

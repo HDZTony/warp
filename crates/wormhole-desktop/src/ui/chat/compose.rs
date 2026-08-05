@@ -2,9 +2,10 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment, MainAxisSize,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack,
+    AutomationTarget, Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment,
+    MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
+    Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -115,7 +116,7 @@ impl ChatComposeView {
             .map(|state| (state.pending_open.is_some(), state.open_error.clone()))
             .unwrap_or((false, None));
         if pending {
-            self.status = "正在打开会话…".into();
+            self.status = wormhole_i18n::t("chat.header.opening");
             self.status_tone = StatusTone::Warn;
             ctx.notify();
             return None;
@@ -126,7 +127,7 @@ impl ChatComposeView {
             ctx.notify();
             return None;
         }
-        self.status = "请先选择会话".into();
+        self.status = wormhole_i18n::t("chat.compose.select_conversation");
         self.status_tone = StatusTone::Warn;
         ctx.notify();
         None
@@ -193,7 +194,10 @@ impl ChatComposeView {
                     }
                     Err(e) => {
                         view.draft = body_for_restore;
-                        view.status = format!("发送失败: {e}");
+                        view.status = wormhole_i18n::t_args(
+                            "chat.send_failed",
+                            &[("err", &e.to_string())],
+                        );
                         view.status_tone = StatusTone::Danger;
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.bump_message_tick();
@@ -217,7 +221,7 @@ impl ChatComposeView {
         let name = path
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "附件".into());
+            .unwrap_or_else(|| wormhole_i18n::t("chat.attachment.default_name"));
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         let path_string = path.to_string_lossy().into_owned();
 
@@ -277,7 +281,10 @@ impl ChatComposeView {
                         }
                     }
                     Err(e) => {
-                        view.status = format!("附件发送失败: {e}");
+                        view.status = wormhole_i18n::t_args(
+                            "chat.attachment_send_failed",
+                            &[("err", &e.to_string())],
+                        );
                         view.status_tone = StatusTone::Danger;
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.bump_message_tick();
@@ -293,6 +300,8 @@ impl ChatComposeView {
         icon_path: &'static str,
         color: ColorU,
         action: ChatComposeAction,
+        automation_label: &str,
+        automation_id: &str,
     ) -> Box<dyn Element> {
         let inner = EventHandler::new(
             Container::new(
@@ -309,16 +318,22 @@ impl ChatComposeView {
             )))
             .finish(),
         )
+        .skip_automation()
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
         })
         .finish();
 
-        ConstrainedBox::new(inner)
-            .with_width(CHAT_COMPOSE_BTN)
-            .with_height(CHAT_COMPOSE_BTN)
-            .finish()
+        AutomationTarget::new(
+            ConstrainedBox::new(inner)
+                .with_width(CHAT_COMPOSE_BTN)
+                .with_height(CHAT_COMPOSE_BTN)
+                .finish(),
+        )
+        .with_label(automation_label)
+        .with_id(automation_id)
+        .finish()
     }
 
     fn compose_send_btn(
@@ -348,16 +363,22 @@ impl ChatComposeView {
             )))
             .finish(),
         )
+        .skip_automation()
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
         })
         .finish();
 
-        ConstrainedBox::new(inner)
-            .with_width(CHAT_COMPOSE_BTN)
-            .with_height(CHAT_COMPOSE_BTN)
-            .finish()
+        AutomationTarget::new(
+            ConstrainedBox::new(inner)
+                .with_width(CHAT_COMPOSE_BTN)
+                .with_height(CHAT_COMPOSE_BTN)
+                .finish(),
+        )
+        .with_label("发送消息")
+        .with_id("chat:send")
+        .finish()
     }
 
     fn attach_kind_icon(&self, kind: AttachKind) -> Box<dyn Element> {
@@ -417,6 +438,8 @@ impl ChatComposeView {
             "chat-compose-attach.svg",
             theme::muted(),
             ChatComposeAction::ToggleAttachPanel,
+            "附件菜单",
+            "chat:attach",
         )
     }
 
@@ -424,15 +447,15 @@ impl ChatComposeView {
         let draft = self.draft.clone();
         let marked = self.field_state.marked_text.clone();
         let placeholder = if self.sending {
-            "发送中…"
+            wormhole_i18n::t("chat.compose.sending")
         } else {
-            "输入消息…"
+            wormhole_i18n::t("chat.compose.placeholder")
         };
         let draft_font = crate::ui::fonts::chat_message_font(self.font, self.emoji_font, &draft);
         let field = render_compose_field_with_caret(
             &draft,
             &marked,
-            placeholder,
+            &placeholder,
             draft_font,
             self.input_focused,
             self.sending,
@@ -476,20 +499,30 @@ impl ChatComposeView {
         })
         .finish();
 
-        let input = ConstrainedBox::new(
-            EventHandler::new(input)
-                .on_left_mouse_down(|ctx, _, _| {
-                    ctx.dispatch_typed_action(ChatComposeAction::FocusInput);
-                    DispatchEventResult::StopPropagation
-                })
+        let draft_label = if self.draft.trim().is_empty() {
+            "消息输入框".to_string()
+        } else {
+            self.draft.clone()
+        };
+        let input_inner = EventHandler::new(input)
+            .skip_automation()
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatComposeAction::FocusInput);
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+        let input = AutomationTarget::new(
+            ConstrainedBox::new(input_inner)
+                .with_min_width(0.0)
+                .with_height(input_height)
+                .with_max_height(multiline_input::box_height(
+                    &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
+                    multiline_input::DEFAULT_COLS,
+                ))
                 .finish(),
         )
-        .with_min_width(0.0)
-        .with_height(input_height)
-        .with_max_height(multiline_input::box_height(
-            &"x".repeat(multiline_input::DEFAULT_COLS * multiline_input::MAX_LINES),
-            multiline_input::DEFAULT_COLS,
-        ))
+        .with_label(draft_label)
+        .with_id("chat:compose_input")
         .finish();
 
         let border_color = if self.input_focused {
@@ -535,6 +568,8 @@ impl View for ChatComposeView {
             "chat-compose-emoji.svg",
             theme::muted(),
             ChatComposeAction::ToggleStickerPicker,
+            "贴纸选择器",
+            "chat:sticker",
         );
 
         let send_btn = if draft_empty {
@@ -542,6 +577,8 @@ impl View for ChatComposeView {
                 "chat-compose-mic.svg",
                 theme::accent_cool(),
                 ChatComposeAction::FocusInput,
+                "聚焦消息输入框",
+                "chat:focus_input",
             )
         } else {
             Self::compose_send_btn(
@@ -628,8 +665,8 @@ impl View for ChatComposeView {
 
     fn accessibility_contents(&self, _app: &AppContext) -> Option<AccessibilityContent> {
         Some(AccessibilityContent::new(
-            "聊天消息输入",
-            "Tab 聚焦输入框。Enter 发送，Shift+Enter 换行。Esc 清空并取消焦点。",
+            wormhole_i18n::t("chat.a11y.compose_label"),
+            wormhole_i18n::t("chat.a11y.compose_help"),
             WarpA11yRole::TextfieldRole,
         ))
     }
@@ -637,9 +674,12 @@ impl View for ChatComposeView {
     fn accessibility_data(&self, _ctx: &mut ViewContext<Self>) -> Option<AccessibilityData> {
         Some(AccessibilityData {
             content: if self.draft.is_empty() {
-                "聊天输入框，空".into()
+                wormhole_i18n::t("chat.a11y.compose_empty")
             } else {
-                format!("聊天输入框，{} 个字符", self.draft.chars().count())
+                wormhole_i18n::t_args(
+                    "chat.a11y.compose_chars",
+                    &[("count", &self.draft.chars().count().to_string())],
+                )
             },
         })
     }
@@ -683,7 +723,7 @@ impl TypedActionView for ChatComposeView {
                 self.attach_open = false;
                 if *kind == AttachKind::Location {
                     if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast("位置附件尚未支持", StatusTone::Muted);
+                        state.show_toast(wormhole_i18n::t("chat.location_unsupported"), StatusTone::Muted);
                     }
                     ctx.notify();
                     return;

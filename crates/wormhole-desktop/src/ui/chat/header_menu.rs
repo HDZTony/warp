@@ -198,7 +198,18 @@ pub fn header_button(
     })
     .finish();
 
+    let (automation_label, automation_id) = match &action {
+        ChatHeaderAction::ToggleThreadSearch => ("搜索消息", "chat:thread_search"),
+        ChatHeaderAction::VoiceCallPrimary => ("语音通话", "chat:voice_call"),
+        ChatHeaderAction::VideoCallPrimary => ("视频通话", "chat:video_call"),
+        ChatHeaderAction::OpenRemoteDesktop => ("远程桌面", "chat:remote_desktop"),
+        ChatHeaderAction::ToggleProfile => ("个人资料", "chat:profile"),
+        ChatHeaderAction::ToggleHeaderMenu => ("更多", "chat:header_menu"),
+        _ => ("聊天操作", "chat:header_action"),
+    };
     EventHandler::new(hoverable)
+        .with_automation_label(automation_label)
+        .with_automation_id(automation_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action_clone.clone());
             DispatchEventResult::StopPropagation

@@ -62,10 +62,11 @@ impl ChatThreadSearchView {
     }
 
     fn action_button(&self, label: String, action: ChatThreadSearchAction) -> Box<dyn Element> {
+        let automation_id = format!("chat:thread_search:{label}");
         EventHandler::new(
             ConstrainedBox::new(
                 Align::new(
-                    ui_text::body(label, self.font)
+                    ui_text::body(label.clone(), self.font)
                         .with_color(theme::muted())
                         .finish(),
                 )
@@ -75,6 +76,8 @@ impl ChatThreadSearchView {
             .with_height(TG_THREAD_SEARCH_CLOSE)
             .finish(),
         )
+        .with_automation_label(label)
+        .with_automation_id(automation_id)
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -222,6 +225,8 @@ impl View for ChatThreadSearchView {
             .with_height(TG_THREAD_SEARCH_CLOSE)
             .finish(),
         )
+        .with_automation_label("关闭搜索")
+        .with_automation_id("chat:thread_search_close")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(ChatThreadSearchAction::Close);
             DispatchEventResult::StopPropagation

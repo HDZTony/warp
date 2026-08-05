@@ -280,6 +280,24 @@ impl WindowsTrafficLightIcon {
         }
     }
 
+    fn automation_label(self) -> &'static str {
+        match self {
+            Self::Minimize => "最小化",
+            Self::Maximize => "最大化",
+            Self::Restore => "还原",
+            Self::Close => "关闭",
+        }
+    }
+
+    fn automation_id(self) -> &'static str {
+        match self {
+            Self::Minimize => "shell:minimize",
+            Self::Maximize => "shell:maximize",
+            Self::Restore => "shell:restore",
+            Self::Close => "shell:close",
+        }
+    }
+
     fn render<A: Action + Clone + 'static>(
         self,
         mouse_state_handle: MouseStateHandle,
@@ -306,6 +324,8 @@ impl WindowsTrafficLightIcon {
                 icon
             }
         })
+        .with_automation_label(self.automation_label())
+        .with_automation_id(self.automation_id())
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
         })
@@ -400,6 +420,8 @@ impl TrafficLightData {
                     Self::windows_minimize_icon(fg_color),
                     theme::panel_elevated(),
                     actions.minimize,
+                    "最小化",
+                    "shell:minimize",
                 )
                 .finish(),
             )
@@ -409,6 +431,16 @@ impl TrafficLightData {
                 Self::windows_maximize_icon(fg_color, fullscreen_state),
                 theme::panel_elevated(),
                 actions.toggle_maximize,
+                if fullscreen_state == FullscreenState::Normal {
+                    "最大化"
+                } else {
+                    "还原"
+                },
+                if fullscreen_state == FullscreenState::Normal {
+                    "shell:maximize"
+                } else {
+                    "shell:restore"
+                },
             )
             .finish(),
             Container::new(
@@ -527,6 +559,8 @@ impl TrafficLightData {
             .with_background_color(background_color)
             .finish()
         })
+        .with_automation_label("关闭")
+        .with_automation_id("shell:close")
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
         })
@@ -538,6 +572,8 @@ impl TrafficLightData {
         child: Box<dyn Element>,
         hover_color: ColorU,
         action: A,
+        automation_label: &'static str,
+        automation_id: &'static str,
     ) -> Hoverable {
         Hoverable::new(mouse_state, move |state| {
             let background_color = if state.is_hovered() {
@@ -555,6 +591,8 @@ impl TrafficLightData {
             .with_background_color(background_color)
             .finish()
         })
+        .with_automation_label(automation_label)
+        .with_automation_id(automation_id)
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
         })
@@ -650,7 +688,21 @@ impl TrafficLightData {
         })
         .finish();
 
+        let automation_label = if is_close {
+            "关闭"
+        } else {
+            label
+        };
+        let automation_id = if is_close {
+            "shell:close"
+        } else if label == "—" {
+            "shell:minimize"
+        } else {
+            "shell:maximize"
+        };
         EventHandler::new(hoverable)
+            .with_automation_label(automation_label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation

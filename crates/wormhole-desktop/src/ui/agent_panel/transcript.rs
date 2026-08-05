@@ -129,7 +129,7 @@ fn user_icon_badge() -> Box<dyn Element> {
     .finish()
 }
 
-fn copy_icon_button(text: String, as_assistant: bool) -> Box<dyn Element> {
+fn copy_icon_button(text: String, as_assistant: bool, line_index: usize) -> Box<dyn Element> {
     Container::new(
         EventHandler::new(
             ConstrainedBox::new(icons::agent_icon("agent-copy.svg", theme::muted()))
@@ -137,6 +137,8 @@ fn copy_icon_button(text: String, as_assistant: bool) -> Box<dyn Element> {
                 .with_height(14.0)
                 .finish(),
         )
+        .with_automation_label("复制")
+        .with_automation_id(format!("ai:transcript_copy:{line_index}"))
         .on_left_mouse_down(move |ctx, _, _| {
             if as_assistant {
                 ctx.dispatch_typed_action(super::AgentPanelAction::CopyAssistantText(text.clone()));
@@ -159,6 +161,8 @@ fn fork_icon_button(line_index: usize) -> Box<dyn Element> {
                 .with_height(14.0)
                 .finish(),
         )
+        .with_automation_label("分叉")
+        .with_automation_id(format!("ai:transcript_fork:{line_index}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(super::AgentPanelAction::ForkFromLine { line_index });
             DispatchEventResult::StopPropagation
@@ -182,6 +186,8 @@ fn tool_expand_chevron(expanded: bool, line_index: usize) -> Box<dyn Element> {
                 .with_height(12.0)
                 .finish(),
         )
+        .with_automation_label(if expanded { "折叠" } else { "展开" })
+        .with_automation_id(format!("ai:transcript_expand:{line_index}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(super::AgentPanelAction::ToggleToolLineExpand { line_index });
             DispatchEventResult::StopPropagation
@@ -202,7 +208,7 @@ fn render_assistant_footer(
     let mut row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_main_axis_size(MainAxisSize::Min)
-        .with_child(copy_icon_button(text, true))
+        .with_child(copy_icon_button(text, true, line_index))
         .with_child(
             Container::new(fork_icon_button(line_index))
                 .with_margin_left(2.0)
@@ -248,7 +254,7 @@ fn render_tool_line(
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(tool_expand_chevron(true, line_index))
-            .with_child(copy_icon_button(copy_text, true))
+            .with_child(copy_icon_button(copy_text, true, line_index))
             .finish();
         col.add_child(header);
         col.add_child(
@@ -277,12 +283,14 @@ fn render_tool_line(
                     .finish(),
                 )
                 .with_child(
-                    Container::new(copy_icon_button(copy_text, true))
+                    Container::new(copy_icon_button(copy_text, true, line_index))
                         .with_margin_left(4.0)
                         .finish(),
                 )
                 .finish(),
         )
+        .with_automation_label("展开工具输出")
+        .with_automation_id(format!("ai:transcript_tool_row:{line_index}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(super::AgentPanelAction::ToggleToolLineExpand { line_index });
             DispatchEventResult::StopPropagation
@@ -293,7 +301,7 @@ fn render_tool_line(
     col.finish()
 }
 
-fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
+fn render_user_message(font: FamilyId, text: &str, line_index: usize) -> Box<dyn Element> {
     let prompt = text.to_string();
     let bubble = ConstrainedBox::new(
         Container::new(
@@ -330,7 +338,7 @@ fn render_user_message(font: FamilyId, text: &str) -> Box<dyn Element> {
             .with_cross_axis_alignment(CrossAxisAlignment::End)
             .with_child(bubble)
             .with_child(
-                Container::new(copy_icon_button(prompt, false))
+                Container::new(copy_icon_button(prompt, false, line_index))
                     .with_margin_top(6.0)
                     .finish(),
             )
@@ -427,7 +435,7 @@ fn render_live_line(
     expanded_tool: bool,
 ) -> Box<dyn Element> {
     match line.channel.as_str() {
-        "user" => render_user_message(font, &line.text),
+        "user" => render_user_message(font, &line.text, line_index),
         "status" => render_status_line(font, &line.text),
         "assistant" => render_assistant_body(font, line, line_index),
         ch if is_mono_tool_channel(ch) => {

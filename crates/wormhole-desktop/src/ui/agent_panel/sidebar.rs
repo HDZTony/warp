@@ -8,10 +8,10 @@ use pathfinder_geometry::vector::vec2f;
 use serde::{Deserialize, Serialize};
 use warpui::elements::Fill;
 use warpui::elements::{
-    Align, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
-    Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
-    MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
-    ScrollbarWidth, Shrinkable, Stack,
+    Align, AutomationTarget, Border, ChildAnchor, ClippedScrollStateHandle, ClippedScrollable,
+    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler,
+    Expanded, Flex, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement,
+    ParentOffsetBounds, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
@@ -253,6 +253,8 @@ fn agent_sidebar_icon_btn(
     icon_path: &'static str,
     btn_size: f32,
     icon_size: f32,
+    automation_label: impl Into<String>,
+    automation_id: impl Into<String>,
 ) -> Box<dyn Element> {
     let hovered = sidebar_hover == Some(hover_key);
     let icon_color = if hovered {
@@ -275,6 +277,8 @@ fn agent_sidebar_icon_btn(
     let hover_key_in = hover_key.to_string();
     let hover_key_out = hover_key.to_string();
     EventHandler::new(container.finish())
+        .with_automation_label(automation_label)
+        .with_automation_id(automation_id)
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
@@ -302,6 +306,8 @@ fn agent_sidebar_icon_btn_dynamic(
     icon_path: &'static str,
     btn_size: f32,
     icon_size: f32,
+    automation_label: impl Into<String>,
+    automation_id: impl Into<String>,
 ) -> Box<dyn Element> {
     let hovered = sidebar_hover == Some(hover_key.as_str());
     let icon_color = if hovered {
@@ -324,6 +330,8 @@ fn agent_sidebar_icon_btn_dynamic(
     let hover_key_in = hover_key.clone();
     let hover_key_out = hover_key;
     EventHandler::new(container.finish())
+        .with_automation_label(automation_label)
+        .with_automation_id(automation_id)
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
@@ -350,10 +358,12 @@ fn agent_sidebar_icon_btn_dynamic(
 fn sidebar_section_head(
     font: FamilyId,
     label: &str,
-    more: Option<(&'static str, AgentPanelAction)>,
+    more: Option<(&'static str, AgentPanelAction, &'static str, &'static str)>,
     new_hover_key: &'static str,
     new_action: AgentPanelAction,
     new_icon: &'static str,
+    new_automation_label: &'static str,
+    new_automation_id: &'static str,
     menu: Option<Box<dyn Element>>,
     sidebar_hover: Option<&str>,
 ) -> Box<dyn Element> {
@@ -364,10 +374,12 @@ fn sidebar_section_head(
         new_icon,
         SIDEBAR_ICON_BTN,
         icons::AGENT_ICON_SIZE,
+        new_automation_label,
+        new_automation_id,
     );
 
     let mut actions = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-    if let Some((more_hover_key, more_action)) = more {
+    if let Some((more_hover_key, more_action, more_label, more_id)) = more {
         actions = actions.with_child(
             Container::new(agent_sidebar_icon_btn(
                 more_hover_key,
@@ -376,6 +388,8 @@ fn sidebar_section_head(
                 "agent-more.svg",
                 SIDEBAR_ICON_BTN,
                 icons::AGENT_ICON_SIZE,
+                more_label,
+                more_id,
             ))
             .with_margin_right(2.0)
             .finish(),
@@ -428,6 +442,8 @@ fn render_projects_section_menu(
         ),
     ];
     EventHandler::new(sidebar_dropdown_menu(font, items, sidebar_hover))
+        .with_automation_label("项目菜单")
+        .with_automation_id("ai:projects_menu_panel")
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
 }
@@ -476,6 +492,8 @@ fn render_chats_section_menu(
     ));
 
     EventHandler::new(menu_shell(CHATS_MENU_WIDTH, 6.0, 12.0, col.finish()))
+        .with_automation_label("对话菜单")
+        .with_automation_id("ai:chats_menu_panel")
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
 }
@@ -538,6 +556,8 @@ fn chats_menu_item(
     }
 
     EventHandler::new(container.finish())
+        .with_automation_label(label)
+        .with_automation_id(format!("ai:chats_menu:{hover_key}"))
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
@@ -665,6 +685,8 @@ fn render_sort_flyout(
 
 fn flyout_shell(child: Box<dyn Element>) -> Box<dyn Element> {
     EventHandler::new(menu_shell(CHATS_FLYOUT_WIDTH, 6.0, 12.0, child))
+        .with_automation_label("对话子菜单")
+        .with_automation_id("ai:chats_flyout_panel")
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
 }
@@ -727,6 +749,7 @@ fn search_box(font: FamilyId, search: &str, search_focused: bool) -> Box<dyn Ele
                         .with_color(search_color)
                         .finish(),
                 )
+                .skip_automation()
                 .on_left_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(AgentPanelAction::FocusSidebarSearch);
                     DispatchEventResult::StopPropagation
@@ -746,13 +769,24 @@ fn search_box(font: FamilyId, search: &str, search_focused: bool) -> Box<dyn Ele
         AGENT_ROW_RADIUS,
     );
 
-    Container::new(
-        ConstrainedBox::new(pill)
-            .with_width(SIDEBAR_WIDTH - 4.0)
-            .finish(),
+    let automation_label = if search.is_empty() {
+        "搜索对话".to_string()
+    } else {
+        search.to_string()
+    };
+
+    AutomationTarget::new(
+        Container::new(
+            ConstrainedBox::new(pill)
+                .with_width(SIDEBAR_WIDTH - 4.0)
+                .finish(),
+        )
+        .with_horizontal_margin(2.0)
+        .with_margin_bottom(8.0)
+        .finish(),
     )
-    .with_horizontal_margin(2.0)
-    .with_margin_bottom(8.0)
+    .with_label(automation_label)
+    .with_id("ai:sidebar_search")
     .finish()
 }
 
@@ -806,6 +840,8 @@ fn row_delete_button(
     .finish();
 
     EventHandler::new(btn)
+        .with_automation_label("归档对话")
+        .with_automation_id("ai:sidebar_row_archive")
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation
@@ -875,9 +911,13 @@ fn row_with_delete(
     delete_enabled: bool,
     session_id: String,
 ) -> Box<dyn Element> {
-    let inner = row_item_inner(font, label, time, active, show_spinner, archived, nested);
+    let inner = row_item_inner(font, label.clone(), time, active, show_spinner, archived, nested);
     let select = select_action.clone();
+    let row_label = label;
+    let row_session_id = session_id.clone();
     let main = EventHandler::new(inner)
+        .with_automation_label(row_label)
+        .with_automation_id(format!("ai:sidebar_row:{row_session_id}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(select.clone());
             DispatchEventResult::StopPropagation
@@ -939,6 +979,8 @@ fn project_row_more_btn(
     let hover_key_out = hover_key;
     let open_id = project_id.clone();
     let btn = EventHandler::new(container.finish())
+        .with_automation_label("项目菜单")
+        .with_automation_id(format!("ai:project_menu:{project_id}"))
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
@@ -1010,6 +1052,11 @@ fn project_tree_block(
         theme::muted()
     };
     let toggle_id = project.id.clone();
+    let toggle_label = if force_expanded {
+        "折叠项目"
+    } else {
+        "展开项目"
+    };
     let toggle = EventHandler::new(
         Container::new(
             ConstrainedBox::new(Align::new(icons::icon(chevron_path, 12.0, toggle_color)).finish())
@@ -1019,6 +1066,8 @@ fn project_tree_block(
         )
         .finish(),
     )
+    .with_automation_label(toggle_label)
+    .with_automation_id(format!("ai:project_toggle:{toggle_id}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::ToggleProjectExpanded(toggle_id.clone()));
         DispatchEventResult::StopPropagation
@@ -1026,6 +1075,7 @@ fn project_tree_block(
     .finish();
 
     let select_id = project.id.clone();
+    let select_label = project.label.clone();
     let head_btn = EventHandler::new(
         Container::new(
             Flex::row()
@@ -1054,6 +1104,8 @@ fn project_tree_block(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_ROW_RADIUS)))
         .finish(),
     )
+    .with_automation_label(select_label)
+    .with_automation_id(format!("ai:project_select:{select_id}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(AgentPanelAction::SelectProject(select_id.clone()));
         DispatchEventResult::StopPropagation
@@ -1083,6 +1135,8 @@ fn project_tree_block(
                     "agent-edit.svg",
                     PROJECT_HEAD_ICON_BTN,
                     icons::AGENT_ICON_SIZE,
+                    "新建对话",
+                    format!("ai:project_new_thread:{}", project.id),
                 ))
                 .finish(),
         )
@@ -1219,6 +1273,8 @@ fn sidebar_menu_item(
 
     let hover_key_in = hover_key.clone();
     EventHandler::new(row)
+        .with_automation_label(label)
+        .with_automation_id(format!("ai:sidebar_menu_item:{label}"))
         .on_mouse_in(
             move |ctx, _, _| {
                 ctx.dispatch_typed_action(AgentPanelAction::SetSidebarHover(Some(
@@ -1317,6 +1373,8 @@ fn project_row_menu_panel(
         AgentPanelAction::OpenProjectDeleteModal(project_id.to_string()),
     )];
     EventHandler::new(sidebar_dropdown_menu(font, items, sidebar_hover))
+        .with_automation_label("项目行菜单")
+        .with_automation_id(format!("ai:project_row_menu:{project_id}"))
         .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
         .finish()
 }
@@ -1359,10 +1417,17 @@ pub fn render_sidebar(
         Container::new(sidebar_section_head(
             font,
             "项目",
-            Some(("projects-more", AgentPanelAction::ToggleProjectsMenu)),
+            Some((
+                "projects-more",
+                AgentPanelAction::ToggleProjectsMenu,
+                "更多",
+                "ai:projects_more",
+            )),
             "new-project",
             AgentPanelAction::OpenProjectCreateModal,
             "agent-edit.svg",
+            "新建项目",
+            "ai:new_project",
             projects_menu,
             sidebar_hover,
         ))
@@ -1416,10 +1481,17 @@ pub fn render_sidebar(
         Container::new(sidebar_section_head(
             font,
             "对话",
-            Some(("chats-more", AgentPanelAction::ToggleChatsMenu)),
+            Some((
+                "chats-more",
+                AgentPanelAction::ToggleChatsMenu,
+                "更多",
+                "ai:chats_more",
+            )),
             "new-chat",
             AgentPanelAction::NewStandaloneChat,
             "agent-edit.svg",
+            "新建对话",
+            "ai:new_chat",
             chats_menu,
             sidebar_hover,
         ))

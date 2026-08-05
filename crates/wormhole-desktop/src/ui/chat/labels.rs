@@ -52,7 +52,7 @@ pub fn conversation_device_title(
             .title
             .clone()
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| "群聊".to_string());
+            .unwrap_or_else(|| wormhole_i18n::t("chat.group"));
     }
     if let Some(node) = find_cluster_node(conv, cluster) {
         return format!("{} · {}", node.os, node.hostname);
@@ -61,7 +61,7 @@ pub fn conversation_device_title(
         .clone()
         .filter(|name| !name.is_empty())
         .or_else(|| conv.title.clone())
-        .unwrap_or_else(|| "未知设备".to_string())
+        .unwrap_or_else(|| wormhole_i18n::t("chat.unknown_device"))
 }
 
 /// Sidebar / header avatar initials aligned with HTML `chatAvatarForDevice`.
@@ -122,16 +122,16 @@ pub fn conversation_preview(
         return preview.to_string();
     }
     if conv.last_message_at.is_some() {
-        return "有新消息".to_string();
+        return wormhole_i18n::t("chat.new_message");
     }
     if let Some(node) = find_cluster_node(conv, cluster) {
         return if node.online {
-            "在线 · 等待消息…".to_string()
+            wormhole_i18n::t("chat.waiting")
         } else {
-            "离线".to_string()
+            wormhole_i18n::t("common.offline")
         };
     }
-    "等待消息…".to_string()
+    wormhole_i18n::t("chat.waiting_short")
 }
 
 #[cfg(test)]
@@ -200,6 +200,7 @@ mod tests {
                 server_member_confirmed: false,
                 same_account: false,
                 user_id: None,
+                account_display_name: None,
                 pending_handshake: false,
                 handshake_error: None,
                 share_volumes: Vec::new(),
@@ -300,11 +301,12 @@ mod tests {
 
     #[test]
     fn conversation_preview_does_not_repeat_device_name() {
+        wormhole_i18n::set_locale("zh-CN");
         let conv = sample_conv("direct", "peer-1", None, None, Some("wormhole"));
         let cluster = cluster_with_node("peer-1", "Windows", "DESKTOP-VHCQ89I");
         assert_eq!(
             conversation_preview(&conv, Some(&cluster)),
-            "在线 · 等待消息…"
+            wormhole_i18n::t("chat.waiting")
         );
     }
 

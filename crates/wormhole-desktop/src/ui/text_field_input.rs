@@ -844,7 +844,16 @@ pub fn wrap_text_field_focus_on_click(
     input: Box<dyn Element>,
     on_focus: impl Fn(&mut EventContext) + 'static,
 ) -> Box<dyn Element> {
+    wrap_text_field_focus_on_click_with_label(input, "聚焦输入框", on_focus)
+}
+
+pub fn wrap_text_field_focus_on_click_with_label(
+    input: Box<dyn Element>,
+    label: impl Into<String>,
+    on_focus: impl Fn(&mut EventContext) + 'static,
+) -> Box<dyn Element> {
     EventHandler::new(input)
+        .with_automation_label(label)
         .on_left_mouse_down(move |ctx, _, _| {
             on_focus(ctx);
             DispatchEventResult::StopPropagation

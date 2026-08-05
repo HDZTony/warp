@@ -151,6 +151,8 @@ pub fn build_ai_mic_slot(
 
     let btn = if stt_available {
         EventHandler::new(ringed)
+            .with_automation_label("AI 麦克风")
+            .with_automation_id("hud:ai_mic")
             .on_left_mouse_down(|ctx, _, _| {
                 ctx.dispatch_typed_action(AppShellAction::ToggleAiMic);
                 DispatchEventResult::StopPropagation
@@ -158,6 +160,8 @@ pub fn build_ai_mic_slot(
             .finish()
     } else {
         EventHandler::new(ringed)
+            .with_automation_label("AI 面板")
+            .with_automation_id("hud:ai_panel_open")
             .on_left_mouse_down(|ctx, _, _| {
                 // Still open panel to show the unavailable reason.
                 ctx.dispatch_typed_action(AppShellAction::OpenAiPanel);
@@ -301,6 +305,8 @@ pub fn build_ai_output_panel(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS + 2.0)))
         .finish(),
     )
+    .with_automation_label("AI 输出面板")
+    .with_automation_id("hud:ai_output")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish()
 }
@@ -413,6 +419,8 @@ pub fn build_purchase_modal(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish(),
     )
+    .with_automation_label("购买对话框")
+    .with_automation_id("hud:purchase_dialog")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish();
 
@@ -423,6 +431,8 @@ pub fn build_purchase_modal(
     .finish();
 
     EventHandler::new(scrim)
+        .with_automation_label("关闭购买")
+        .with_automation_id("hud:scrim_purchase")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(AppShellAction::ClosePurchaseModal);
             DispatchEventResult::StopPropagation
@@ -596,6 +606,8 @@ pub fn build_redeem_modal(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish(),
     )
+    .with_automation_label("兑换对话框")
+    .with_automation_id("hud:redeem_dialog")
     .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
     .finish();
 
@@ -606,6 +618,8 @@ pub fn build_redeem_modal(
     .finish();
 
     EventHandler::new(scrim)
+        .with_automation_label("关闭兑换")
+        .with_automation_id("hud:scrim_redeem")
         .on_left_mouse_down(|ctx, _, _| {
             ctx.dispatch_typed_action(AppShellAction::CloseRedeemModal);
             DispatchEventResult::StopPropagation
@@ -697,6 +711,8 @@ fn redeem_tab_button(
         container = container.with_border(Border::all(1.0).with_border_fill(border));
     }
     EventHandler::new(container.finish())
+        .with_automation_label(label)
+        .with_automation_id(format!("hud:redeem_tab:{label}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(AppShellAction::SwitchRedeemTab(tab));
             DispatchEventResult::StopPropagation
@@ -1080,6 +1096,8 @@ fn modal_cancel_button(
     );
     if enabled {
         button
+            .with_automation_label(label.to_string())
+            .with_automation_id(format!("hud:btn:{label}"))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -1126,6 +1144,8 @@ fn modal_submit_button(
     );
     if enabled {
         button
+            .with_automation_label(label.to_string())
+            .with_automation_id(format!("hud:submit:{label}"))
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -1175,6 +1195,8 @@ fn redeem_button(
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
         .finish(),
     )
+    .with_automation_label(label.to_string())
+    .with_automation_id(format!("hud:redeem:{label}"))
     .on_left_mouse_down(move |ctx, _, _| {
         ctx.dispatch_typed_action(action.clone());
         DispatchEventResult::StopPropagation

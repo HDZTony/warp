@@ -313,6 +313,8 @@ impl ChatProfilePanelView {
             .with_padding_bottom(8.0)
             .finish(),
         )
+        .with_automation_label(label.to_string())
+        .with_automation_id(format!("chat:profile:{label}"))
         .on_left_mouse_down(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
             DispatchEventResult::StopPropagation

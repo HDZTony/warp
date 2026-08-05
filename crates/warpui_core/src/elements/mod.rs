@@ -1,4 +1,5 @@
 mod align;
+mod automation_target;
 mod child_view;
 mod clipped;
 mod clipped_scrollable;
@@ -41,6 +42,7 @@ use std::ops::Range;
 use std::sync::MutexGuard;
 
 pub use align::*;
+pub use automation_target::*;
 pub use child_view::*;
 pub use clipped::*;
 pub use clipped_scrollable::*;

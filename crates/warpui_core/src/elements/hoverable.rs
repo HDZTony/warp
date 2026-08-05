@@ -63,6 +63,10 @@ pub struct Hoverable {
     //
     suppress_drag: bool,
     defer_events_to_children: bool,
+    /// Agent UI-automation label (desktop sim-use outline / `tap --label`).
+    automation_label: Option<String>,
+    /// Optional stable `#id` for selectors that survive minor layout churn.
+    automation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -224,7 +228,35 @@ impl Hoverable {
             child_max_z_index: None,
             suppress_drag: true,
             defer_events_to_children: false,
+            automation_label: None,
+            automation_id: None,
         }
+    }
+
+    /// Sets the human-readable label used by desktop UI automation (`ui_outline` / `tap --label`).
+    /// Prefer the same wording as `action_accessibility_contents` where applicable.
+    pub fn with_automation_label(mut self, label: impl Into<String>) -> Self {
+        self.automation_label = Some(label.into());
+        self
+    }
+
+    /// Optional stable id for `#id` selectors across layout churn.
+    pub fn with_automation_id(mut self, id: impl Into<String>) -> Self {
+        self.automation_id = Some(id.into());
+        self
+    }
+
+    fn is_automation_interactive(&self) -> bool {
+        !self.disabled
+            && (self.click_handler.is_some()
+                || self.click_with_modifiers_handler.is_some()
+                || self.mouse_down_handler.is_some()
+                || self.mouse_down_with_modifiers_handler.is_some()
+                || self.double_click_handler.is_some()
+                || self.middle_click_handler.is_some()
+                || self.right_click_handler.is_some()
+                || self.forward_click_handler.is_some()
+                || self.back_click_handler.is_some())
     }
 
     /// Adds additional behavior on hover to any existing hover handler, instead
@@ -591,6 +623,20 @@ impl Element for Hoverable {
         self.child.paint(origin, ctx, app);
 
         self.child_max_z_index = Some(ctx.scene.max_active_z_index());
+
+        if self.is_automation_interactive() {
+            if let Some(size) = self.child.size() {
+                let view_id = ctx
+                    .painting_view_id
+                    .unwrap_or_else(|| crate::EntityId::from_usize(0));
+                ctx.automation_cache.register(crate::ui_automation::AutomationHit {
+                    label: self.automation_label.clone(),
+                    stable_id: self.automation_id.clone(),
+                    bounds: pathfinder_geometry::rect::RectF::new(origin, size),
+                    view_id,
+                });
+            }
+        }
     }
 
     fn size(&self) -> Option<Vector2F> {

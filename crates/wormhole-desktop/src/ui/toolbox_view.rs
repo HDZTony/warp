@@ -176,7 +176,10 @@ impl ToolboxView {
                 match output.0 {
                     Ok(apps) => view.local_user_apps = apps,
                     Err(error) => {
-                        view.message = format!("读取本机用户程序失败: {error}");
+                        view.message = wormhole_i18n::t_args(
+                            "toolbox.user_apps.read_failed",
+                            &[("err", &error.to_string())],
+                        );
                         view.message_tone = StatusTone::Danger;
                     }
                 }
@@ -185,7 +188,10 @@ impl ToolboxView {
                     Err(error) => {
                         // Catalog requires login; keep local list usable.
                         if view.message.is_empty() {
-                            view.message = format!("用户程序目录暂不可用: {error}");
+                            view.message = wormhole_i18n::t_args(
+                                "toolbox.user_apps.catalog_unavailable",
+                                &[("err", &error.to_string())],
+                            );
                             view.message_tone = StatusTone::Placeholder;
                         }
                     }
@@ -198,7 +204,7 @@ impl ToolboxView {
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         self.loading = true;
         if self.tools.is_empty() {
-            self.message = "正在读取工具目录…".into();
+            self.message = wormhole_i18n::t("toolbox.loading");
             self.message_tone = StatusTone::Placeholder;
         }
         ctx.notify();
@@ -213,12 +219,15 @@ impl ToolboxView {
                 match output {
                     Ok(tools) => {
                         view.tools = tools;
-                        if view.message == "正在读取工具目录…" {
+                        if view.message == wormhole_i18n::t("toolbox.loading") {
                             view.message.clear();
                         }
                     }
                     Err(error) => {
-                        view.message = format!("读取工具目录失败: {error}");
+                        view.message = wormhole_i18n::t_args(
+                            "toolbox.read_failed",
+                            &[("err", &error.to_string())],
+                        );
                         view.message_tone = StatusTone::Danger;
                     }
                 }
@@ -263,9 +272,10 @@ impl ToolboxView {
         disabled: bool,
         primary: bool,
     ) -> Box<dyn Element> {
+        let automation_id = format!("toolbox:btn:{label}");
         Container::new(
             EventHandler::new(
-                ui_text::body(label, self.font)
+                ui_text::body(label.clone(), self.font)
                     .with_color(if disabled {
                         theme::placeholder()
                     } else if primary {
@@ -275,6 +285,8 @@ impl ToolboxView {
                     })
                     .finish(),
             )
+            .with_automation_label(label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 if !disabled {
                     ctx.dispatch_typed_action(action.clone());
@@ -303,13 +315,17 @@ impl ToolboxView {
         category: Option<ToolCategory>,
         selected: bool,
     ) -> Box<dyn Element> {
+        let chip_label = label.to_string();
+        let automation_id = format!("toolbox:category:{chip_label}");
         let action = ToolboxAction::SetCategory(category);
         Container::new(
             EventHandler::new(
-                ui_text::body(label.to_string(), self.font)
+                ui_text::body(chip_label.clone(), self.font)
                     .with_color(if selected { theme::bg() } else { theme::text() })
                     .finish(),
             )
+            .with_automation_label(chip_label)
+            .with_automation_id(automation_id)
             .on_left_mouse_down(move |ctx, _, _| {
                 ctx.dispatch_typed_action(action.clone());
                 DispatchEventResult::StopPropagation
@@ -339,14 +355,14 @@ impl ToolboxView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min);
         let chips = [
-            ("全部", None),
-            ("文档", Some(ToolCategory::Documents)),
-            ("表格", Some(ToolCategory::Spreadsheets)),
-            ("3D", Some(ToolCategory::ThreeD)),
+            (wormhole_i18n::t("toolbox.category.all"), None),
+            (wormhole_i18n::t("toolbox.category.documents"), Some(ToolCategory::Documents)),
+            (wormhole_i18n::t("toolbox.category.spreadsheets"), Some(ToolCategory::Spreadsheets)),
+            (wormhole_i18n::t("toolbox.category.3d"), Some(ToolCategory::ThreeD)),
         ];
         for (index, (label, category)) in chips.into_iter().enumerate() {
             let selected = self.selected_category == category;
-            let chip = self.category_chip(label, category, selected);
+            let chip = self.category_chip(&label, category, selected);
             row.add_child(
                 Container::new(chip)
                     .with_margin_left(if index == 0 { 0.0 } else { 8.0 })
@@ -357,10 +373,11 @@ impl ToolboxView {
     }
 
     fn search_box(&self) -> Box<dyn Element> {
+        let search_placeholder = wormhole_i18n::t("toolbox.search.placeholder");
         let field = render_search_field_with_caret(
             &self.search_query,
             &self.search_field.marked_text,
-            "搜索工具名称或扩展名…",
+            &search_placeholder,
             self.font,
             self.search_focused,
             false,
@@ -414,7 +431,7 @@ impl ToolboxView {
     fn primary_action(&self, tool: &ToolSummary) -> (String, ToolboxAction, bool, bool) {
         if self.busy_tool.as_deref() == Some(tool.descriptor.id.as_str()) {
             return (
-                "取消".into(),
+                wormhole_i18n::t("toolbox.cancel"),
                 ToolboxAction::Cancel(tool.descriptor.id.clone()),
                 false,
                 false,
@@ -422,37 +439,37 @@ impl ToolboxView {
         }
         match tool.status.stage {
             ToolInstallStage::Ready if tool.descriptor.requires_file => (
-                "从文件打开".into(),
+                wormhole_i18n::t("toolbox.open_from_file"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 true,
             ),
             ToolInstallStage::Prepared if tool.descriptor.requires_file => (
-                "到共享文件中打开".into(),
+                wormhole_i18n::t("toolbox.open_in_shared"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 false,
             ),
             ToolInstallStage::Ready => (
-                "打开".into(),
+                wormhole_i18n::t("toolbox.open"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 true,
             ),
             ToolInstallStage::UpdateAvailable => (
-                "更新".into(),
+                wormhole_i18n::t("toolbox.update"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 true,
             ),
             ToolInstallStage::Failed if tool.status.available_version.is_some() => (
-                "重试".into(),
+                wormhole_i18n::t("toolbox.retry"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 true,
             ),
             ToolInstallStage::NotInstalled if tool.status.available_version.is_some() => (
-                "安装".into(),
+                wormhole_i18n::t("toolbox.install"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 false,
                 true,
@@ -461,13 +478,13 @@ impl ToolboxView {
             | ToolInstallStage::Checking
             | ToolInstallStage::Verifying
             | ToolInstallStage::Installing => (
-                "处理中".into(),
+                wormhole_i18n::t("toolbox.processing"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 true,
                 false,
             ),
             _ => (
-                "未开放".into(),
+                wormhole_i18n::t("toolbox.unavailable"),
                 ToolboxAction::Primary(tool.descriptor.id.clone()),
                 true,
                 false,
@@ -489,20 +506,34 @@ impl ToolboxView {
         }
     }
 
-    fn install_badge(tool: &ToolSummary) -> (&'static str, StatusTone) {
+    fn install_badge(tool: &ToolSummary) -> (String, StatusTone) {
         match tool.status.stage {
-            ToolInstallStage::Ready | ToolInstallStage::Prepared => ("已安装", StatusTone::Success),
-            ToolInstallStage::UpdateAvailable => ("可更新", StatusTone::Warn),
+            ToolInstallStage::Ready | ToolInstallStage::Prepared => {
+                (wormhole_i18n::t("toolbox.badge.installed"), StatusTone::Success)
+            }
+            ToolInstallStage::UpdateAvailable => {
+                (wormhole_i18n::t("toolbox.badge.update_available"), StatusTone::Warn)
+            }
             ToolInstallStage::Downloading
             | ToolInstallStage::Checking
             | ToolInstallStage::Verifying
-            | ToolInstallStage::Installing => ("安装中", StatusTone::Warn),
-            ToolInstallStage::Failed => ("失败", StatusTone::Danger),
-            ToolInstallStage::Cancelled => ("已取消", StatusTone::Placeholder),
-            ToolInstallStage::NotInstalled if tool.status.available_version.is_some() => {
-                ("未安装", StatusTone::Placeholder)
+            | ToolInstallStage::Installing => {
+                (wormhole_i18n::t("toolbox.badge.installing"), StatusTone::Warn)
             }
-            ToolInstallStage::NotInstalled => ("未开放", StatusTone::Placeholder),
+            ToolInstallStage::Failed => {
+                (wormhole_i18n::t("toolbox.badge.failed"), StatusTone::Danger)
+            }
+            ToolInstallStage::Cancelled => {
+                (wormhole_i18n::t("toolbox.badge.cancelled"), StatusTone::Placeholder)
+            }
+            ToolInstallStage::NotInstalled if tool.status.available_version.is_some() => (
+                wormhole_i18n::t("toolbox.badge.not_installed"),
+                StatusTone::Placeholder,
+            ),
+            ToolInstallStage::NotInstalled => (
+                wormhole_i18n::t("toolbox.badge.unavailable"),
+                StatusTone::Placeholder,
+            ),
         }
     }
 
@@ -521,14 +552,20 @@ impl ToolboxView {
     fn metadata_text(tool: &ToolSummary) -> String {
         let mut parts = Vec::new();
         match tool.descriptor.executor {
-            ToolExecutorKind::LocalProcess => parts.push("本机工具".to_string()),
-            ToolExecutorKind::SourceRuntime => parts.push("来源电脑运行器".to_string()),
-            ToolExecutorKind::CloudGpu => parts.push("云 GPU".to_string()),
+            ToolExecutorKind::LocalProcess => {
+                parts.push(wormhole_i18n::t("toolbox.executor.local"));
+            }
+            ToolExecutorKind::SourceRuntime => {
+                parts.push(wormhole_i18n::t("toolbox.executor.source_runtime"));
+            }
+            ToolExecutorKind::CloudGpu => {
+                parts.push(wormhole_i18n::t("toolbox.executor.cloud_gpu"));
+            }
         }
         if let Some(package) = tool.descriptor.packages.first() {
             parts.push(match package.source {
-                ToolSourceKind::WormholeR2 => "Wormhole 签名仓库".into(),
-                ToolSourceKind::Official => "软件官方源".into(),
+                ToolSourceKind::WormholeR2 => wormhole_i18n::t("toolbox.source.r2"),
+                ToolSourceKind::Official => wormhole_i18n::t("toolbox.source.official"),
             });
         }
         if let Some(version) = tool
@@ -588,7 +625,7 @@ impl ToolboxView {
                 .finish(),
             )
             .with_child(
-                Container::new(self.badge_chip(badge_label, badge_tone))
+                Container::new(self.badge_chip(&badge_label, badge_tone))
                     .with_margin_left(8.0)
                     .finish(),
             );
@@ -680,7 +717,7 @@ impl ToolboxView {
 
     fn start_install(&mut self, tool_id: String, ctx: &mut ViewContext<Self>) {
         self.busy_tool = Some(tool_id.clone());
-        self.message = "正在准备下载；软件只会安装到当前用户的 Wormhole 目录。".into();
+        self.message = wormhole_i18n::t("toolbox.install_prepare");
         self.message_tone = StatusTone::Warn;
         ctx.notify();
         let core = self.core.clone();
@@ -697,7 +734,10 @@ impl ToolboxView {
                         view.message_tone = Self::tool_status_tone(&status.stage);
                     }
                     Err(error) => {
-                        view.message = format!("安装失败: {error}");
+                        view.message = wormhole_i18n::t_args(
+                            "toolbox.install_failed",
+                            &[("err", &error.to_string())],
+                        );
                         view.message_tone = StatusTone::Danger;
                     }
                 }
@@ -711,16 +751,17 @@ impl ToolboxView {
             return;
         };
         if tool.descriptor.requires_file {
-            self.message = format!(
-                "请在同步盘或共享文件右侧面板选择支持的文件，再用 {} 打开。",
-                tool.descriptor.name
+            self.message = wormhole_i18n::t_args(
+                "toolbox.open_need_file",
+                &[("name", &tool.descriptor.name)],
             );
             self.message_tone = StatusTone::Neutral;
             ctx.notify();
             return;
         }
         self.busy_tool = Some(tool_id.clone());
-        self.message = format!("正在打开 {}…", tool.descriptor.name);
+        self.message =
+            wormhole_i18n::t_args("toolbox.opening", &[("name", &tool.descriptor.name)]);
         self.message_tone = StatusTone::Placeholder;
         ctx.notify();
         let core = self.core.clone();
@@ -733,11 +774,14 @@ impl ToolboxView {
                 view.busy_tool = None;
                 match output {
                     Ok(()) => {
-                        view.message = "已启动。".into();
+                        view.message = wormhole_i18n::t("toolbox.launch_ok");
                         view.message_tone = StatusTone::Success;
                     }
                     Err(error) => {
-                        view.message = format!("打开失败: {error}");
+                        view.message = wormhole_i18n::t_args(
+                            "toolbox.launch_failed",
+                            &[("err", &error.to_string())],
+                        );
                         view.message_tone = StatusTone::Danger;
                     }
                 }
@@ -747,10 +791,12 @@ impl ToolboxView {
     }
 
     fn user_apps_section(&self) -> Box<dyn Element> {
+        let display_placeholder = wormhole_i18n::t("toolbox.user_apps.display_placeholder");
+        let exts_placeholder = wormhole_i18n::t("toolbox.user_apps.exts_placeholder");
         let mut section = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         section.add_child(
             Container::new(section_hint(
-                "用户程序：导入 Linux 程序包（bin / 目录 / .AppImage / .deb）后可发布到控制面，并在共享文件「远程虚拟机打开」中选用。下载范围可选所有人 / 联系人 / 指定人。真正打开发生在 Linux worker；本机非 Linux 时可能无法写入 worker installed_apps，但不影响发布。",
+                wormhole_i18n::t("toolbox.user_apps.intro"),
                 self.font,
             ))
             .with_margin_top(SECTION_GAP)
@@ -761,9 +807,9 @@ impl ToolboxView {
             .with_main_axis_size(MainAxisSize::Max);
         toolbar.add_child(self.action_button(
             if self.user_apps_busy {
-                "同步中…".into()
+                wormhole_i18n::t("toolbox.user_apps.syncing")
             } else {
-                "同步用户程序".into()
+                wormhole_i18n::t("toolbox.user_apps.sync")
             },
             ToolboxAction::RefreshUserApps,
             self.user_apps_busy,
@@ -776,7 +822,7 @@ impl ToolboxView {
         );
         section.add_child(
             Container::new(section_hint(
-                "导入路径（文件 / 目录 / .AppImage / .deb）：",
+                wormhole_i18n::t("toolbox.user_apps.import_path_label"),
                 self.font,
             ))
             .with_margin_top(10.0)
@@ -788,7 +834,7 @@ impl ToolboxView {
         path_row.add_child(Expanded::new(1.0, self.import_path_box()).finish());
         path_row.add_child(
             Container::new(self.action_button(
-                "浏览…".into(),
+                wormhole_i18n::t("toolbox.user_apps.browse"),
                 ToolboxAction::BrowseImportPath,
                 self.user_apps_busy,
                 false,
@@ -802,15 +848,18 @@ impl ToolboxView {
                 .finish(),
         );
         section.add_child(
-            Container::new(section_hint("显示名称（可选）", self.font))
-                .with_margin_top(8.0)
-                .finish(),
+            Container::new(section_hint(
+                wormhole_i18n::t("toolbox.user_apps.display_name"),
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
         );
         section.add_child(
             Container::new(self.meta_field_box(
                 &self.import_display_name,
                 &self.import_display_name_field,
-                "例如 My Viewer",
+                &display_placeholder,
                 self.import_display_name_focused,
                 ToolboxAction::ImportDisplayNameEdit,
                 ToolboxAction::ActivateImportDisplayName,
@@ -821,7 +870,7 @@ impl ToolboxView {
         );
         section.add_child(
             Container::new(section_hint(
-                "关联扩展名（逗号分隔，留空=任意文件）",
+                wormhole_i18n::t("toolbox.user_apps.exts_label"),
                 self.font,
             ))
             .with_margin_top(8.0)
@@ -831,7 +880,7 @@ impl ToolboxView {
             Container::new(self.meta_field_box(
                 &self.import_extensions,
                 &self.import_extensions_field,
-                "例如 png, jpg, svg",
+                &exts_placeholder,
                 self.import_extensions_focused,
                 ToolboxAction::ImportExtensionsEdit,
                 ToolboxAction::ActivateImportExtensions,
@@ -842,7 +891,7 @@ impl ToolboxView {
         );
         section.add_child(
             Container::new(section_hint(
-                "入口（目录相对路径 / deb 安装后二进制名；bin/AppImage 可留空）",
+                wormhole_i18n::t("toolbox.user_apps.entry_label"),
                 self.font,
             ))
             .with_margin_top(8.0)
@@ -852,7 +901,7 @@ impl ToolboxView {
             Container::new(self.meta_field_box(
                 &self.import_entrypoint,
                 &self.import_entrypoint_field,
-                "例如 bin/my-app 或 gimp",
+                "bin/my-app or gimp",
                 self.import_entrypoint_focused,
                 ToolboxAction::ImportEntrypointEdit,
                 ToolboxAction::ActivateImportEntrypoint,
@@ -862,9 +911,12 @@ impl ToolboxView {
             .finish(),
         );
         section.add_child(
-            Container::new(section_hint("发布版本号", self.font))
-                .with_margin_top(8.0)
-                .finish(),
+            Container::new(section_hint(
+                wormhole_i18n::t("toolbox.user_apps.version_label"),
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
         );
         section.add_child(
             Container::new(self.meta_field_box(
@@ -881,7 +933,7 @@ impl ToolboxView {
         );
         section.add_child(
             Container::new(section_hint(
-                "指定人 user id（逗号分隔；发布·指定人 / 改权限·指定人时使用）",
+                wormhole_i18n::t("toolbox.user_apps.allowlist_label"),
                 self.font,
             ))
             .with_margin_top(8.0)
@@ -902,7 +954,7 @@ impl ToolboxView {
         );
         section.add_child(
             Container::new(self.action_button(
-                "导入到本机".into(),
+                wormhole_i18n::t("toolbox.user_apps.import_local"),
                 ToolboxAction::ImportLocal,
                 self.user_apps_busy || self.import_path.trim().is_empty(),
                 true,
@@ -912,9 +964,12 @@ impl ToolboxView {
         );
         if self.local_user_apps.is_empty() {
             section.add_child(
-                Container::new(section_hint("本机尚未导入用户程序。", self.font))
-                    .with_margin_top(10.0)
-                    .finish(),
+                Container::new(section_hint(
+                    wormhole_i18n::t("toolbox.user_apps.empty_local"),
+                    self.font,
+                ))
+                .with_margin_top(10.0)
+                .finish(),
             );
         } else {
             for app in &self.local_user_apps {
@@ -922,7 +977,7 @@ impl ToolboxView {
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_main_axis_size(MainAxisSize::Max);
                 let ext_label = if app.extensions.is_empty() {
-                    "任意扩展名".into()
+                    wormhole_i18n::t("toolbox.user_apps.any_ext")
                 } else {
                     app.extensions.join(",")
                 };
@@ -938,7 +993,7 @@ impl ToolboxView {
                     .finish(),
                 );
                 row.add_child(self.action_button(
-                    "发布·所有人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.publish_everyone"),
                     ToolboxAction::PublishLocal {
                         app_id: app.app_id.clone(),
                         visibility: "public".into(),
@@ -947,7 +1002,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "发布·联系人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.publish_contacts"),
                     ToolboxAction::PublishLocal {
                         app_id: app.app_id.clone(),
                         visibility: "contacts".into(),
@@ -956,7 +1011,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "发布·指定人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.publish_allowlist"),
                     ToolboxAction::PublishLocal {
                         app_id: app.app_id.clone(),
                         visibility: "allowlist".into(),
@@ -965,7 +1020,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "删除".into(),
+                    wormhole_i18n::t("toolbox.user_apps.delete"),
                     ToolboxAction::RemoveLocal(app.app_id.clone()),
                     self.user_apps_busy,
                     false,
@@ -985,7 +1040,7 @@ impl ToolboxView {
         let mut section = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         section.add_child(
             Container::new(section_hint(
-                "可下载的用户程序目录（本机安装供 Linux worker 本地缓存；远程打开时目标 worker 也会按权限自动拉取）：",
+                wormhole_i18n::t("toolbox.user_apps.catalog_hint"),
                 self.font,
             ))
             .with_margin_top(SECTION_GAP)
@@ -994,7 +1049,7 @@ impl ToolboxView {
         if self.catalog_user_apps.is_empty() {
             section.add_child(
                 Container::new(section_hint(
-                    "目录为空，或当前账号无权查看（需登录）。",
+                    wormhole_i18n::t("toolbox.user_apps.catalog_empty"),
                     self.font,
                 ))
                 .with_margin_top(8.0)
@@ -1006,9 +1061,9 @@ impl ToolboxView {
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_main_axis_size(MainAxisSize::Max);
                 let ready = if app.package_ready {
-                    "可安装"
+                    wormhole_i18n::t("toolbox.user_apps.installable")
                 } else {
-                    "待上传"
+                    wormhole_i18n::t("toolbox.user_apps.pending_upload")
                 };
                 row.add_child(
                     Expanded::new(
@@ -1025,7 +1080,7 @@ impl ToolboxView {
                     .finish(),
                 );
                 row.add_child(self.action_button(
-                    "安装".into(),
+                    wormhole_i18n::t("toolbox.install"),
                     ToolboxAction::InstallCatalog {
                         app_id: app.app_id.clone(),
                         version: app.version.clone(),
@@ -1034,7 +1089,7 @@ impl ToolboxView {
                     true,
                 ));
                 row.add_child(self.action_button(
-                    "改·所有人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.visibility_everyone"),
                     ToolboxAction::UpdateCatalogAcl {
                         app_id: app.app_id.clone(),
                         version: app.version.clone(),
@@ -1044,7 +1099,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "改·联系人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.visibility_contacts"),
                     ToolboxAction::UpdateCatalogAcl {
                         app_id: app.app_id.clone(),
                         version: app.version.clone(),
@@ -1054,7 +1109,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "改·指定人".into(),
+                    wormhole_i18n::t("toolbox.user_apps.visibility_allowlist"),
                     ToolboxAction::UpdateCatalogAcl {
                         app_id: app.app_id.clone(),
                         version: app.version.clone(),
@@ -1064,7 +1119,7 @@ impl ToolboxView {
                     false,
                 ));
                 row.add_child(self.action_button(
-                    "撤回".into(),
+                    wormhole_i18n::t("toolbox.user_apps.revoke"),
                     ToolboxAction::RevokeCatalog {
                         app_id: app.app_id.clone(),
                         version: app.version.clone(),
@@ -1086,7 +1141,7 @@ impl ToolboxView {
         self.meta_field_box(
             &self.import_path,
             &self.import_path_field,
-            "选择或粘贴本机路径",
+            &wormhole_i18n::t("toolbox.user_apps.path_placeholder"),
             self.import_path_focused,
             ToolboxAction::ImportPathEdit,
             ToolboxAction::ActivateImportPath,
@@ -1151,9 +1206,9 @@ impl View for ToolboxView {
             list.add_child(
                 Container::new(section_hint(
                     if self.loading {
-                        "正在加载工具目录…"
+                        wormhole_i18n::t("toolbox.loading")
                     } else {
-                        "工具目录为空。请检查签名目录地址后刷新。"
+                        wormhole_i18n::t("toolbox.empty_catalog")
                     },
                     self.font,
                 ))
@@ -1163,7 +1218,7 @@ impl View for ToolboxView {
         } else if filtered.is_empty() {
             list.add_child(
                 Container::new(section_hint(
-                    "没有匹配的工具。试试其他分类或清空搜索。",
+                    wormhole_i18n::t("toolbox.empty_search"),
                     self.font,
                 ))
                 .with_uniform_padding(16.0)
@@ -1193,9 +1248,9 @@ impl View for ToolboxView {
         );
         refresh_row.add_child(self.action_button(
             if self.loading {
-                "刷新中".into()
+                wormhole_i18n::t("toolbox.refreshing")
             } else {
-                "刷新".into()
+                wormhole_i18n::t("toolbox.refresh")
             },
             ToolboxAction::Refresh,
             self.loading,
@@ -1206,7 +1261,7 @@ impl View for ToolboxView {
         col.add_child(refresh_row.finish());
         col.add_child(
             Container::new(section_hint(
-                "软件包按需下载并验签，在来源电脑的 Ubuntu 隔离运行器中使用；文件不上传云端。",
+                wormhole_i18n::t("toolbox.hint.download"),
                 self.font,
             ))
             .with_margin_top(6.0)
@@ -1286,11 +1341,14 @@ impl TypedActionView for ToolboxView {
             ToolboxAction::Cancel(tool_id) => {
                 match toolbox_cancel_install(tool_id.clone()) {
                     Ok(()) => {
-                        self.message = "正在取消；已下载的数据会保留以便下次继续。".into();
+                        self.message = wormhole_i18n::t("toolbox.cancel_hint");
                         self.message_tone = StatusTone::Warn;
                     }
                     Err(error) => {
-                        self.message = format!("取消失败: {error}");
+                        self.message = wormhole_i18n::t_args(
+                            "toolbox.cancel_failed",
+                            &[("err", &error.to_string())],
+                        );
                         self.message_tone = StatusTone::Danger;
                     }
                 }
@@ -1405,11 +1463,11 @@ impl TypedActionView for ToolboxView {
             }
             ToolboxAction::BrowseImportPath => {
                 let picked = rfd::FileDialog::new()
-                    .set_title("选择要导入的 Linux 程序")
+                    .set_title(&wormhole_i18n::t("toolbox.user_apps.pick_title"))
                     .pick_file()
                     .or_else(|| {
                         rfd::FileDialog::new()
-                            .set_title("或选择程序目录")
+                            .set_title(&wormhole_i18n::t("toolbox.user_apps.pick_dir_title"))
                             .pick_folder()
                     });
                 if let Some(path) = picked {
@@ -1441,7 +1499,7 @@ impl TypedActionView for ToolboxView {
                 };
                 let extensions = parse_extension_list(&self.import_extensions);
                 self.user_apps_busy = true;
-                self.message = "正在导入用户程序…".into();
+                self.message = wormhole_i18n::t("toolbox.user_apps.importing");
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1466,20 +1524,28 @@ impl TypedActionView for ToolboxView {
                         match output {
                             Ok(result) => {
                                 if let Some(warning) = result.promote_warning {
-                                    view.message = format!(
-                                        "已导入 {}，但未写入 worker installed_apps：{warning}",
-                                        result.manifest.display_name
+                                    view.message = wormhole_i18n::t_args(
+                                        "toolbox.user_apps.imported_warn",
+                                        &[
+                                            ("name", &result.manifest.display_name),
+                                            ("warn", &warning),
+                                        ],
                                     );
                                     view.message_tone = StatusTone::Warn;
                                 } else {
-                                    view.message =
-                                        format!("已导入 {}", result.manifest.display_name);
+                                    view.message = wormhole_i18n::t_args(
+                                        "toolbox.user_apps.imported",
+                                        &[("name", &result.manifest.display_name)],
+                                    );
                                     view.message_tone = StatusTone::Success;
                                 }
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("导入失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.import_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1490,7 +1556,7 @@ impl TypedActionView for ToolboxView {
             ToolboxAction::RemoveLocal(app_id) => {
                 let app_id = app_id.clone();
                 self.user_apps_busy = true;
-                self.message = format!("正在删除 {app_id}…");
+                self.message = wormhole_i18n::t("toolbox.user_apps.deleting");
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1507,12 +1573,15 @@ impl TypedActionView for ToolboxView {
                         view.user_apps_busy = false;
                         match output {
                             Ok(()) => {
-                                view.message = "已删除本机用户程序".into();
+                                view.message = wormhole_i18n::t("toolbox.user_apps.deleted");
                                 view.message_tone = StatusTone::Success;
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("删除失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.delete_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1542,7 +1611,7 @@ impl TypedActionView for ToolboxView {
                     Vec::new()
                 };
                 self.user_apps_busy = true;
-                self.message = format!("正在发布 {app_id}…");
+                self.message = wormhole_i18n::t("toolbox.user_apps.publishing");
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1564,15 +1633,22 @@ impl TypedActionView for ToolboxView {
                         view.user_apps_busy = false;
                         match output {
                             Ok(app) => {
-                                view.message = format!(
-                                    "已发布 {}（{} · v{}）",
-                                    app.display_name, app.visibility, app.version
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.published",
+                                    &[
+                                        ("name", &app.display_name),
+                                        ("vis", &app.visibility),
+                                        ("ver", &app.version),
+                                    ],
                                 );
                                 view.message_tone = StatusTone::Success;
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("发布失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.publish_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1584,7 +1660,10 @@ impl TypedActionView for ToolboxView {
                 let app_id = app_id.clone();
                 let version = version.clone();
                 self.user_apps_busy = true;
-                self.message = format!("正在安装 {app_id}（可能需要数分钟）…");
+                self.message = wormhole_i18n::t_args(
+                    "toolbox.user_apps.installing",
+                    &[("id", &app_id)],
+                );
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1606,20 +1685,28 @@ impl TypedActionView for ToolboxView {
                         match output {
                             Ok(result) => {
                                 if let Some(warning) = result.promote_warning {
-                                    view.message = format!(
-                                        "已安装 {}，但未写入 worker installed_apps：{warning}",
-                                        result.manifest.display_name
+                                    view.message = wormhole_i18n::t_args(
+                                        "toolbox.user_apps.installed_warn",
+                                        &[
+                                            ("name", &result.manifest.display_name),
+                                            ("warn", &warning),
+                                        ],
                                     );
                                     view.message_tone = StatusTone::Warn;
                                 } else {
-                                    view.message =
-                                        format!("已安装 {}", result.manifest.display_name);
+                                    view.message = wormhole_i18n::t_args(
+                                        "toolbox.user_apps.installed",
+                                        &[("name", &result.manifest.display_name)],
+                                    );
                                     view.message_tone = StatusTone::Success;
                                 }
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("安装失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.install_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1646,7 +1733,7 @@ impl TypedActionView for ToolboxView {
                     Vec::new()
                 };
                 self.user_apps_busy = true;
-                self.message = format!("正在更新 {app_id}@{version} 下载权限…");
+                self.message = wormhole_i18n::t("toolbox.user_apps.updating_acl");
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1667,16 +1754,16 @@ impl TypedActionView for ToolboxView {
                     |view, output, ctx| {
                         view.user_apps_busy = false;
                         match output {
-                            Ok(app) => {
-                                view.message = format!(
-                                    "已更新 {} 下载权限为 {}",
-                                    app.display_name, app.visibility
-                                );
+                            Ok(_app) => {
+                                view.message = wormhole_i18n::t("toolbox.user_apps.updated_acl");
                                 view.message_tone = StatusTone::Success;
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("更新权限失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.acl_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1688,7 +1775,7 @@ impl TypedActionView for ToolboxView {
                 let app_id = app_id.clone();
                 let version = version.clone();
                 self.user_apps_busy = true;
-                self.message = format!("正在撤回 {app_id}@{version}…");
+                self.message = wormhole_i18n::t("toolbox.user_apps.revoking");
                 self.message_tone = StatusTone::Placeholder;
                 ctx.notify();
                 let core = self.core.clone();
@@ -1705,12 +1792,15 @@ impl TypedActionView for ToolboxView {
                         view.user_apps_busy = false;
                         match output {
                             Ok(()) => {
-                                view.message = "已从目录撤回该版本".into();
+                                view.message = wormhole_i18n::t("toolbox.user_apps.revoked");
                                 view.message_tone = StatusTone::Success;
                                 view.refresh_user_apps(ctx);
                             }
                             Err(error) => {
-                                view.message = format!("撤回失败: {error}");
+                                view.message = wormhole_i18n::t_args(
+                                    "toolbox.user_apps.revoke_failed",
+                                    &[("err", &error.to_string())],
+                                );
                                 view.message_tone = StatusTone::Danger;
                             }
                         }
@@ -1787,13 +1877,19 @@ mod tests {
     fn install_badge_distinguishes_ready_and_unavailable() {
         let mut ready = sample_tool("onlyoffice", vec![ToolCategory::Documents], &["docx"]);
         ready.status.stage = ToolInstallStage::Ready;
-        assert_eq!(ToolboxView::install_badge(&ready).0, "已安装");
+        assert_eq!(ToolboxView::install_badge(&ready).0, wormhole_i18n::t("toolbox.badge.installed"));
 
         let mut available = sample_tool("onlyoffice", vec![ToolCategory::Documents], &["docx"]);
         available.status.available_version = Some("1.0.0".into());
-        assert_eq!(ToolboxView::install_badge(&available).0, "未安装");
+        assert_eq!(
+            ToolboxView::install_badge(&available).0,
+            wormhole_i18n::t("toolbox.badge.not_installed")
+        );
 
         let unavailable = sample_tool("blender", vec![ToolCategory::ThreeD], &["blend"]);
-        assert_eq!(ToolboxView::install_badge(&unavailable).0, "未开放");
+        assert_eq!(
+            ToolboxView::install_badge(&unavailable).0,
+            wormhole_i18n::t("toolbox.badge.unavailable")
+        );
     }
 }
