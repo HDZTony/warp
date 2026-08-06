@@ -6,6 +6,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use wormhole_desktop_core::cloud_credits::CloudCreditLedgerEntryDto;
 
+use crate::ui::theme::{self, Theme, ThemeSelection, ThemeVariant};
+
 pub const PREFS_FILE: &str = "desktop-ui.json";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,10 +53,23 @@ pub struct DesktopUiPrefs {
     /// UI language preference: `system` (default), `zh-CN`, or `en`.
     #[serde(default = "default_ui_language")]
     pub ui_language: Option<String>,
+    /// Active theme family id (`classic`, `ocean`, …) or `custom-*`.
+    #[serde(default = "default_active_theme_id")]
+    pub active_theme_id: Option<String>,
+    /// Light / Dark / System appearance for the selected family.
+    #[serde(default)]
+    pub theme_variant: ThemeVariant,
+    /// User-created themes (forked presets or imports).
+    #[serde(default)]
+    pub custom_themes: Vec<Theme>,
 }
 
 fn default_ui_language() -> Option<String> {
     Some(wormhole_i18n::LOCALE_SYSTEM.to_string())
+}
+
+fn default_active_theme_id() -> Option<String> {
+    Some("classic".to_string())
 }
 
 impl Default for DesktopUiPrefs {
@@ -69,7 +84,27 @@ impl Default for DesktopUiPrefs {
             auth_email: None,
             auth_saved_password: None,
             ui_language: default_ui_language(),
+            active_theme_id: default_active_theme_id(),
+            theme_variant: ThemeVariant::Dark,
+            custom_themes: Vec::new(),
         }
+    }
+}
+
+impl DesktopUiPrefs {
+    /// Theme selection snapshot for the runtime palette.
+    pub fn theme_selection(&self) -> ThemeSelection {
+        ThemeSelection::new(
+            self.active_theme_id.clone(),
+            self.theme_variant,
+            self.custom_themes.clone(),
+        )
+    }
+
+    pub fn apply_theme_selection(&mut self, selection: &ThemeSelection) {
+        self.active_theme_id = Some(selection.active_theme_id.clone());
+        self.theme_variant = selection.theme_variant;
+        self.custom_themes = selection.custom_themes.clone();
     }
 }
 
@@ -89,6 +124,24 @@ pub fn set_ui_language(data_dir: &Path, language: &str) -> Result<(), String> {
     })?;
     apply_ui_locale(&load(data_dir));
     Ok(())
+}
+
+/// Persist theme selection and apply the runtime palette immediately.
+pub fn set_theme_selection(
+    data_dir: &Path,
+    selection: &ThemeSelection,
+    system_is_dark: bool,
+) -> Result<Theme, String> {
+    update(data_dir, |prefs| {
+        prefs.apply_theme_selection(selection);
+    })?;
+    Ok(theme::apply_selection(selection, system_is_dark))
+}
+
+/// Load prefs and apply the stored theme to the process-wide palette.
+pub fn apply_stored_theme(data_dir: &Path, system_is_dark: bool) -> Theme {
+    let prefs = load(data_dir);
+    theme::apply_selection(&prefs.theme_selection(), system_is_dark)
 }
 
 /// Snapshot of login-modal remember / auto-login prefs.

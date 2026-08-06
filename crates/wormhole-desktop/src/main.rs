@@ -314,6 +314,7 @@ fn main() -> Result<()> {
     }
     let coordinator_for_shell = coordinator.clone();
     let core_for_shell = core.clone();
+    let data_dir_for_theme = data_dir.clone();
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let tray_for_shell = tray.clone();
 
@@ -364,6 +365,9 @@ fn main() -> Result<()> {
 
     let _ = app_builder.run(move |ctx| {
         crate::ui::fonts::warm_up_font_cache(ctx);
+        let system_is_dark =
+            matches!(ctx.system_theme(), warpui::platform::SystemTheme::Dark);
+        let _ = crate::ui::desktop_prefs::apply_stored_theme(&data_dir_for_theme, system_is_dark);
         #[cfg(windows)]
         ctx.add_singleton_model(crate::ui::window_chrome::WindowsSymbolFontState::new);
         ctx.add_window(

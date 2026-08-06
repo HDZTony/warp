@@ -1,7 +1,8 @@
-//! Settings → Memory：OpenHuman Brain 图谱整页（Warp 原生）。
+//! Settings → Memory：OpenHuman Brain 六面板（Warp 原生）。
 //!
-//! Tabs: Graph（tree/contacts 导出）| Browse（检索/下钻）| Vault（路径与 sources）。
-//! 不用 Pixi/WebGL：以层级节点列表 + 详情复刻图谱产品面。
+//! Tabs: Graph | Browse | Sources | Sync | Goals | Vault
+//! Graph：树形缩进 / 联系人边列表；Browse：实体与语义检索；Sources：来源管理；
+//! Sync：索引管线；Goals：长期目标；Vault：路径与 Obsidian 快捷入口。
 
 use warpui::elements::{
     Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
@@ -10,10 +11,13 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use wormhole_desktop_core::memory_commands::{
-    memory_graph_export, memory_ingest_agent_transcripts, memory_open_obsidian, memory_persona_run,
-    memory_persona_status, memory_reindex, memory_reveal_folder, memory_rss_seed_us_markets,
-    memory_rss_sync, memory_sources_list, memory_sources_remove, memory_sources_upsert,
-    memory_status, memory_tree, GraphExport, GraphMode, GraphNode, MemoryGraphExportParams,
+    memory_goals_add, memory_goals_delete, memory_goals_edit, memory_goals_list,
+    memory_goals_reflect, memory_graph_export, memory_ingest_agent_transcripts,
+    memory_open_obsidian, memory_persona_run, memory_persona_status, memory_reindex,
+    memory_reveal_folder, memory_rss_seed_us_markets, memory_rss_sync, memory_sources_list,
+    memory_sources_remove, memory_sources_upsert, memory_status, memory_tree, GoalsDocDto,
+    GraphExport, GraphMode, GraphNode, MemoryGoalsDeleteParams,
+    MemoryGoalsEditParams, MemoryGoalsReflectParams, MemoryGoalsTextParams, MemoryGraphExportParams,
     MemoryPersonaRunParams, MemorySource, MemorySourceKind, MemorySourcesRemoveParams,
     MemorySourcesUpsertParams, MemoryStatus, MemoryTreeMode, MemoryTreeQuery,
 };
@@ -26,10 +30,17 @@ use crate::ui::text_field_input::{
 use crate::ui::theme;
 use crate::ui_text;
 
+const GRAPH_NODE_LIMIT: usize = 800;
+const GRAPH_EDGE_LIMIT: usize = 200;
+const BROWSE_PREVIEW_MAX: usize = 2000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryPane {
     Graph,
     Browse,
+    Sources,
+    Sync,
+    Goals,
     Vault,
 }
 
@@ -40,6 +51,7 @@ pub enum MemoryAction {
     Refresh,
     RefreshGraph,
     OpenObsidian,
+    OpenGraphNote,
     RevealVault,
     Reindex,
     IngestAgentTranscripts,
@@ -50,12 +62,22 @@ pub enum MemoryAction {
     BrowseSearchEdit(TextFieldEditAction),
     FocusBrowseSearch,
     RunBrowseSearch,
+    RunBrowseSemantic,
     SelectBrowseHit(String),
     DrillSelected,
     SourcePathEdit(TextFieldEditAction),
     FocusSourcePath,
     AddSource,
     RemoveSource(String),
+    SyncSource(String),
+    RefreshGoals,
+    GoalDraftEdit(TextFieldEditAction),
+    FocusGoalDraft,
+    AddGoal,
+    StartEditGoal(String),
+    SaveEditGoal,
+    DeleteGoal(String),
+    ReflectGoals,
 }
 
 pub struct MemoryView {
@@ -76,6 +98,11 @@ pub struct MemoryView {
     source_draft: String,
     source_field: TextFieldState,
     source_focused: bool,
+    goals: GoalsDocDto,
+    goal_draft: String,
+    goal_field: TextFieldState,
+    goal_focused: bool,
+    editing_goal_id: Option<String>,
     message: String,
     tone: StatusTone,
     busy: bool,
@@ -84,7 +111,11 @@ pub struct MemoryView {
 #[derive(Debug, Clone)]
 struct BrowseHit {
     id: String,
-    label: String,
+    title: String,
+    kind: String,
+    score: Option<f64>,
+    path: String,
+    preview: String,
 }
 
 impl MemoryView {
@@ -108,12 +139,23 @@ impl MemoryView {
             source_draft: String::new(),
             source_field: TextFieldState::new(),
             source_focused: false,
+            goals: GoalsDocDto::default(),
+            goal_draft: String::new(),
+            goal_field: TextFieldState::new(),
+            goal_focused: false,
+            editing_goal_id: None,
             message: String::new(),
             tone: StatusTone::Placeholder,
             busy: false,
         };
         view.refresh_all(ctx);
         view
+    }
+
+    fn embeddings_available(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|s| s.embeddings_available)
     }
 
     fn refresh_all(&mut self, ctx: &mut ViewContext<Self>) {
@@ -130,19 +172,47 @@ impl MemoryView {
                 let state = core.runtime().state.clone();
                 let status = memory_status(&state).await?;
                 let sources = memory_sources_list(&state).await?;
-                Ok::<_, String>((status, sources))
+                let goals = memory_goals_list(&state).await?;
+                Ok::<_, String>((status, sources, goals))
             },
             |view, output, ctx| {
                 view.busy = false;
                 match output {
-                    Ok((status, sources)) => {
+                    Ok((status, sources, goals)) => {
                         view.status = Some(status);
                         view.sources = sources;
+                        view.goals = goals;
                         if view.message.is_empty() {
                             view.message = wormhole_i18n::t("settings.memory.ready");
                             view.tone = StatusTone::Placeholder;
                         }
                     }
+                    Err(error) => {
+                        view.message = format!(
+                            "{}: {error}",
+                            wormhole_i18n::t("settings.memory.load_failed")
+                        );
+                        view.tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn refresh_goals(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                memory_goals_list(&state).await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(goals) => view.goals = goals,
                     Err(error) => {
                         view.message = format!(
                             "{}: {error}",
@@ -203,6 +273,12 @@ impl MemoryView {
         );
     }
 
+    fn clear_field_focus(&mut self) {
+        self.browse_focused = false;
+        self.source_focused = false;
+        self.goal_focused = false;
+    }
+
     fn action_button(
         &self,
         label: &str,
@@ -249,7 +325,10 @@ impl MemoryView {
         let index = match pane {
             MemoryPane::Graph => 0u8,
             MemoryPane::Browse => 1,
-            MemoryPane::Vault => 2,
+            MemoryPane::Sources => 2,
+            MemoryPane::Sync => 3,
+            MemoryPane::Goals => 4,
+            MemoryPane::Vault => 5,
         };
         Container::new(
             EventHandler::new(
@@ -291,32 +370,52 @@ impl MemoryView {
     }
 
     fn toolbar(&self) -> Box<dyn Element> {
-        let mut row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Max);
-        row.add_child(self.pane_tab(
-            MemoryPane::Graph,
-            "settings.memory.tab_graph",
-            "settings:memory_tab_graph",
-        ));
-        row.add_child(
-            Container::new(self.pane_tab(
+        let tabs = [
+            (
+                MemoryPane::Graph,
+                "settings.memory.tab_graph",
+                "settings:memory_tab_graph",
+            ),
+            (
                 MemoryPane::Browse,
                 "settings.memory.tab_browse",
                 "settings:memory_tab_browse",
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
-        row.add_child(
-            Container::new(self.pane_tab(
+            ),
+            (
+                MemoryPane::Sources,
+                "settings.memory.tab_sources",
+                "settings:memory_tab_sources",
+            ),
+            (
+                MemoryPane::Sync,
+                "settings.memory.tab_sync",
+                "settings:memory_tab_sync",
+            ),
+            (
+                MemoryPane::Goals,
+                "settings.memory.tab_goals",
+                "settings:memory_tab_goals",
+            ),
+            (
                 MemoryPane::Vault,
                 "settings.memory.tab_vault",
                 "settings:memory_tab_vault",
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
+            ),
+        ];
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        for (idx, (pane, key, id)) in tabs.into_iter().enumerate() {
+            if idx > 0 {
+                row.add_child(
+                    Container::new(self.pane_tab(pane, key, id))
+                        .with_margin_left(6.0)
+                        .finish(),
+                );
+            } else {
+                row.add_child(self.pane_tab(pane, key, id));
+            }
+        }
         row.add_child(Expanded::new(1.0, Flex::row().finish()).finish());
         row.add_child(self.action_button(
             &wormhole_i18n::t("settings.memory.refresh"),
@@ -444,16 +543,14 @@ impl MemoryView {
                 .then(a.level.unwrap_or(999).cmp(&b.level.unwrap_or(999)))
                 .then(a.label.cmp(&b.label))
         });
-        for node in nodes.into_iter().take(400) {
+        for node in nodes.into_iter().take(GRAPH_NODE_LIMIT) {
             let selected = self.selected_node_id.as_deref() == Some(node.id.as_str());
             let id = node.id.clone();
+            let indent = tree_indent(node.level.unwrap_or(0));
             let label = format!(
-                "[{}] {}{}",
+                "{indent}[{}] {}",
                 node.kind,
-                node.label.chars().take(64).collect::<String>(),
-                node.level
-                    .map(|l| format!(" · L{l}"))
-                    .unwrap_or_default()
+                node.label.chars().take(64).collect::<String>()
             );
             col.add_child(
                 Container::new(
@@ -484,14 +581,14 @@ impl MemoryView {
                 .finish(),
             );
         }
-        if graph.nodes.len() > 400 {
+        if graph.nodes.len() > GRAPH_NODE_LIMIT {
             col.add_child(
                 Container::new(
                     ui_text::body(
                         format!(
                             "{} (+{} more)",
                             wormhole_i18n::t("settings.memory.graph_truncated"),
-                            graph.nodes.len() - 400
+                            graph.nodes.len() - GRAPH_NODE_LIMIT
                         ),
                         self.font,
                     )
@@ -530,77 +627,111 @@ impl MemoryView {
                         .with_margin_top(8.0)
                         .finish(),
                     );
-                    let children = related_nodes(graph, id);
-                    if !children.is_empty() {
+                    if node.file_basename.is_some() {
                         col.add_child(
-                            Container::new(
-                                ui_text::body(
-                                    format!(
-                                        "{} ({})",
-                                        wormhole_i18n::t("settings.memory.graph_related"),
-                                        children.len()
-                                    ),
-                                    self.font,
-                                )
-                                .with_color(theme::muted())
-                                .finish(),
-                            )
-                            .with_margin_top(12.0)
+                            Container::new(self.action_button(
+                                &wormhole_i18n::t("settings.memory.graph_open_note"),
+                                MemoryAction::OpenGraphNote,
+                                self.busy,
+                                false,
+                                "settings:memory_graph_open_note",
+                            ))
+                            .with_margin_top(8.0)
                             .finish(),
                         );
-                        for child in children.into_iter().take(24) {
-                            let cid = child.id.clone();
+                    }
+                    if graph.mode == GraphMode::Contacts {
+                        let edges: Vec<_> = graph
+                            .edges
+                            .iter()
+                            .filter(|e| e.from == id || e.to == id)
+                            .take(GRAPH_EDGE_LIMIT)
+                            .collect();
+                        if !edges.is_empty() {
                             col.add_child(
                                 Container::new(
-                                    EventHandler::new(
-                                        ui_text::mono(
-                                            format!("→ {}", child.label.chars().take(48).collect::<String>()),
-                                            self.font,
-                                        )
-                                        .with_color(theme::muted())
-                                        .finish(),
+                                    ui_text::body(
+                                        format!(
+                                            "{} ({})",
+                                            wormhole_i18n::t("settings.memory.graph_edges"),
+                                            edges.len()
+                                        ),
+                                        self.font,
                                     )
-                                    .on_left_mouse_down(move |ctx, _, _| {
-                                        ctx.dispatch_typed_action(MemoryAction::SelectNode(
-                                            cid.clone(),
-                                        ));
-                                        DispatchEventResult::StopPropagation
-                                    })
+                                    .with_color(theme::muted())
                                     .finish(),
                                 )
-                                .with_margin_top(4.0)
+                                .with_margin_top(12.0)
                                 .finish(),
                             );
+                            for edge in edges {
+                                let from_label = node_label(graph, &edge.from);
+                                let to_label = node_label(graph, &edge.to);
+                                col.add_child(
+                                    Container::new(
+                                        ui_text::mono(format!("{from_label} → {to_label}"), self.font)
+                                            .with_color(theme::muted())
+                                            .finish(),
+                                    )
+                                    .with_margin_top(4.0)
+                                    .finish(),
+                                );
+                            }
+                        }
+                    } else {
+                        let children = related_nodes(graph, id);
+                        if !children.is_empty() {
+                            col.add_child(
+                                Container::new(
+                                    ui_text::body(
+                                        format!(
+                                            "{} ({})",
+                                            wormhole_i18n::t("settings.memory.graph_related"),
+                                            children.len()
+                                        ),
+                                        self.font,
+                                    )
+                                    .with_color(theme::muted())
+                                    .finish(),
+                                )
+                                .with_margin_top(12.0)
+                                .finish(),
+                            );
+                            for child in children.into_iter().take(24) {
+                                let cid = child.id.clone();
+                                col.add_child(
+                                    Container::new(
+                                        EventHandler::new(
+                                            ui_text::mono(
+                                                format!(
+                                                    "→ {}",
+                                                    child.label.chars().take(48).collect::<String>()
+                                                ),
+                                                self.font,
+                                            )
+                                            .with_color(theme::muted())
+                                            .finish(),
+                                        )
+                                        .on_left_mouse_down(move |ctx, _, _| {
+                                            ctx.dispatch_typed_action(MemoryAction::SelectNode(
+                                                cid.clone(),
+                                            ));
+                                            DispatchEventResult::StopPropagation
+                                        })
+                                        .finish(),
+                                    )
+                                    .with_margin_top(4.0)
+                                    .finish(),
+                                );
+                            }
                         }
                     }
                 } else {
-                    col.add_child(
-                        Container::new(
-                            ui_text::body(
-                                wormhole_i18n::t("settings.memory.graph_select_hint"),
-                                self.font,
-                            )
-                            .with_color(theme::placeholder())
-                            .finish(),
-                        )
-                        .with_margin_top(8.0)
-                        .finish(),
-                    );
+                    col.add_child(self.graph_select_hint());
                 }
             }
             _ => {
-                col.add_child(
-                    Container::new(
-                        ui_text::body(
-                            wormhole_i18n::t("settings.memory.graph_select_hint"),
-                            self.font,
-                        )
-                        .with_color(theme::placeholder())
-                        .finish(),
-                    )
-                    .with_margin_top(8.0)
-                    .finish(),
-                );
+                col.add_child(self.graph_select_hint());
             }
         }
         Container::new(col.finish())
@@ -609,6 +740,19 @@ impl MemoryView {
             .with_border(Border::all(1.0).with_border_fill(theme::border()))
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
             .finish()
+    }
+
+    fn graph_select_hint(&self) -> Box<dyn Element> {
+        Container::new(
+            ui_text::body(
+                wormhole_i18n::t("settings.memory.graph_select_hint"),
+                self.font,
+            )
+            .with_color(theme::placeholder())
+            .finish(),
+        )
+        .with_margin_top(8.0)
+        .finish()
     }
 
     fn browse_pane(&self) -> Box<dyn Element> {
@@ -652,6 +796,8 @@ impl MemoryView {
         .disabled(self.busy)
         .ime_preedit(!marked.is_empty())
         .finish();
+        let semantic_disabled =
+            self.busy || self.browse_query.trim().is_empty() || !self.embeddings_available();
         let mut search_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
@@ -663,6 +809,22 @@ impl MemoryView {
                 self.busy || self.browse_query.trim().is_empty(),
                 true,
                 "settings:memory_browse_search",
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        let semantic_label = if self.embeddings_available() {
+            wormhole_i18n::t("settings.memory.browse_semantic")
+        } else {
+            wormhole_i18n::t("settings.memory.browse_semantic_disabled")
+        };
+        search_row.add_child(
+            Container::new(self.action_button(
+                &semantic_label,
+                MemoryAction::RunBrowseSemantic,
+                semantic_disabled,
+                false,
+                "settings:memory_browse_semantic",
             ))
             .with_margin_left(8.0)
             .finish(),
@@ -687,10 +849,15 @@ impl MemoryView {
             for hit in &self.browse_hits {
                 let selected = self.selected_hit_id.as_deref() == Some(hit.id.as_str());
                 let id = hit.id.clone();
+                let label = if hit.kind.is_empty() {
+                    hit.title.clone()
+                } else {
+                    format!("[{}] {}", hit.kind, hit.title)
+                };
                 hits.add_child(
                     Container::new(
                         EventHandler::new(
-                            ui_text::mono(hit.label.clone(), self.font)
+                            ui_text::mono(label, self.font)
                                 .with_color(theme::text())
                                 .finish(),
                         )
@@ -773,21 +940,18 @@ impl MemoryView {
         col.finish()
     }
 
-    fn vault_pane(&self) -> Box<dyn Element> {
+    fn sources_pane(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_hint(
-            wormhole_i18n::t("settings.memory.hint"),
+            wormhole_i18n::t("settings.memory.sources_hint"),
             self.font,
         ));
-        if let Some(status) = &self.status {
+        if self.sources.is_empty() {
             col.add_child(
                 EventHandler::new(
                     Container::new(
-                        ui_text::mono(
-                            format!(
-                                "{} · md={} · sources={}",
-                                status.content_root, status.content_md_files, status.sources_count
-                            ),
+                        ui_text::body(
+                            wormhole_i18n::t("settings.memory.sources_empty"),
                             self.font,
                         )
                         .with_color(theme::muted())
@@ -796,9 +960,158 @@ impl MemoryView {
                     .with_margin_top(8.0)
                     .finish(),
                 )
-                .with_automation_id("settings:memory_vault_path")
-                .with_automation_label(wormhole_i18n::t("settings.memory.vault_path_label"))
+                .with_automation_id("settings:memory_sources")
+                .with_automation_label(wormhole_i18n::t("settings.memory.sources_label"))
                 .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+                .finish(),
+            );
+        } else {
+            let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            for source in &self.sources {
+                let enabled = if source.enabled { "on" } else { "off" };
+                let kind_label = source_kind_label(&source.kind);
+                let mut row = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                row.add_child(Expanded::new(
+                    1.0,
+                    ui_text::mono(
+                        format!("{kind_label}: {} · {} · {enabled}", source.id, source.path),
+                        self.font,
+                    )
+                    .with_color(theme::text())
+                    .finish(),
+                ).finish());
+                row.add_child(
+                    Container::new(self.action_button(
+                        &wormhole_i18n::t("settings.memory.sources_sync_one"),
+                        MemoryAction::SyncSource(source.id.clone()),
+                        self.busy,
+                        false,
+                        "settings:memory_source_sync",
+                    ))
+                    .with_margin_left(8.0)
+                    .finish(),
+                );
+                row.add_child(
+                    Container::new(self.action_button(
+                        &wormhole_i18n::t("settings.memory.sources_remove"),
+                        MemoryAction::RemoveSource(source.id.clone()),
+                        self.busy,
+                        false,
+                        "settings:memory_source_remove",
+                    ))
+                    .with_margin_left(8.0)
+                    .finish(),
+                );
+                list.add_child(
+                    Container::new(row.finish())
+                        .with_margin_top(6.0)
+                        .finish(),
+                );
+            }
+            col.add_child(
+                EventHandler::new(
+                    Container::new(list.finish())
+                        .with_margin_top(8.0)
+                        .finish(),
+                )
+                .with_automation_id("settings:memory_sources")
+                .with_automation_label(wormhole_i18n::t("settings.memory.sources_label"))
+                .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+                .finish(),
+            );
+        }
+
+        let draft = self.source_draft.clone();
+        let marked = self.source_field.marked_text.clone();
+        let field = TextFieldInput::builder(
+            EventHandler::new(
+                Container::new(render_field_with_caret(
+                    &draft,
+                    &marked,
+                    &wormhole_i18n::t("settings.memory.sources_path_placeholder"),
+                    self.font,
+                    self.source_focused,
+                    self.busy,
+                    true,
+                    self.source_field.cursor,
+                ))
+                .with_uniform_padding(10.0)
+                .with_background(theme::bg())
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
+            )
+            .with_automation_id("settings:memory_source_path")
+            .with_automation_label(wormhole_i18n::t("settings.memory.sources_path_label"))
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(MemoryAction::FocusSourcePath);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+            |ctx, action| {
+                ctx.dispatch_typed_action(MemoryAction::SourcePathEdit(action));
+            },
+        )
+        .focused(self.source_focused)
+        .disabled(self.busy)
+        .ime_preedit(!marked.is_empty())
+        .finish();
+        let mut add_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        add_row.add_child(Expanded::new(1.0, field).finish());
+        add_row.add_child(
+            Container::new(self.action_button(
+                &wormhole_i18n::t("settings.memory.sources_add"),
+                MemoryAction::AddSource,
+                self.busy || self.source_draft.trim().is_empty(),
+                true,
+                "settings:memory_source_add",
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        add_row.add_child(
+            Container::new(self.action_button(
+                &wormhole_i18n::t("settings.memory.rss_seed_us"),
+                MemoryAction::SeedUsMarketRss,
+                self.busy,
+                false,
+                "settings:memory_rss_seed_us",
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(add_row.finish())
+                .with_margin_top(10.0)
+                .finish(),
+        );
+        col.finish()
+    }
+
+    fn sync_pane(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            wormhole_i18n::t("settings.memory.sync_hint"),
+            self.font,
+        ));
+        if let Some(status) = &self.status {
+            col.add_child(
+                Container::new(
+                    ui_text::mono(
+                        format!(
+                            "{} · md={} · sources={}",
+                            status.content_root, status.content_md_files, status.sources_count
+                        ),
+                        self.font,
+                    )
+                    .with_color(theme::muted())
+                    .finish(),
+                )
+                .with_margin_top(8.0)
                 .finish(),
             );
             col.add_child(
@@ -809,6 +1122,23 @@ impl MemoryView {
                             wormhole_i18n::t("settings.memory.index_label"),
                             status.index_workspace
                         ),
+                        self.font,
+                    )
+                    .with_color(theme::placeholder())
+                    .finish(),
+                )
+                .with_margin_top(6.0)
+                .finish(),
+            );
+            let emb = if status.embeddings_available {
+                "yes"
+            } else {
+                "no"
+            };
+            col.add_child(
+                Container::new(
+                    ui_text::body(
+                        format!("embeddings: {emb}"),
                         self.font,
                     )
                     .with_color(theme::placeholder())
@@ -867,34 +1197,12 @@ impl MemoryView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
         actions.add_child(self.action_button(
-            &wormhole_i18n::t("settings.memory.open_obsidian"),
-            MemoryAction::OpenObsidian,
+            &wormhole_i18n::t("settings.memory.reindex"),
+            MemoryAction::Reindex,
             self.busy,
             true,
-            "settings:memory_vault_obsidian",
+            "settings:memory_vault_reindex",
         ));
-        actions.add_child(
-            Container::new(self.action_button(
-                &wormhole_i18n::t("settings.memory.reveal_folder"),
-                MemoryAction::RevealVault,
-                self.busy,
-                false,
-                "settings:memory_vault_reveal",
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
-        actions.add_child(
-            Container::new(self.action_button(
-                &wormhole_i18n::t("settings.memory.reindex"),
-                MemoryAction::Reindex,
-                self.busy,
-                false,
-                "settings:memory_vault_reindex",
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
         actions.add_child(
             Container::new(self.action_button(
                 &wormhole_i18n::t("settings.memory.ingest_agent"),
@@ -919,17 +1227,6 @@ impl MemoryView {
         );
         actions.add_child(
             Container::new(self.action_button(
-                &wormhole_i18n::t("settings.memory.rss_seed_us"),
-                MemoryAction::SeedUsMarketRss,
-                self.busy,
-                false,
-                "settings:memory_rss_seed_us",
-            ))
-            .with_margin_left(8.0)
-            .finish(),
-        );
-        actions.add_child(
-            Container::new(self.action_button(
                 &wormhole_i18n::t("settings.memory.persona_run"),
                 MemoryAction::RunPersona,
                 self.busy,
@@ -944,22 +1241,193 @@ impl MemoryView {
                 .with_margin_top(12.0)
                 .finish(),
         );
+        col.finish()
+    }
 
-        col.add_child(
-            Container::new(
-                ui_text::body(wormhole_i18n::t("settings.memory.sources_label"), self.font)
-                    .with_color(theme::muted())
+    fn goals_pane(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            wormhole_i18n::t("settings.memory.goals_hint"),
+            self.font,
+        ));
+        if self.goals.items.is_empty() {
+            col.add_child(
+                Container::new(
+                    ui_text::body(wormhole_i18n::t("settings.memory.goals_empty"), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        } else {
+            let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            for goal in &self.goals.items {
+                let selected = self.editing_goal_id.as_deref() == Some(goal.id.as_str());
+                let gid = goal.id.clone();
+                let mut row = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+                row.add_child(Expanded::new(
+                    1.0,
+                    EventHandler::new(
+                        ui_text::body(goal.text.clone(), self.font)
+                            .with_color(if selected {
+                                theme::text()
+                            } else {
+                                theme::muted()
+                            })
+                            .finish(),
+                    )
+                    .on_left_mouse_down({
+                        let id = gid.clone();
+                        move |ctx, _, _| {
+                            ctx.dispatch_typed_action(MemoryAction::StartEditGoal(id.clone()));
+                            DispatchEventResult::StopPropagation
+                        }
+                    })
                     .finish(),
+                ).finish());
+                row.add_child(
+                    Container::new(self.action_button(
+                        "✎",
+                        MemoryAction::StartEditGoal(gid.clone()),
+                        self.busy,
+                        false,
+                        "settings:memory_goal_edit",
+                    ))
+                    .with_margin_left(8.0)
+                    .finish(),
+                );
+                row.add_child(
+                    Container::new(self.action_button(
+                        "✕",
+                        MemoryAction::DeleteGoal(gid),
+                        self.busy,
+                        false,
+                        "settings:memory_goal_delete",
+                    ))
+                    .with_margin_left(4.0)
+                    .finish(),
+                );
+                list.add_child(
+                    Container::new(row.finish())
+                        .with_margin_top(6.0)
+                        .with_uniform_padding(6.0)
+                        .with_background(if selected {
+                            theme::accent_cool_bg(32)
+                        } else {
+                            theme::panel_elevated()
+                        })
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                        .finish(),
+                );
+            }
+            col.add_child(
+                Container::new(list.finish())
+                    .with_margin_top(8.0)
+                    .finish(),
+            );
+        }
+
+        let draft = self.goal_draft.clone();
+        let marked = self.goal_field.marked_text.clone();
+        let field = TextFieldInput::builder(
+            EventHandler::new(
+                Container::new(render_field_with_caret(
+                    &draft,
+                    &marked,
+                    &wormhole_i18n::t("settings.memory.goals_placeholder"),
+                    self.font,
+                    self.goal_focused,
+                    self.busy,
+                    true,
+                    self.goal_field.cursor,
+                ))
+                .with_uniform_padding(10.0)
+                .with_background(theme::bg())
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
+                .finish(),
             )
-            .with_margin_top(16.0)
+            .with_automation_id("settings:memory_goal_draft")
+            .with_automation_label(wormhole_i18n::t("settings.memory.goals_placeholder"))
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(MemoryAction::FocusGoalDraft);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+            |ctx, action| {
+                ctx.dispatch_typed_action(MemoryAction::GoalDraftEdit(action));
+            },
+        )
+        .focused(self.goal_focused)
+        .disabled(self.busy)
+        .ime_preedit(!marked.is_empty())
+        .finish();
+        let mut draft_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max);
+        draft_row.add_child(Expanded::new(1.0, field).finish());
+        if self.editing_goal_id.is_some() {
+            draft_row.add_child(
+                Container::new(self.action_button(
+                    &wormhole_i18n::t("settings.memory.goals_edit_save"),
+                    MemoryAction::SaveEditGoal,
+                    self.busy || self.goal_draft.trim().is_empty(),
+                    true,
+                    "settings:memory_goals_edit_save",
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+        } else {
+            draft_row.add_child(
+                Container::new(self.action_button(
+                    &wormhole_i18n::t("settings.memory.goals_add"),
+                    MemoryAction::AddGoal,
+                    self.busy || self.goal_draft.trim().is_empty(),
+                    true,
+                    "settings:memory_goals_add",
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+        }
+        draft_row.add_child(
+            Container::new(self.action_button(
+                &wormhole_i18n::t("settings.memory.goals_reflect"),
+                MemoryAction::ReflectGoals,
+                self.busy,
+                false,
+                "settings:memory_goals_reflect",
+            ))
+            .with_margin_left(8.0)
             .finish(),
         );
-        if self.sources.is_empty() {
+        col.add_child(
+            Container::new(draft_row.finish())
+                .with_margin_top(10.0)
+                .finish(),
+        );
+        col.finish()
+    }
+
+    fn vault_pane(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_hint(
+            wormhole_i18n::t("settings.memory.hint"),
+            self.font,
+        ));
+        if let Some(status) = &self.status {
             col.add_child(
                 EventHandler::new(
                     Container::new(
-                        ui_text::body(
-                            wormhole_i18n::t("settings.memory.sources_empty"),
+                        ui_text::mono(
+                            format!(
+                                "{} · md={}",
+                                status.content_root, status.content_md_files
+                            ),
                             self.font,
                         )
                         .with_color(theme::muted())
@@ -968,113 +1436,66 @@ impl MemoryView {
                     .with_margin_top(8.0)
                     .finish(),
                 )
-                .with_automation_id("settings:memory_sources")
-                .with_automation_label(wormhole_i18n::t("settings.memory.sources_label"))
+                .with_automation_id("settings:memory_vault_path")
+                .with_automation_label(wormhole_i18n::t("settings.memory.vault_path_label"))
                 .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
                 .finish(),
             );
-        } else {
-            let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-            for source in &self.sources {
-                let enabled = if source.enabled { "on" } else { "off" };
-                let kind_label = match source.kind {
-                    MemorySourceKind::Rss => "rss",
-                    MemorySourceKind::Folder => "folder",
-                    MemorySourceKind::Notes => "notes",
-                    MemorySourceKind::AgentTranscript => "agent",
-                    MemorySourceKind::Composio => "composio",
-                };
-                let mut row = Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_main_axis_size(MainAxisSize::Max);
-                row.add_child(Expanded::new(
-                    1.0,
-                    ui_text::mono(
-                        format!("{kind_label}: {} · {} · {enabled}", source.id, source.path),
+            col.add_child(
+                Container::new(
+                    ui_text::body(
+                        format!(
+                            "{}: {}",
+                            wormhole_i18n::t("settings.memory.index_label"),
+                            status.index_workspace
+                        ),
                         self.font,
                     )
-                    .with_color(theme::text())
+                    .with_color(theme::placeholder())
                     .finish(),
-                ).finish());
-                row.add_child(
-                    Container::new(self.action_button(
-                        &wormhole_i18n::t("settings.memory.sources_remove"),
-                        MemoryAction::RemoveSource(source.id.clone()),
-                        self.busy,
-                        false,
-                        "settings:memory_source_remove",
-                    ))
-                    .with_margin_left(8.0)
-                    .finish(),
-                );
-                list.add_child(
-                    Container::new(row.finish())
-                        .with_margin_top(6.0)
+                )
+                .with_margin_top(6.0)
+                .finish(),
+            );
+            if !status.embeddings_available {
+                col.add_child(
+                    Container::new(
+                        ui_text::body(
+                            wormhole_i18n::t("settings.memory.embeddings_unavailable"),
+                            self.font,
+                        )
+                        .with_color(theme::muted())
                         .finish(),
+                    )
+                    .with_margin_top(6.0)
+                    .finish(),
                 );
             }
-            col.add_child(
-                EventHandler::new(list.finish())
-                    .with_automation_id("settings:memory_sources")
-                    .with_automation_label(wormhole_i18n::t("settings.memory.sources_label"))
-                    .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
-                    .finish(),
-            );
         }
-
-        let draft = self.source_draft.clone();
-        let marked = self.source_field.marked_text.clone();
-        let field = TextFieldInput::builder(
-            EventHandler::new(
-                Container::new(render_field_with_caret(
-                    &draft,
-                    &marked,
-                    &wormhole_i18n::t("settings.memory.sources_path_placeholder"),
-                    self.font,
-                    self.source_focused,
-                    self.busy,
-                    true,
-                    self.source_field.cursor,
-                ))
-                .with_uniform_padding(10.0)
-                .with_background(theme::bg())
-                .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
-                .finish(),
-            )
-            .with_automation_id("settings:memory_source_path")
-            .with_automation_label(wormhole_i18n::t("settings.memory.sources_path_label"))
-            .on_left_mouse_down(|ctx, _, _| {
-                ctx.dispatch_typed_action(MemoryAction::FocusSourcePath);
-                DispatchEventResult::StopPropagation
-            })
-            .finish(),
-            |ctx, action| {
-                ctx.dispatch_typed_action(MemoryAction::SourcePathEdit(action));
-            },
-        )
-        .focused(self.source_focused)
-        .disabled(self.busy)
-        .ime_preedit(!marked.is_empty())
-        .finish();
-        let mut add_row = Flex::row()
+        let mut actions = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Max);
-        add_row.add_child(Expanded::new(1.0, field).finish());
-        add_row.add_child(
+        actions.add_child(self.action_button(
+            &wormhole_i18n::t("settings.memory.open_obsidian"),
+            MemoryAction::OpenObsidian,
+            self.busy,
+            true,
+            "settings:memory_vault_obsidian",
+        ));
+        actions.add_child(
             Container::new(self.action_button(
-                &wormhole_i18n::t("settings.memory.sources_add"),
-                MemoryAction::AddSource,
-                self.busy || self.source_draft.trim().is_empty(),
-                true,
-                "settings:memory_source_add",
+                &wormhole_i18n::t("settings.memory.reveal_folder"),
+                MemoryAction::RevealVault,
+                self.busy,
+                false,
+                "settings:memory_vault_reveal",
             ))
             .with_margin_left(8.0)
             .finish(),
         );
         col.add_child(
-            Container::new(add_row.finish())
-                .with_margin_top(10.0)
+            Container::new(actions.finish())
+                .with_margin_top(12.0)
                 .finish(),
         );
         col.finish()
@@ -1088,6 +1509,33 @@ fn kind_rank(kind: &str) -> u8 {
         "chunk" => 2,
         "contact" => 3,
         _ => 9,
+    }
+}
+
+fn tree_indent(level: u32) -> String {
+    if level == 0 {
+        String::new()
+    } else {
+        format!("{}│ ", "  ".repeat(level.saturating_sub(1) as usize))
+    }
+}
+
+fn node_label(graph: &GraphExport, id: &str) -> String {
+    graph
+        .nodes
+        .iter()
+        .find(|n| n.id == id)
+        .map(|n| n.label.chars().take(48).collect())
+        .unwrap_or_else(|| id.chars().take(48).collect())
+}
+
+fn source_kind_label(kind: &MemorySourceKind) -> &'static str {
+    match kind {
+        MemorySourceKind::Rss => "rss",
+        MemorySourceKind::Folder => "folder",
+        MemorySourceKind::Notes => "notes",
+        MemorySourceKind::AgentTranscript => "agent",
+        MemorySourceKind::Composio => "composio",
     }
 }
 
@@ -1172,42 +1620,135 @@ fn related_nodes(graph: &GraphExport, id: &str) -> Vec<GraphNode> {
     out
 }
 
+fn truncate_preview(text: &str) -> String {
+    if text.chars().count() <= BROWSE_PREVIEW_MAX {
+        text.to_string()
+    } else {
+        text.chars().take(BROWSE_PREVIEW_MAX).collect()
+    }
+}
+
+fn json_str(item: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(s) = item.get(*key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn parse_browse_item(item: &serde_json::Value) -> Option<BrowseHit> {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("entity_id"))
+        .or_else(|| item.get("node_id"))
+        .or_else(|| item.get("chunk_id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let title = json_str(
+        item,
+        &["title", "name", "text", "label", "surface"],
+    );
+    let title = if title.is_empty() {
+        id.clone()
+    } else {
+        title.chars().take(120).collect()
+    };
+    let kind = json_str(item, &["kind", "type", "entity_kind"]);
+    let score = item.get("score").and_then(|v| v.as_f64());
+    let path = json_str(item, &["path", "file", "source_path"]);
+    let preview = truncate_preview(&json_str(
+        item,
+        &["content", "body", "snippet", "preview", "text", "markdown"],
+    ));
+    Some(BrowseHit {
+        id,
+        title,
+        kind,
+        score,
+        path,
+        preview,
+    })
+}
+
 fn parse_browse_hits(payload: &serde_json::Value) -> Vec<BrowseHit> {
-    let mut hits = Vec::new();
+    let mut hits: Vec<BrowseHit> = Vec::new();
     let arrays = [
         payload.get("hits"),
         payload.get("entities"),
         payload.get("results"),
+        payload.get("chunks"),
         payload.as_array().map(|_| payload),
     ];
     for maybe in arrays.into_iter().flatten() {
         if let Some(arr) = maybe.as_array() {
             for item in arr {
-                let id = item
-                    .get("id")
-                    .or_else(|| item.get("entity_id"))
-                    .or_else(|| item.get("node_id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if id.is_empty() {
-                    continue;
+                if let Some(hit) = parse_browse_item(item) {
+                    if !hits.iter().any(|h| h.id == hit.id) {
+                        hits.push(hit);
+                    }
                 }
-                let label = item
-                    .get("label")
-                    .or_else(|| item.get("surface"))
-                    .or_else(|| item.get("name"))
-                    .or_else(|| item.get("text"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(id.as_str())
-                    .chars()
-                    .take(80)
-                    .collect();
-                hits.push(BrowseHit { id, label });
             }
         }
     }
     hits
+}
+
+fn format_browse_hit_detail(hit: &BrowseHit) -> String {
+    let mut lines = vec![
+        format!("id: {}", hit.id),
+        format!(
+            "{}: {}",
+            wormhole_i18n::t("settings.memory.browse_kind"),
+            if hit.kind.is_empty() { "—" } else { &hit.kind }
+        ),
+    ];
+    if let Some(score) = hit.score {
+        lines.push(format!(
+            "{}: {score:.3}",
+            wormhole_i18n::t("settings.memory.browse_score")
+        ));
+    }
+    if !hit.path.is_empty() {
+        lines.push(format!(
+            "{}: {}",
+            wormhole_i18n::t("settings.memory.browse_path"),
+            hit.path
+        ));
+    }
+    lines.push(format!("title: {}", hit.title));
+    if !hit.preview.is_empty() {
+        lines.push(String::new());
+        lines.push(hit.preview.clone());
+    }
+    lines.join("\n")
+}
+
+fn format_browse_payload_detail(payload: &serde_json::Value) -> String {
+    let hits = parse_browse_hits(payload);
+    if let Some(first) = hits.first() {
+        return format_browse_hit_detail(first);
+    }
+    if let Some(s) = payload.as_str() {
+        return truncate_preview(s);
+    }
+    if let Some(obj) = payload.as_object() {
+        let mut lines = Vec::new();
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                lines.push(format!("{k}: {}", truncate_preview(s)));
+            } else if !v.is_null() && !v.is_array() && !v.is_object() {
+                lines.push(format!("{k}: {v}"));
+            }
+        }
+        if !lines.is_empty() {
+            return lines.join("\n");
+        }
+    }
+    truncate_preview(&payload.to_string())
 }
 
 impl Entity for MemoryView {
@@ -1225,6 +1766,9 @@ impl View for MemoryView {
         match self.pane {
             MemoryPane::Graph => col.add_child(self.graph_pane()),
             MemoryPane::Browse => col.add_child(self.browse_pane()),
+            MemoryPane::Sources => col.add_child(self.sources_pane()),
+            MemoryPane::Sync => col.add_child(self.sync_pane()),
+            MemoryPane::Goals => col.add_child(self.goals_pane()),
             MemoryPane::Vault => col.add_child(self.vault_pane()),
         }
         if !self.message.is_empty() {
@@ -1252,11 +1796,13 @@ impl TypedActionView for MemoryView {
             MemoryAction::SelectPane(index) => {
                 self.pane = match index {
                     1 => MemoryPane::Browse,
-                    2 => MemoryPane::Vault,
+                    2 => MemoryPane::Sources,
+                    3 => MemoryPane::Sync,
+                    4 => MemoryPane::Goals,
+                    5 => MemoryPane::Vault,
                     _ => MemoryPane::Graph,
                 };
-                self.browse_focused = false;
-                self.source_focused = false;
+                self.clear_field_focus();
                 ctx.notify();
             }
             MemoryAction::SetGraphMode(mode) => {
@@ -1285,6 +1831,52 @@ impl TypedActionView for MemoryView {
                                 view.message = result.guidance.unwrap_or_else(|| {
                                     wormhole_i18n::t("settings.memory.opened_obsidian")
                                 });
+                                view.tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.open_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            MemoryAction::OpenGraphNote => {
+                if self.busy {
+                    return;
+                }
+                let basename = self
+                    .graph
+                    .as_ref()
+                    .and_then(|g| {
+                        self.selected_node_id
+                            .as_ref()
+                            .and_then(|id| g.nodes.iter().find(|n| &n.id == id))
+                    })
+                    .and_then(|n| n.file_basename.clone());
+                let Some(basename) = basename else {
+                    return;
+                };
+                let note_basename = basename;
+                self.busy = true;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        memory_open_obsidian(&state).await
+                    },
+                    move |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(result) => {
+                                let guidance = result.guidance.unwrap_or_else(|| {
+                                    wormhole_i18n::t("settings.memory.opened_obsidian")
+                                });
+                                view.message = format!("{guidance} · {note_basename}.md");
                                 view.tone = StatusTone::Success;
                             }
                             Err(error) => {
@@ -1396,9 +1988,9 @@ impl TypedActionView for MemoryView {
                                     wormhole_i18n::t("settings.memory.ingest_agent_failed")
                                 );
                                 view.tone = StatusTone::Danger;
-                                ctx.notify();
                             }
                         }
+                        ctx.notify();
                     },
                 );
             }
@@ -1553,6 +2145,7 @@ impl TypedActionView for MemoryView {
             MemoryAction::FocusBrowseSearch => {
                 self.browse_focused = true;
                 self.source_focused = false;
+                self.goal_focused = false;
                 ctx.notify();
             }
             MemoryAction::BrowseSearchEdit(action) => {
@@ -1560,70 +2153,18 @@ impl TypedActionView for MemoryView {
                 ctx.notify();
             }
             MemoryAction::RunBrowseSearch => {
-                if self.busy {
+                self.run_browse_query(ctx, MemoryTreeMode::SearchEntities);
+            }
+            MemoryAction::RunBrowseSemantic => {
+                if !self.embeddings_available() {
                     return;
                 }
-                let query = self.browse_query.trim().to_string();
-                if query.is_empty() {
-                    return;
-                }
-                self.busy = true;
-                let core = self.core.clone();
-                ctx.spawn(
-                    async move {
-                        let state = core.runtime().state.clone();
-                        memory_tree(
-                            &state,
-                            MemoryTreeQuery {
-                                mode: MemoryTreeMode::SearchEntities,
-                                query: Some(query),
-                                source_id: None,
-                                node_id: None,
-                                chunk_ids: None,
-                                limit: Some(40),
-                                max_depth: None,
-                                since_ms: None,
-                                until_ms: None,
-                                time_window_days: None,
-                                title: None,
-                                body: None,
-                                path: None,
-                            },
-                        )
-                        .await
-                    },
-                    |view, output, ctx| {
-                        view.busy = false;
-                        match output {
-                            Ok(result) => {
-                                view.browse_hits = parse_browse_hits(&result.payload);
-                                view.selected_hit_id =
-                                    view.browse_hits.first().map(|h| h.id.clone());
-                                view.hit_detail = serde_json::to_string_pretty(&result.payload)
-                                    .unwrap_or_else(|_| result.payload.to_string());
-                                view.message = format!(
-                                    "{}: {}",
-                                    wormhole_i18n::t("settings.memory.browse_done"),
-                                    view.browse_hits.len()
-                                );
-                                view.tone = StatusTone::Success;
-                            }
-                            Err(error) => {
-                                view.message = format!(
-                                    "{}: {error}",
-                                    wormhole_i18n::t("settings.memory.browse_failed")
-                                );
-                                view.tone = StatusTone::Danger;
-                            }
-                        }
-                        ctx.notify();
-                    },
-                );
+                self.run_browse_query(ctx, MemoryTreeMode::QueryGlobal);
             }
             MemoryAction::SelectBrowseHit(id) => {
                 self.selected_hit_id = Some(id.clone());
                 if let Some(hit) = self.browse_hits.iter().find(|h| h.id == *id) {
-                    self.hit_detail = format!("{} · {}", hit.id, hit.label);
+                    self.hit_detail = format_browse_hit_detail(hit);
                 }
                 ctx.notify();
             }
@@ -1663,8 +2204,10 @@ impl TypedActionView for MemoryView {
                         view.busy = false;
                         match output {
                             Ok(result) => {
-                                view.hit_detail = serde_json::to_string_pretty(&result.payload)
-                                    .unwrap_or_else(|_| result.payload.to_string());
+                                view.browse_hits = parse_browse_hits(&result.payload);
+                                view.selected_hit_id =
+                                    view.browse_hits.first().map(|h| h.id.clone());
+                                view.hit_detail = format_browse_payload_detail(&result.payload);
                                 view.message = wormhole_i18n::t("settings.memory.browse_drilled");
                                 view.tone = StatusTone::Success;
                             }
@@ -1683,6 +2226,7 @@ impl TypedActionView for MemoryView {
             MemoryAction::FocusSourcePath => {
                 self.source_focused = true;
                 self.browse_focused = false;
+                self.goal_focused = false;
                 ctx.notify();
             }
             MemoryAction::SourcePathEdit(action) => {
@@ -1785,6 +2329,306 @@ impl TypedActionView for MemoryView {
                     },
                 );
             }
+            MemoryAction::SyncSource(id) => {
+                if self.busy {
+                    return;
+                }
+                let kind = self
+                    .sources
+                    .iter()
+                    .find(|s| s.id == *id)
+                    .map(|s| s.kind.clone());
+                let Some(kind) = kind else {
+                    return;
+                };
+                self.busy = true;
+                let core = self.core.clone();
+                let source_id = id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        match kind {
+                            MemorySourceKind::Rss => {
+                                memory_rss_sync(&state).await.map(|_| serde_json::json!({}))
+                            }
+                            MemorySourceKind::AgentTranscript => memory_ingest_agent_transcripts(
+                                &state,
+                            )
+                            .await
+                            .map(|s| serde_json::to_value(s).unwrap_or_default()),
+                            _ => memory_reindex(&state).await,
+                        }
+                    },
+                    move |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(_) => {
+                                view.message = format!(
+                                    "{}: {source_id}",
+                                    wormhole_i18n::t("settings.memory.sources_sync_done")
+                                );
+                                view.tone = StatusTone::Success;
+                                view.refresh_all(ctx);
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.sources_sync_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            MemoryAction::RefreshGoals => self.refresh_goals(ctx),
+            MemoryAction::FocusGoalDraft => {
+                self.goal_focused = true;
+                self.browse_focused = false;
+                self.source_focused = false;
+                ctx.notify();
+            }
+            MemoryAction::GoalDraftEdit(action) => {
+                self.goal_field.apply(&mut self.goal_draft, action);
+                ctx.notify();
+            }
+            MemoryAction::AddGoal => {
+                let text = self.goal_draft.trim().to_string();
+                if text.is_empty() || self.busy {
+                    return;
+                }
+                self.busy = true;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        memory_goals_add(
+                            &state,
+                            MemoryGoalsTextParams { text },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(goals) => {
+                                view.goals = goals;
+                                view.goal_draft.clear();
+                                view.editing_goal_id = None;
+                                view.message = wormhole_i18n::t("settings.memory.goals_added");
+                                view.tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.goals_add_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            MemoryAction::StartEditGoal(id) => {
+                if let Some(goal) = self.goals.items.iter().find(|g| g.id == *id) {
+                    self.editing_goal_id = Some(id.clone());
+                    self.goal_draft = goal.text.clone();
+                    self.goal_field.cursor = self.goal_draft.chars().count();
+                }
+                ctx.notify();
+            }
+            MemoryAction::SaveEditGoal => {
+                let Some(goal_id) = self.editing_goal_id.clone() else {
+                    return;
+                };
+                let text = self.goal_draft.trim().to_string();
+                if text.is_empty() || self.busy {
+                    return;
+                }
+                self.busy = true;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        memory_goals_edit(
+                            &state,
+                            MemoryGoalsEditParams { id: goal_id, text },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(goals) => {
+                                view.goals = goals;
+                                view.goal_draft.clear();
+                                view.editing_goal_id = None;
+                                view.message = wormhole_i18n::t("settings.memory.goals_edited");
+                                view.tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.goals_edit_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            MemoryAction::DeleteGoal(id) => {
+                if self.busy {
+                    return;
+                }
+                self.busy = true;
+                let core = self.core.clone();
+                let goal_id = id.clone();
+                let editing_check = id.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        memory_goals_delete(
+                            &state,
+                            MemoryGoalsDeleteParams { id: goal_id },
+                        )
+                        .await
+                    },
+                    move |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(goals) => {
+                                view.goals = goals;
+                                if view.editing_goal_id.as_deref() == Some(editing_check.as_str()) {
+                                    view.editing_goal_id = None;
+                                    view.goal_draft.clear();
+                                }
+                                view.message = wormhole_i18n::t("settings.memory.goals_deleted");
+                                view.tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.goals_delete_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
+            MemoryAction::ReflectGoals => {
+                if self.busy {
+                    return;
+                }
+                self.busy = true;
+                self.message = wormhole_i18n::t("settings.memory.goals_reflecting");
+                self.tone = StatusTone::Placeholder;
+                let core = self.core.clone();
+                ctx.spawn(
+                    async move {
+                        let state = core.runtime().state.clone();
+                        memory_goals_reflect(
+                            &state,
+                            MemoryGoalsReflectParams { context: None },
+                        )
+                        .await
+                    },
+                    |view, output, ctx| {
+                        view.busy = false;
+                        match output {
+                            Ok(summary) => {
+                                view.goals = summary.goals;
+                                view.message = format!(
+                                    "{}: applied={} · {}",
+                                    wormhole_i18n::t("settings.memory.goals_reflect_done"),
+                                    summary.applied,
+                                    summary.summary.chars().take(120).collect::<String>()
+                                );
+                                view.tone = StatusTone::Success;
+                            }
+                            Err(error) => {
+                                view.message = format!(
+                                    "{}: {error}",
+                                    wormhole_i18n::t("settings.memory.goals_reflect_failed")
+                                );
+                                view.tone = StatusTone::Danger;
+                            }
+                        }
+                        ctx.notify();
+                    },
+                );
+            }
         }
+    }
+}
+
+impl MemoryView {
+    fn run_browse_query(&mut self, ctx: &mut ViewContext<Self>, mode: MemoryTreeMode) {
+        if self.busy {
+            return;
+        }
+        let query = self.browse_query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.busy = true;
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                memory_tree(
+                    &state,
+                    MemoryTreeQuery {
+                        mode,
+                        query: Some(query),
+                        source_id: None,
+                        node_id: None,
+                        chunk_ids: None,
+                        limit: Some(40),
+                        max_depth: None,
+                        since_ms: None,
+                        until_ms: None,
+                        time_window_days: None,
+                        title: None,
+                        body: None,
+                        path: None,
+                    },
+                )
+                .await
+            },
+            |view, output, ctx| {
+                view.busy = false;
+                match output {
+                    Ok(result) => {
+                        view.browse_hits = parse_browse_hits(&result.payload);
+                        view.selected_hit_id = view.browse_hits.first().map(|h| h.id.clone());
+                        view.hit_detail = if let Some(hit) = view.browse_hits.first() {
+                            format_browse_hit_detail(hit)
+                        } else {
+                            format_browse_payload_detail(&result.payload)
+                        };
+                        view.message = format!(
+                            "{}: {}",
+                            wormhole_i18n::t("settings.memory.browse_done"),
+                            view.browse_hits.len()
+                        );
+                        view.tone = StatusTone::Success;
+                    }
+                    Err(error) => {
+                        view.message = format!(
+                            "{}: {error}",
+                            wormhole_i18n::t("settings.memory.browse_failed")
+                        );
+                        view.tone = StatusTone::Danger;
+                    }
+                }
+                ctx.notify();
+            },
+        );
     }
 }

@@ -105,53 +105,83 @@ impl Element for HudBackdrop {
             size.set_y(1.0);
         }
         let elapsed = self.started.elapsed().as_secs_f32();
+        let palette = theme::palette();
+        let backdrop = &palette.backdrop;
 
         ctx.scene
             .start_layer(ClipBounds::BoundedBy(RectF::new(origin, size)));
 
         ctx.scene
             .draw_rect_without_hit_recording(RectF::new(origin, size))
-            .with_background(Fill::Solid(theme::canvas()));
+            .with_background(Fill::Solid(palette.canvas));
 
-        let grid_color = ColorU::new(222, 231, 247, 6);
-        let mut x = 0.0f32;
-        while x <= size.x() {
-            ctx.scene
-                .draw_rect_without_hit_recording(RectF::new(
-                    origin + vec2f(x, 0.0),
-                    vec2f(1.0, size.y()),
-                ))
-                .with_background(Fill::Solid(grid_color));
-            x += GRID_SPACING;
+        match backdrop.kind {
+            crate::ui::theme::BackdropKind::Solid => {
+                // Flat canvas only — no mesh / scan wash.
+            }
+            crate::ui::theme::BackdropKind::Image => {
+                // Local image decode is not wired into HudBackdrop yet; fail loudly
+                // with a visible error band instead of silently pretending mesh works.
+                let msg_band = ColorU::new(
+                    theme::warn().r,
+                    theme::warn().g,
+                    theme::warn().b,
+                    48,
+                );
+                ctx.scene
+                    .draw_rect_without_hit_recording(RectF::new(
+                        origin + vec2f(0.0, size.y() * 0.42),
+                        vec2f(size.x(), size.y() * 0.16),
+                    ))
+                    .with_background(Fill::Solid(msg_band));
+                let _ = backdrop.image_url.as_ref();
+            }
+            crate::ui::theme::BackdropKind::Mesh => {
+                if backdrop.dots {
+                    let cool = palette.accent_cool;
+                    let grid_color = ColorU::new(cool.r, cool.g, cool.b, 6);
+                    let mut x = 0.0f32;
+                    while x <= size.x() {
+                        ctx.scene
+                            .draw_rect_without_hit_recording(RectF::new(
+                                origin + vec2f(x, 0.0),
+                                vec2f(1.0, size.y()),
+                            ))
+                            .with_background(Fill::Solid(grid_color));
+                        x += GRID_SPACING;
+                    }
+                    let mut y = 0.0f32;
+                    while y <= size.y() {
+                        ctx.scene
+                            .draw_rect_without_hit_recording(RectF::new(
+                                origin + vec2f(0.0, y),
+                                vec2f(size.x(), 1.0),
+                            ))
+                            .with_background(Fill::Solid(grid_color));
+                        y += GRID_SPACING;
+                    }
+                }
+
+                let cool = palette.accent_cool;
+                let drift = (elapsed * 4.0).sin() * GRID_SPACING * 0.15;
+                let wash = ColorU::new(cool.r, cool.g, cool.b, 8);
+                ctx.scene
+                    .draw_rect_without_hit_recording(RectF::new(
+                        origin + vec2f(drift, 0.0),
+                        vec2f(size.x(), size.y() * 0.12),
+                    ))
+                    .with_background(Fill::Solid(wash));
+
+                let scan_y = origin.y() + (elapsed / 8.0).fract() * size.y();
+                let scan_h = size.y() * 0.28;
+                ctx.scene
+                    .draw_rect_without_hit_recording(RectF::new(
+                        vec2f(origin.x(), scan_y),
+                        vec2f(size.x(), scan_h),
+                    ))
+                    .with_background(Fill::Solid(ColorU::new(cool.r, cool.g, cool.b, 10)));
+            }
         }
-        let mut y = 0.0f32;
-        while y <= size.y() {
-            ctx.scene
-                .draw_rect_without_hit_recording(RectF::new(
-                    origin + vec2f(0.0, y),
-                    vec2f(size.x(), 1.0),
-                ))
-                .with_background(Fill::Solid(grid_color));
-            y += GRID_SPACING;
-        }
-
-        let drift = (elapsed * 4.0).sin() * GRID_SPACING * 0.15;
-        let wash = ColorU::new(222, 231, 247, 8);
-        ctx.scene
-            .draw_rect_without_hit_recording(RectF::new(
-                origin + vec2f(drift, 0.0),
-                vec2f(size.x(), size.y() * 0.12),
-            ))
-            .with_background(Fill::Solid(wash));
-
-        let scan_y = origin.y() + (elapsed / 8.0).fract() * size.y();
-        let scan_h = size.y() * 0.28;
-        ctx.scene
-            .draw_rect_without_hit_recording(RectF::new(
-                vec2f(origin.x(), scan_y),
-                vec2f(size.x(), scan_h),
-            ))
-            .with_background(Fill::Solid(ColorU::new(222, 231, 247, 10)));
 
         ctx.scene.stop_layer();
         self.child.paint(origin, ctx, app);

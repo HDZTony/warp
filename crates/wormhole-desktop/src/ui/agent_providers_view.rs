@@ -8,8 +8,15 @@ use wormhole_desktop_core::agent_codex_presets::{self, CodexProviderPreset};
 use wormhole_desktop_core::agent_llm_commands::{
     self, ConfigureAgentLlmParams, TestAgentLlmConnectionParams,
 };
+use wormhole_desktop_core::agent_model_routing::{
+    self, AgentModelRoutesDto, UpdateAgentModelRoutesParams,
+};
+use wormhole_desktop_core::agent_ollama::{
+    self, ConfigureOllamaParams, EnsureOllamaParams, OllamaStatusDto,
+};
 use wormhole_desktop_core::agent_provider_commands;
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
+use wormhole_model_routing::{WorkloadHint, WorkloadRouteTable};
 
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::panel_primitives::{
@@ -36,6 +43,12 @@ pub enum AgentProvidersAction {
     BaseUrlEdit(TextFieldEditAction),
     SaveProvider,
     TestProvider,
+    CycleRouteHint,
+    FocusRouteModel,
+    RouteModelEdit(TextFieldEditAction),
+    SaveRoutes,
+    EnsureOllama,
+    ToggleOllamaEnabled,
 }
 
 pub struct AgentProvidersView {
@@ -56,6 +69,13 @@ pub struct AgentProvidersView {
     base_url_draft: String,
     base_url_field: TextFieldState,
     base_url_focused: bool,
+    /// Workload route matrix (Automatic Model Routing).
+    route_table: WorkloadRouteTable,
+    route_hint_index: usize,
+    route_model_draft: String,
+    route_model_field: TextFieldState,
+    route_model_focused: bool,
+    ollama: Option<OllamaStatusDto>,
 }
 
 fn byok_presets() -> Vec<CodexProviderPreset> {
@@ -90,6 +110,12 @@ impl AgentProvidersView {
             base_url_draft: String::new(),
             base_url_field: TextFieldState::new(),
             base_url_focused: false,
+            route_table: WorkloadRouteTable::default(),
+            route_hint_index: 0,
+            route_model_draft: String::new(),
+            route_model_field: TextFieldState::new(),
+            route_model_focused: false,
+            ollama: None,
         };
         if let Some(preset) = view.current_preset() {
             view.base_url_draft = preset.default_base_url.clone();
@@ -492,10 +518,12 @@ impl AgentProvidersView {
                 let state = core.runtime().state.clone();
                 let providers = agent_provider_commands::agent_providers_list(&state).await;
                 let llm = wormhole_desktop_core::agent_llm_commands::agent_llm_config(&state).await;
-                (providers, llm)
+                let routes = agent_model_routing::get_agent_model_routes(&state).await;
+                let ollama = agent_ollama::ollama_status(&state).await;
+                (providers, llm, routes, ollama)
             },
             |view, output, ctx| {
-                let (providers, llm) = output;
+                let (providers, llm, routes, ollama) = output;
                 match providers {
                     Ok(list) => {
                         view.active_provider_id = list.active_provider_id.clone();
@@ -517,6 +545,15 @@ impl AgentProvidersView {
                         view.status = format!("刷新失败：{error}");
                     }
                 }
+                if let Ok(routes) = routes {
+                    view.apply_routes_dto(routes);
+                }
+                match ollama {
+                    Ok(status) => view.ollama = Some(status),
+                    Err(err) => {
+                        view.status = format!("Ollama 状态读取失败：{err}");
+                    }
+                }
                 view.llm_summary = match llm {
                     Ok(cfg) if is_control_plane_id(&cfg.provider) => {
                         format!("当前：平台模型 · {}", cfg.model)
@@ -533,6 +570,318 @@ impl AgentProvidersView {
                 ctx.notify();
             },
         );
+    }
+
+    fn apply_routes_dto(&mut self, dto: AgentModelRoutesDto) {
+        self.route_table = dto.routes;
+        self.sync_route_model_draft_from_table();
+    }
+
+    fn current_route_hint(&self) -> WorkloadHint {
+        let hints = WorkloadHint::matrix_hints();
+        hints[self.route_hint_index % hints.len()]
+    }
+
+    fn sync_route_model_draft_from_table(&mut self) {
+        let hint = self.current_route_hint();
+        self.route_model_draft = self
+            .route_table
+            .binding_for(hint)
+            .model
+            .clone()
+            .unwrap_or_default();
+        self.route_model_field.move_cursor_to_end(&self.route_model_draft);
+    }
+
+    fn cycle_route_hint(&mut self, ctx: &mut ViewContext<Self>) {
+        let n = WorkloadHint::matrix_hints().len();
+        self.route_hint_index = (self.route_hint_index + 1) % n;
+        self.sync_route_model_draft_from_table();
+        self.route_model_focused = false;
+        ctx.notify();
+    }
+
+    fn save_routes(&mut self, ctx: &mut ViewContext<Self>) {
+        let hint = self.current_route_hint();
+        let model = self.route_model_draft.trim().to_string();
+        {
+            let binding = self.route_table.binding_for_mut(hint);
+            binding.model = if model.is_empty() {
+                None
+            } else {
+                Some(model)
+            };
+        }
+        self.busy = true;
+        self.status = "正在保存 Workload Routes…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        let params = UpdateAgentModelRoutesParams {
+            routes: self.route_table.clone(),
+            orchestrator_model: None,
+            teams: Default::default(),
+        };
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_model_routing::update_agent_model_routes(&state, params).await
+            },
+            |view, result, ctx| {
+                match result {
+                    Ok(dto) => {
+                        view.apply_routes_dto(dto);
+                        view.status = "Workload Routes 已保存".into();
+                    }
+                    Err(err) => view.status = format!("保存 Routes 失败：{err}"),
+                }
+                view.busy = false;
+                ctx.notify();
+            },
+        );
+    }
+
+    fn routes_block(&self) -> Box<dyn Element> {
+        let hint = self.current_route_hint();
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("Workload Routes", self.font));
+        col.add_child(section_hint(
+            "按任务覆盖模型；空=继承当前供应商。主聊→agentic；Persona→summarization；Goals→reasoning。",
+            self.font,
+        ));
+        col.add_child(
+            Container::new(self.form_field_shell(
+                "Workload hint",
+                self.selectable_value_el(
+                    &format!("hint:{}", hint.as_str()),
+                    "切换",
+                    AgentProvidersAction::CycleRouteHint,
+                ),
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(self.form_field_shell(
+                "模型覆盖",
+                self.route_model_field_element(),
+            ))
+            .with_margin_top(6.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(self.action_button("保存 Routes", AgentProvidersAction::SaveRoutes))
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        for h in WorkloadHint::matrix_hints() {
+            let binding = self.route_table.binding_for(*h);
+            let m = binding
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("inherit");
+            col.add_child(status_line(
+                format!("  hint:{} → {m}", h.as_str()),
+                self.font,
+                StatusTone::Muted,
+            ));
+        }
+        col.finish()
+    }
+
+    fn local_ai_block(&self) -> Box<dyn Element> {
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(section_title("Local AI (Ollama)", self.font));
+        col.add_child(section_hint(
+            "本机 embeddings（768-d / nomic-embed-text）与可选 summarization；点「安装 / 启动」才会协助安装，不会开机静默安装。",
+            self.font,
+        ));
+        let (phase, enabled, daemon, binary, progress, hint, notes, last_err) =
+            match self.ollama.as_ref() {
+                Some(s) => (
+                    format!("{:?}", s.phase),
+                    s.config.enabled,
+                    s.daemon_reachable,
+                    s.binary_on_path,
+                    format!("{}% {}", s.progress.percent, s.progress.message),
+                    s.install_hint.clone(),
+                    s.notes.clone(),
+                    s.last_error.clone(),
+                ),
+                None => (
+                    "unknown".into(),
+                    false,
+                    false,
+                    false,
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    None,
+                ),
+            };
+        col.add_child(status_line(
+            format!(
+                "状态 {phase} · 启用={} · 二进制={} · 守护进程={}",
+                enabled, binary, daemon
+            ),
+            self.font,
+            StatusTone::Muted,
+        ));
+        if !progress.trim().is_empty() {
+            col.add_child(status_line(progress, self.font, StatusTone::Neutral));
+        }
+        if let Some(err) = last_err {
+            col.add_child(status_line(err, self.font, StatusTone::Danger));
+        }
+        for note in notes {
+            col.add_child(status_line(note, self.font, StatusTone::Muted));
+        }
+        if !hint.is_empty() {
+            col.add_child(status_line(
+                format!("手动安装：{hint}"),
+                self.font,
+                StatusTone::Placeholder,
+            ));
+        }
+        let mut row = Flex::row();
+        row.add_child(self.action_button_with_id(
+            "安装 / 启动 Ollama",
+            "settings:agent_local_ai:ensure",
+            AgentProvidersAction::EnsureOllama,
+        ));
+        row.add_child(
+            Container::new(self.action_button_with_id(
+                if enabled {
+                    "关闭本机 embeddings"
+                } else {
+                    "启用本机 embeddings"
+                },
+                "settings:agent_local_ai:toggle",
+                AgentProvidersAction::ToggleOllamaEnabled,
+            ))
+            .with_margin_left(8.0)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(row.finish())
+                .with_margin_top(8.0)
+                .finish(),
+        );
+        col.finish()
+    }
+
+    fn ensure_ollama(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在安装 / 启动 Ollama…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_ollama::ensure_ollama(
+                    &state,
+                    EnsureOllamaParams {
+                        pull_models: None,
+                        enable: Some(true),
+                        bind_summarization_route: Some(true),
+                    },
+                )
+                .await
+            },
+            |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        view.ollama = Some(status);
+                        view.status = "Ollama 已就绪".into();
+                    }
+                    Err(err) => view.status = format!("Ollama 失败：{err}"),
+                }
+                view.busy = false;
+                view.refresh(ctx);
+            },
+        );
+    }
+
+    fn toggle_ollama_enabled(&mut self, ctx: &mut ViewContext<Self>) {
+        let enabled = self
+            .ollama
+            .as_ref()
+            .map(|s| s.config.enabled)
+            .unwrap_or(false);
+        self.busy = true;
+        self.status = if enabled {
+            "正在关闭本机 embeddings…".into()
+        } else {
+            "正在启用本机 embeddings…".into()
+        };
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_ollama::configure_ollama(
+                    &state,
+                    ConfigureOllamaParams {
+                        enabled: Some(!enabled),
+                        chat_model: None,
+                        embedding_model: None,
+                        pull_models_on_ensure: None,
+                        bind_summarization_route: None,
+                    },
+                )
+                .await
+            },
+            |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        let on = status.config.enabled;
+                        view.ollama = Some(status);
+                        view.status = if on {
+                            "本机 embeddings 已启用（需守护进程可达）".into()
+                        } else {
+                            "本机 embeddings 已关闭".into()
+                        };
+                    }
+                    Err(err) => view.status = format!("配置失败：{err}"),
+                }
+                view.busy = false;
+                ctx.notify();
+            },
+        );
+    }
+
+    fn route_model_field_element(&self) -> Box<dyn Element> {
+        let field = render_field_with_caret(
+            &self.route_model_draft,
+            &self.route_model_field.marked_text,
+            "模型覆盖（空=继承）",
+            self.font,
+            self.route_model_focused,
+            false,
+            false,
+            self.route_model_field.cursor,
+        );
+        let input = TextFieldInput::builder(field, |ctx, action| {
+            ctx.dispatch_typed_action(AgentProvidersAction::RouteModelEdit(action));
+        })
+        .focused(self.route_model_focused)
+        .ime_preedit(!self.route_model_field.marked_text.is_empty())
+        .finish();
+        let input = wrap_text_field_focus_on_click(input, |ctx| {
+            ctx.dispatch_typed_action(AgentProvidersAction::FocusRouteModel);
+        });
+        Container::new(input)
+            .with_uniform_padding(10.0)
+            .with_vertical_margin(4.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(if self.route_model_focused {
+                theme::accent_cool()
+            } else {
+                theme::border()
+            }))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
+            .finish()
     }
 
     fn activate(&mut self, id: String, ctx: &mut ViewContext<Self>) {
@@ -599,8 +948,17 @@ impl AgentProvidersView {
     }
 
     fn action_button(&self, label: &str, action: AgentProvidersAction) -> Box<dyn Element> {
+        self.action_button_with_id(label, &format!("settings:agent_btn:{label}"), action)
+    }
+
+    fn action_button_with_id(
+        &self,
+        label: &str,
+        automation_id: &str,
+        action: AgentProvidersAction,
+    ) -> Box<dyn Element> {
         let label = label.to_string();
-        let automation_id = format!("settings:agent_btn:{label}");
+        let automation_id = automation_id.to_string();
         let disabled = self.busy;
         Container::new(
             EventHandler::new(
@@ -718,6 +1076,18 @@ impl View for AgentProvidersView {
             }
         }
 
+        col.add_child(
+            Container::new(self.local_ai_block())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
+        col.add_child(
+            Container::new(self.routes_block())
+                .with_margin_top(16.0)
+                .finish(),
+        );
+
         col.finish()
     }
 }
@@ -822,11 +1192,13 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::FocusApiKey => {
                 self.api_key_focused = true;
                 self.base_url_focused = false;
+                self.route_model_focused = false;
                 ctx.notify();
             }
             AgentProvidersAction::FocusBaseUrl => {
                 self.base_url_focused = true;
                 self.api_key_focused = false;
+                self.route_model_focused = false;
                 ctx.notify();
             }
             AgentProvidersAction::ApiKeyEdit(edit) => {
@@ -839,6 +1211,21 @@ impl TypedActionView for AgentProvidersView {
             }
             AgentProvidersAction::SaveProvider => self.save_provider(ctx),
             AgentProvidersAction::TestProvider => self.test_provider(ctx),
+            AgentProvidersAction::CycleRouteHint => self.cycle_route_hint(ctx),
+            AgentProvidersAction::FocusRouteModel => {
+                self.route_model_focused = true;
+                self.api_key_focused = false;
+                self.base_url_focused = false;
+                ctx.notify();
+            }
+            AgentProvidersAction::RouteModelEdit(edit) => {
+                self.route_model_field
+                    .apply(&mut self.route_model_draft, edit);
+                ctx.notify();
+            }
+            AgentProvidersAction::SaveRoutes => self.save_routes(ctx),
+            AgentProvidersAction::EnsureOllama => self.ensure_ollama(ctx),
+            AgentProvidersAction::ToggleOllamaEnabled => self.toggle_ollama_enabled(ctx),
         }
     }
 }

@@ -4032,6 +4032,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
+name = "cron"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5877d3fbf742507b66bc2a1945106bd30dd8504019d596901ddd012a4dd01740"
+dependencies = [
+ "chrono",
+ "once_cell",
+ "winnow 0.6.26",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16641,11 +16652,45 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.17",
  "tinyagents",
+ "tinycortex-api",
  "tokio",
  "toml 0.8.23",
  "tracing",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "tinycortex-api"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.17",
+ "uuid",
+]
+
+[[package]]
+name = "tinyjuice"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "dirs 6.0.0",
+ "hex",
+ "log",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.17",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width 0.2.1",
 ]
 
 [[package]]
@@ -20282,6 +20327,15 @@ dependencies = [
 
 [[package]]
 name = "winnow"
+version = "0.6.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e90edd2ac1aa278a5c4599b1d89cf03074b610800f866d4026dc199d7929a28"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "winnow"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3edebf492c8125044983378ecb5766203ad3b4c2f7a922bd7dd207f6d443e95"
@@ -20484,6 +20538,22 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wormhole-model-routing",
+]
+
+[[package]]
+name = "wormhole-cron"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cron",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -20531,7 +20601,9 @@ dependencies = [
  "wormhole-desktop-rdp",
  "wormhole-desktop-tray",
  "wormhole-i18n",
+ "wormhole-model-routing",
  "wormhole-native-ipc",
+ "wormhole-notifications",
 ]
 
 [[package]]
@@ -20586,13 +20658,18 @@ dependencies = [
  "windows-service",
  "windows-sys 0.61.2",
  "wormhole-codex-proxy",
+ "wormhole-cron",
  "wormhole-desktop-platform-windows",
  "wormhole-desktop-rdp",
  "wormhole-fuse",
  "wormhole-i18n",
  "wormhole-integrations",
  "wormhole-memory",
+ "wormhole-model-routing",
  "wormhole-nautilus",
+ "wormhole-notifications",
+ "wormhole-tokenjuice",
+ "wormhole-web",
  "zbus",
  "zip 2.4.2",
 ]
@@ -20708,6 +20785,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wormhole-model-routing"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "wormhole-native-ipc"
 version = "0.1.1"
 dependencies = [
@@ -20721,6 +20807,47 @@ version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "wormhole-notifications"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "wormhole-tokenjuice"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tinyjuice",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "wormhole-web"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

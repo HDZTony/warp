@@ -153,20 +153,64 @@ pub fn load_mono_font<E>(ctx: &mut ViewContext<E>, fallback: FamilyId) -> Family
 where
     E: warpui::Entity + warpui::View,
 {
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = ctx;
-        return fallback;
-    }
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    load_font_for_role(ctx, crate::ui::theme::FontRole::Mono).unwrap_or(fallback)
+}
+
+/// Resolve a Theme Studio font role to a loaded [`FamilyId`].
+pub fn load_font_for_role<E>(
+    ctx: &mut ViewContext<E>,
+    role: crate::ui::theme::FontRole,
+) -> Option<FamilyId>
+where
+    E: warpui::Entity + warpui::View,
+{
+    let choice_id = theme_font_choice_id(role);
+    let choice = crate::ui::theme::tokens::font_choice(&choice_id)?;
     FontCache::handle(ctx)
-        .update(ctx, |cache, _| {
-            cache
-                .load_system_font("Consolas")
-                .or_else(|_| cache.load_system_font("Cascadia Mono"))
-                .ok()
+        .update(ctx, |cache, _| load_font_choice(cache, choice))
+}
+
+fn theme_font_choice_id(role: crate::ui::theme::FontRole) -> String {
+    crate::ui::theme::palette().font_choice_id(role)
+}
+
+fn load_font_choice(
+    cache: &mut FontCache,
+    choice: &crate::ui::theme::FontChoice,
+) -> Option<FamilyId> {
+    if choice.id == "oppo_sans" || choice.family_name == "OPPO Sans 4.0" {
+        return load_bundled_ui_font(cache).or_else(|| {
+            #[cfg(not(all(unix, not(target_os = "macos"))))]
+            {
+                load_first_system_font(cache, UI_FONT_CANDIDATES)
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                None
+            }
+        });
+    }
+    if choice.id == "system" {
+        return load_first_system_font(cache, UI_FONT_CANDIDATES).or_else(|| load_bundled_ui_font(cache));
+    }
+    cache
+        .load_system_font(choice.family_name)
+        .ok()
+        .or_else(|| {
+            if let Some(id) = cache.family_id_for_name(choice.family_name) {
+                Some(id)
+            } else {
+                None
+            }
         })
-        .unwrap_or(fallback)
+}
+
+/// Prefer the theme body font when constructing the default UI font.
+pub fn load_ui_font_themed<E>(ctx: &mut ViewContext<E>) -> FamilyId
+where
+    E: warpui::Entity + warpui::View,
+{
+    load_font_for_role(ctx, crate::ui::theme::FontRole::Body).unwrap_or_else(|| load_ui_font(ctx))
 }
 
 #[cfg(test)]

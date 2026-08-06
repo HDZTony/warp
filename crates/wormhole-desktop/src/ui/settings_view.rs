@@ -14,6 +14,11 @@ use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons;
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::memory_view::MemoryView;
+use crate::ui::activity_view::ActivityView;
+use crate::ui::subconscious_view::SubconsciousView;
+use crate::ui::tokenjuice_view::TokenJuiceView;
+use crate::ui::web_search_view::WebSearchView;
+use crate::ui::cron_view::CronView;
 use crate::ui::panel_primitives::{section_hint, status_line, tab_content_fill, StatusTone};
 use crate::ui::text_field_input::{
     render_field_with_caret, TextFieldEditAction, TextFieldInput, TextFieldState,
@@ -62,6 +67,11 @@ pub enum SettingsPage {
     Connections,
     Agent,
     Memory,
+    Activity,
+    Subconscious,
+    TokenJuice,
+    WebSearch,
+    Cron,
     Cluster,
     Relay,
     SharedPath,
@@ -71,6 +81,7 @@ pub enum SettingsPage {
     RdpHost,
     Display,
     Plugins,
+    Theme,
     Language,
     About,
 }
@@ -126,6 +137,11 @@ impl SettingsPage {
             SettingsPage::Connections,
             SettingsPage::Agent,
             SettingsPage::Memory,
+            SettingsPage::Activity,
+            SettingsPage::Subconscious,
+            SettingsPage::TokenJuice,
+            SettingsPage::WebSearch,
+            SettingsPage::Cron,
             SettingsPage::Cluster,
             SettingsPage::Relay,
             SettingsPage::SharedPath,
@@ -135,6 +151,7 @@ impl SettingsPage {
             SettingsPage::RdpHost,
             SettingsPage::Display,
             SettingsPage::Plugins,
+            SettingsPage::Theme,
             SettingsPage::Language,
             SettingsPage::About,
         ]
@@ -147,6 +164,11 @@ impl SettingsPage {
             SettingsPage::Connections => "settings:nav_connections",
             SettingsPage::Agent => "settings:nav_agent",
             SettingsPage::Memory => "settings:nav_memory",
+            SettingsPage::Activity => "settings:nav_activity",
+            SettingsPage::Subconscious => "settings:nav_subconscious",
+            SettingsPage::TokenJuice => "settings:nav_tokenjuice",
+            SettingsPage::WebSearch => "settings:nav_web_search",
+            SettingsPage::Cron => "settings:nav_cron",
             SettingsPage::Cluster => "settings:nav_cluster",
             SettingsPage::Relay => "settings:nav_relay",
             SettingsPage::SharedPath => "settings:nav_shared_path",
@@ -156,6 +178,7 @@ impl SettingsPage {
             SettingsPage::RdpHost => "settings:nav_rdp_host",
             SettingsPage::Display => "settings:nav_display",
             SettingsPage::Plugins => "settings:nav_plugins",
+            SettingsPage::Theme => "settings:nav_theme",
             SettingsPage::Language => "settings:nav_language",
             SettingsPage::About => "settings:nav_about",
         }
@@ -168,6 +191,11 @@ impl SettingsPage {
             SettingsPage::Connections => "settings.page.connections",
             SettingsPage::Agent => "settings.page.agent",
             SettingsPage::Memory => "settings.page.memory",
+            SettingsPage::Activity => "settings.page.activity",
+            SettingsPage::Subconscious => "settings.page.subconscious",
+            SettingsPage::TokenJuice => "settings.page.tokenjuice",
+            SettingsPage::WebSearch => "settings.page.web_search",
+            SettingsPage::Cron => "settings.page.cron",
             SettingsPage::Cluster => "settings.page.cluster",
             SettingsPage::Relay => "settings.page.relay",
             SettingsPage::SharedPath => "settings.page.shared_path",
@@ -177,6 +205,7 @@ impl SettingsPage {
             SettingsPage::RdpHost => "settings.page.rdp_host",
             SettingsPage::Display => "settings.page.display",
             SettingsPage::Plugins => "settings.page.plugins",
+            SettingsPage::Theme => "settings.page.theme",
             SettingsPage::Language => "settings.page.language",
             SettingsPage::About => "settings.page.about",
         };
@@ -192,6 +221,18 @@ impl SettingsPage {
             }
             SettingsPage::Agent => ("AGENT", wormhole_i18n::t("settings.eyebrow.agent")),
             SettingsPage::Memory => ("MEMORY", wormhole_i18n::t("settings.eyebrow.memory")),
+            SettingsPage::Activity => ("ACTIVITY", wormhole_i18n::t("settings.eyebrow.activity")),
+            SettingsPage::Subconscious => (
+                "SUBCONSCIOUS",
+                wormhole_i18n::t("settings.eyebrow.subconscious"),
+            ),
+            SettingsPage::TokenJuice => {
+                ("TOKENJUICE", wormhole_i18n::t("settings.eyebrow.tokenjuice"))
+            }
+            SettingsPage::WebSearch => {
+                ("WEB SEARCH", wormhole_i18n::t("settings.eyebrow.web_search"))
+            }
+            SettingsPage::Cron => ("CRON", wormhole_i18n::t("settings.eyebrow.cron")),
             SettingsPage::Cluster => ("CLUSTER", wormhole_i18n::t("settings.eyebrow.cluster")),
             SettingsPage::Relay => ("P2P", wormhole_i18n::t("settings.eyebrow.relay")),
             SettingsPage::SharedPath => ("DATA", wormhole_i18n::t("settings.eyebrow.shared_path")),
@@ -201,6 +242,7 @@ impl SettingsPage {
             SettingsPage::RdpHost => ("RDP", wormhole_i18n::t("settings.eyebrow.rdp_host")),
             SettingsPage::Display => ("DISPLAY", wormhole_i18n::t("settings.eyebrow.display")),
             SettingsPage::Plugins => ("PLUGIN", wormhole_i18n::t("settings.eyebrow.plugins")),
+            SettingsPage::Theme => ("THEME", wormhole_i18n::t("settings.eyebrow.theme")),
             SettingsPage::Language => ("LANG", wormhole_i18n::t("settings.eyebrow.language")),
             SettingsPage::About => ("APP", wormhole_i18n::t("settings.eyebrow.about")),
         }
@@ -212,7 +254,12 @@ impl SettingsPage {
             | SettingsPage::Email
             | SettingsPage::Connections
             | SettingsPage::Agent
-            | SettingsPage::Memory => "settings.nav.group.general",
+            | SettingsPage::Memory
+            | SettingsPage::Activity
+            | SettingsPage::Subconscious
+            | SettingsPage::TokenJuice
+            | SettingsPage::WebSearch
+            | SettingsPage::Cron => "settings.nav.group.general",
             SettingsPage::Cluster | SettingsPage::Relay => "settings.nav.group.cluster",
             SettingsPage::SharedPath => "settings.nav.group.data",
             SettingsPage::Cache | SettingsPage::Archive => "settings.nav.group.storage",
@@ -220,6 +267,7 @@ impl SettingsPage {
             | SettingsPage::RdpHost
             | SettingsPage::Display
             | SettingsPage::Plugins
+            | SettingsPage::Theme
             | SettingsPage::Language
             | SettingsPage::About => "settings.nav.group.system",
         }
@@ -235,6 +283,11 @@ impl SettingsPage {
             SettingsPage::Connections => "tab-toolbox.svg",
             SettingsPage::Agent => "tab-agent.svg",
             SettingsPage::Memory => "share-file.svg",
+            SettingsPage::Activity => "share-sync.svg",
+            SettingsPage::Subconscious => "share-sync.svg",
+            SettingsPage::TokenJuice => "share-sync.svg",
+            SettingsPage::WebSearch => "tab-toolbox.svg",
+            SettingsPage::Cron => "share-sync.svg",
             SettingsPage::Cluster => "tab-devices.svg",
             SettingsPage::Relay => "cluster-refresh.svg",
             SettingsPage::SharedPath => "share-file.svg",
@@ -244,6 +297,7 @@ impl SettingsPage {
             SettingsPage::RdpHost => "device-pc.svg",
             SettingsPage::Display => "tab-devices.svg",
             SettingsPage::Plugins => "tab-toolbox.svg",
+            SettingsPage::Theme => "cluster-refresh.svg",
             SettingsPage::Language => "cluster-refresh.svg",
             SettingsPage::About => "cluster-refresh.svg",
         }
@@ -270,6 +324,31 @@ impl SettingsPage {
                 " memory wiki obsidian vault tinycortex 记忆 笔记 reindex sources",
             );
         }
+        if self == SettingsPage::Activity {
+            haystack.push_str(
+                " activity notifications alerts routines automations background subconscious cron triage gmail outlook 通知 活动 定时",
+            );
+        }
+        if self == SettingsPage::Subconscious {
+            haystack.push_str(
+                " subconscious heartbeat dream reflect memory tick 潜意识 心跳 run now",
+            );
+        }
+        if self == SettingsPage::TokenJuice {
+            haystack.push_str(
+                " tokenjuice compression ccr cache savings tokens cost 压缩 节省 token",
+            );
+        }
+        if self == SettingsPage::WebSearch {
+            haystack.push_str(
+                " web search brave exa byok fetch scraper 网页 搜索 agent-web-search",
+            );
+        }
+        if self == SettingsPage::Cron {
+            haystack.push_str(
+                " cron schedule agent job timer 定时 任务 expression prompt",
+            );
+        }
         if self == SettingsPage::VirtualMachine {
             haystack.push_str(" 工具箱 toolbox runner 用户程序 上传 指定人 allowlist");
         }
@@ -282,6 +361,11 @@ impl SettingsPage {
         if self == SettingsPage::Plugins {
             haystack.push_str(
                 " bb-browser chromium browser mcp plugin 插件 插件市场 marketplace codex",
+            );
+        }
+        if self == SettingsPage::Theme {
+            haystack.push_str(
+                " theme studio appearance classic ocean sepia matrix hal 主题 外观 配色",
             );
         }
         if self == SettingsPage::Language {
@@ -390,6 +474,8 @@ pub enum SettingsAction {
     CopyDeviceId,
     /// Persist UI language (`system` / `zh-CN` / `en`) and refresh locale.
     SetUiLanguage(String),
+    /// Theme Studio actions (colour / font / backdrop / import-export).
+    ThemeStudio(crate::ui::theme_studio::ThemeStudioAction),
 }
 
 pub struct SettingsView {
@@ -459,6 +545,12 @@ pub struct SettingsView {
     agent_providers: ViewHandle<AgentProvidersView>,
     plugins: ViewHandle<PluginsView>,
     memory: ViewHandle<MemoryView>,
+    activity: ViewHandle<ActivityView>,
+    subconscious: ViewHandle<SubconsciousView>,
+    tokenjuice: ViewHandle<TokenJuiceView>,
+    web_search: ViewHandle<WebSearchView>,
+    cron: ViewHandle<CronView>,
+    theme_studio: crate::ui::theme_studio::ThemeStudioState,
 }
 
 impl SettingsView {
@@ -473,7 +565,7 @@ impl SettingsView {
     }
 
     pub fn new(ctx: &mut ViewContext<Self>, core: CoreHandle) -> Self {
-        let font = crate::ui::fonts::load_ui_font(ctx);
+        let font = crate::ui::fonts::load_ui_font_themed(ctx);
         let archive_expanded = Self::load_archive_expanded(&core);
         let toolbox =
             ctx.add_typed_action_view(|ctx| ToolboxView::new(ctx, core.clone()));
@@ -482,6 +574,14 @@ impl SettingsView {
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
         let plugins = ctx.add_typed_action_view(|ctx| PluginsView::new(ctx, core.clone()));
         let memory = ctx.add_typed_action_view(|ctx| MemoryView::new(ctx, core.clone()));
+        let activity = ctx.add_typed_action_view(|ctx| ActivityView::new(ctx, core.clone()));
+        let subconscious =
+            ctx.add_typed_action_view(|ctx| SubconsciousView::new(ctx, core.clone()));
+        let tokenjuice =
+            ctx.add_typed_action_view(|ctx| TokenJuiceView::new(ctx, core.clone()));
+        let web_search =
+            ctx.add_typed_action_view(|ctx| WebSearchView::new(ctx, core.clone()));
+        let cron = ctx.add_typed_action_view(|ctx| CronView::new(ctx, core.clone()));
         let mut view = Self {
             core,
             font,
@@ -549,6 +649,12 @@ impl SettingsView {
             agent_providers,
             plugins,
             memory,
+            activity,
+            subconscious,
+            tokenjuice,
+            web_search,
+            cron,
+            theme_studio: crate::ui::theme_studio::ThemeStudioState::default(),
         };
         view.refresh(ctx);
         view.refresh_account(ctx);
@@ -1415,7 +1521,7 @@ impl SettingsView {
         .finish()
     }
 
-    fn page_body(&self) -> Box<dyn Element> {
+    fn page_body(&self, system_is_dark: bool) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(self.page_header(self.selected_page));
         match self.selected_page {
@@ -1424,6 +1530,13 @@ impl SettingsView {
             SettingsPage::Connections => col.add_child(self.connections_block()),
             SettingsPage::Agent => col.add_child(ChildView::new(&self.agent_providers).finish()),
             SettingsPage::Memory => col.add_child(ChildView::new(&self.memory).finish()),
+            SettingsPage::Activity => col.add_child(ChildView::new(&self.activity).finish()),
+            SettingsPage::Subconscious => {
+                col.add_child(ChildView::new(&self.subconscious).finish())
+            }
+            SettingsPage::TokenJuice => col.add_child(ChildView::new(&self.tokenjuice).finish()),
+            SettingsPage::WebSearch => col.add_child(ChildView::new(&self.web_search).finish()),
+            SettingsPage::Cron => col.add_child(ChildView::new(&self.cron).finish()),
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
             SettingsPage::Relay => col.add_child(self.relay_block()),
             SettingsPage::SharedPath => col.add_child(self.shared_path_block()),
@@ -1433,6 +1546,15 @@ impl SettingsView {
             SettingsPage::RdpHost => col.add_child(self.rdp_host_block()),
             SettingsPage::Display => col.add_child(ChildView::new(&self.display).finish()),
             SettingsPage::Plugins => col.add_child(ChildView::new(&self.plugins).finish()),
+            SettingsPage::Theme => {
+                let prefs = crate::ui::desktop_prefs::load(&self.core.data_dir());
+                col.add_child(crate::ui::theme_studio::render_panel(
+                    &prefs,
+                    &self.theme_studio,
+                    self.font,
+                    system_is_dark,
+                ));
+            }
             SettingsPage::Language => col.add_child(self.language_block()),
             SettingsPage::About => col.add_child(self.about_block()),
         }
@@ -3207,11 +3329,13 @@ impl View for SettingsView {
         "SettingsView"
     }
 
-    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+    fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        let system_is_dark =
+            matches!(app.system_theme(), warpui::platform::SystemTheme::Dark);
         let pane = Container::new(
             ClippedScrollable::vertical(
                 self.scroll.clone(),
-                Container::new(self.page_body())
+                Container::new(self.page_body(system_is_dark))
                     .with_padding_top(28.0)
                     .with_padding_bottom(40.0)
                     .with_horizontal_padding(32.0)
@@ -4183,6 +4307,16 @@ impl TypedActionView for SettingsView {
                 }
                 ctx.notify();
             }
+            SettingsAction::ThemeStudio(action) => {
+                let data_dir = self.core.data_dir();
+                crate::ui::theme_studio::handle_action_with_app(
+                    &mut self.theme_studio,
+                    &data_dir,
+                    action.clone(),
+                    &*ctx,
+                );
+                ctx.notify();
+            }
         }
     }
 }
@@ -4298,13 +4432,26 @@ mod tests {
         assert!(SettingsPage::VirtualMachine.matches_query("用户程序"));
         assert!(SettingsPage::VirtualMachine.matches_query("指定人"));
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
+        assert!(SettingsPage::WebSearch.matches_query("brave"));
+        assert!(SettingsPage::WebSearch.matches_query("exa"));
+        assert!(SettingsPage::Activity.matches_query("alerts"));
+        assert!(SettingsPage::Activity.matches_query("通知"));
+        assert!(SettingsPage::Cron.matches_query("cron"));
+        assert!(SettingsPage::Cron.matches_query("定时"));
+        assert!(SettingsPage::TokenJuice.matches_query("ccr"));
         assert_eq!(
             settings_pages_in_group_key("settings.nav.group.general"),
             vec![
                 SettingsPage::Account,
                 SettingsPage::Email,
+                SettingsPage::Connections,
                 SettingsPage::Agent,
                 SettingsPage::Memory,
+                SettingsPage::Activity,
+                SettingsPage::Subconscious,
+                SettingsPage::TokenJuice,
+                SettingsPage::WebSearch,
+                SettingsPage::Cron,
             ]
         );
         assert_eq!(
@@ -4318,12 +4465,14 @@ mod tests {
                 SettingsPage::RdpHost,
                 SettingsPage::Display,
                 SettingsPage::Plugins,
+                SettingsPage::Theme,
                 SettingsPage::Language,
                 SettingsPage::About,
             ]
         );
         assert!(SettingsPage::RdpHost.matches_query("隐私屏"));
         assert!(SettingsPage::Display.matches_query("ipad"));
+        assert!(SettingsPage::Theme.matches_query("主题"));
         assert!(SettingsPage::About.matches_query("检查更新"));
     }
 
