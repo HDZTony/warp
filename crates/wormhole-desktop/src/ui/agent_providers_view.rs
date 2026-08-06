@@ -675,14 +675,24 @@ impl AgentProvidersView {
         );
         for h in WorkloadHint::matrix_hints() {
             let binding = self.route_table.binding_for(*h);
-            let m = binding
+            let provider = binding
+                .provider_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let model = binding
                 .model
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("inherit");
+                .filter(|s| !s.is_empty());
+            let target = match (provider, model) {
+                (Some(p), Some(m)) => format!("{p}:{m}"),
+                (Some(p), None) => format!("{p}:(inherit model)"),
+                (None, Some(m)) => m.to_string(),
+                (None, None) => "inherit".into(),
+            };
             col.add_child(status_line(
-                format!("  hint:{} → {m}", h.as_str()),
+                format!("  hint:{} → {target}", h.as_str()),
                 self.font,
                 StatusTone::Muted,
             ));
@@ -700,7 +710,7 @@ impl AgentProvidersView {
         let (phase, enabled, daemon, binary, progress, hint, notes, last_err) =
             match self.ollama.as_ref() {
                 Some(s) => (
-                    format!("{:?}", s.phase),
+                    s.phase.as_str().to_string(),
                     s.config.enabled,
                     s.daemon_reachable,
                     s.binary_on_path,
