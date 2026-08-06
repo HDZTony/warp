@@ -15,7 +15,7 @@ pub mod store;
 pub mod tokens;
 pub mod types;
 
-pub use color::{color_u_to_hex, parse_hex};
+pub use color::{color_u_to_hex, mix_opaque, parse_hex, with_alpha};
 pub use presets::THEME_FAMILIES;
 pub use runtime::palette;
 pub use store::{

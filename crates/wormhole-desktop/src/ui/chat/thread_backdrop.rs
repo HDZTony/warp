@@ -1,6 +1,5 @@
 //! Chat thread background — default deep-space dots or per-conversation wallpaper cover.
 
-use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
 
@@ -104,7 +103,7 @@ impl Element for ChatThreadBackdrop {
 
         if let Some(wallpaper) = self.wallpaper.as_mut() {
             wallpaper.paint(origin, ctx, app);
-            let overlay = ColorU::new(18, 16, 24, 168);
+            let overlay = theme::with_alpha(theme::canvas(), 168);
             ctx.scene
                 .draw_rect_without_hit_recording(RectF::new(origin, size))
                 .with_background(overlay);
@@ -113,8 +112,8 @@ impl Element for ChatThreadBackdrop {
                 .draw_rect_without_hit_recording(RectF::new(origin, size))
                 .with_background(theme::canvas());
 
-            let cool_glow = ColorU::new(222, 231, 247, 10);
-            let warm_glow = ColorU::new(253, 249, 230, 8);
+            let cool_glow = theme::with_alpha(theme::accent_cool(), 10);
+            let warm_glow = theme::with_alpha(theme::accent(), 8);
             let glow_w = size.x() * 0.55;
             let glow_h = size.y() * 0.55;
             ctx.scene
@@ -130,7 +129,7 @@ impl Element for ChatThreadBackdrop {
                 ))
                 .with_background(warm_glow);
 
-            let dot = ColorU::new(100, 93, 117, 90);
+            let dot = theme::with_alpha(theme::muted(), 90);
             let mut y = 0.0;
             while y <= size.y() {
                 let mut x = 0.0;

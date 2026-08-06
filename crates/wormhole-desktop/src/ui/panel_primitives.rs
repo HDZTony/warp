@@ -168,27 +168,27 @@ pub fn agent_sidebar_label(
 
 /// `color-mix(in srgb, var(--panel) 38%, var(--canvas))`.
 pub fn agent_sidebar_bg() -> pathfinder_color::ColorU {
-    pathfinder_color::ColorU::new(21, 19, 27, 255)
+    theme::mix_opaque(theme::panel(), theme::canvas(), 38)
 }
 
 /// `.agent-header` background: 55% panel + 45% canvas.
 pub fn agent_header_bg() -> pathfinder_color::ColorU {
-    pathfinder_color::ColorU::new(27, 25, 35, 255)
+    theme::mix_opaque(theme::panel(), theme::canvas(), 55)
 }
 
 /// `.agent-row-item.active` background: 14% accent-cool + panel.
 pub fn agent_row_active_bg() -> pathfinder_color::ColorU {
-    pathfinder_color::ColorU::new(67, 66, 81, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::panel(), 14)
 }
 
 /// `.tg-chat-item.active` — accent-cool 10% + panel.
 pub fn chat_item_active_bg() -> ColorU {
-    ColorU::new(60, 58, 73, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::panel(), 10)
 }
 
-/// `.chat-sidebar-search-wrap` — void canvas fill for contrast on `panel`.
+/// `.chat-sidebar-search-wrap` — canvas fill for contrast on `panel`.
 pub fn chat_sidebar_search_bg() -> ColorU {
-    ColorU::new(8, 7, 11, 255)
+    theme::canvas()
 }
 
 /// Bordered search pill (`.chat-sidebar-search-wrap` / `.agent-search-wrap` / thread-search).
@@ -407,22 +407,22 @@ pub fn chat_bubble_in_bg() -> ColorU {
 
 /// `.tg-msg-row.out .tg-bubble` — accent-cool 18% + panel-elevated.
 pub fn chat_bubble_out_bg() -> ColorU {
-    ColorU::new(92, 85, 94, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::panel_elevated(), 18)
 }
 
 /// Outgoing bubble border — accent-cool 35% + border.
 pub fn chat_bubble_out_border() -> ColorU {
-    ColorU::new(143, 141, 163, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::border(), 35)
 }
 
 /// `.tg-avatar` background — accent-cool 14% + panel-elevated.
 pub fn tg_avatar_bg() -> ColorU {
-    ColorU::new(86, 78, 87, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::panel_elevated(), 14)
 }
 
 /// `.tg-avatar` border — accent-cool 28% + border.
 pub fn tg_avatar_border() -> ColorU {
-    ColorU::new(134, 132, 153, 255)
+    theme::mix_opaque(theme::accent_cool(), theme::border(), 28)
 }
 
 pub fn tg_avatar_glyph_size(diameter: f32) -> f32 {
