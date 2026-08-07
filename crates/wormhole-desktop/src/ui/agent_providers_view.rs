@@ -384,6 +384,7 @@ impl AgentProvidersView {
         &self,
         value: &str,
         cycle_label: &str,
+        cycle_automation_id: &str,
         cycle: AgentProvidersAction,
     ) -> Box<dyn Element> {
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
@@ -403,7 +404,7 @@ impl AgentProvidersView {
         )
         .finish());
         row.add_child(
-            Container::new(self.action_button(cycle_label, cycle))
+            Container::new(self.action_button_with_id(cycle_label, cycle_automation_id, cycle))
                 .with_margin_left(8.0)
                 .finish(),
         );
@@ -445,6 +446,7 @@ impl AgentProvidersView {
                     self.selectable_value_el(
                         &provider_label,
                         "下一项",
+                        "settings:agent_provider:cycle",
                         AgentProvidersAction::CycleProvider,
                     ),
                 ),
@@ -459,6 +461,7 @@ impl AgentProvidersView {
                     self.selectable_value_el(
                         &model_label,
                         "下一项",
+                        "settings:agent_model:cycle",
                         AgentProvidersAction::CycleModel,
                     ),
                 ))
@@ -1061,6 +1064,22 @@ impl AgentProvidersView {
         self.action_button_with_id(label, &format!("settings:agent_btn:{label}"), action)
     }
 
+    fn action_blocks_when_busy(action: &AgentProvidersAction) -> bool {
+        matches!(
+            action,
+            AgentProvidersAction::Refresh
+                | AgentProvidersAction::SaveProvider
+                | AgentProvidersAction::TestProvider
+                | AgentProvidersAction::SaveRoutes
+                | AgentProvidersAction::EnsureOllama
+                | AgentProvidersAction::ToggleOllamaEnabled
+                | AgentProvidersAction::ApplyOllamaRecommendation
+                | AgentProvidersAction::Activate(_)
+                | AgentProvidersAction::Delete(_)
+                | AgentProvidersAction::QueryUsage(_)
+        )
+    }
+
     fn action_button_with_id(
         &self,
         label: &str,
@@ -1069,11 +1088,15 @@ impl AgentProvidersView {
     ) -> Box<dyn Element> {
         let label = label.to_string();
         let automation_id = automation_id.to_string();
-        let disabled = self.busy;
+        let disabled = self.busy && Self::action_blocks_when_busy(&action);
         Container::new(
             EventHandler::new(
                 ui_text::body(label.clone(), self.font)
-                    .with_color(theme::accent())
+                    .with_color(if disabled {
+                        theme::muted()
+                    } else {
+                        theme::accent()
+                    })
                     .finish(),
             )
             .with_automation_label(label)
@@ -1314,4 +1337,32 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::ApiKeyEdit(edit) => {
                 self.api_key_field.apply(&mut self.api_key_draft, edit);
                 ctx.notify();
-            }
+            }
+            AgentProvidersAction::BaseUrlEdit(edit) => {
+                self.base_url_field.apply(&mut self.base_url_draft, edit);
+                ctx.notify();
+            }
+            AgentProvidersAction::SaveProvider => self.save_provider(ctx),
+            AgentProvidersAction::TestProvider => self.test_provider(ctx),
+            AgentProvidersAction::CycleRouteHint => self.cycle_route_hint(ctx),
+            AgentProvidersAction::FocusRouteModel => {
+                self.route_model_focused = true;
+                self.api_key_focused = false;
+                self.base_url_focused = false;
+                ctx.notify();
+            }
+            AgentProvidersAction::RouteModelEdit(edit) => {
+                self.route_model_field
+                    .apply(&mut self.route_model_draft, edit);
+                ctx.notify();
+            }
+            AgentProvidersAction::SaveRoutes => self.save_routes(ctx),
+            AgentProvidersAction::EnsureOllama => self.ensure_ollama(ctx),
+            AgentProvidersAction::ToggleOllamaEnabled => self.toggle_ollama_enabled(ctx),
+            AgentProvidersAction::ApplyOllamaRecommendation => {
+                self.apply_ollama_recommendation(ctx)
+            }
+        }
+    }
+}
+     
