@@ -11,8 +11,8 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    cluster_status, cluster_status_fast, cluster_status_hud,
-    schedule_active_cluster_member_update_if_ready, ClusterStatusDto,
+    cluster_status, cluster_status_hud, schedule_active_cluster_member_update_if_ready,
+    schedule_cluster_control_plane_reconcile, ClusterStatusDto,
 };
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
 use wormhole_desktop_core::state::AppState;
@@ -64,15 +64,20 @@ pub async fn kick_device_bootstrap(state: &AppState) {
     });
 }
 
-/// Cluster status for terminal / gate views: read local snapshot immediately;
-/// gossip mesh joins asynchronously via [`ClusterGossipCoordinator`].
+/// Cluster status for terminal / gate views: read local snapshot immediately.
+///
+/// After device bootstrap is ready this **must not** await synchronous control-plane
+/// reconcile. Reconcile can block on vault/P2P init; doing it inline made the cluster
+/// page「重试」appear dead and left the UI stuck on「正在恢复设备身份」even after
+/// `device_gate.ready`. Membership reconcile + gossip join run in the background.
 pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, String> {
     kick_device_bootstrap(state).await;
     if !is_device_ready(state).await {
         return cluster_status(state).await;
     }
     schedule_active_cluster_member_update_if_ready(state.clone());
-    cluster_status_fast(state).await
+    schedule_cluster_control_plane_reconcile(state);
+    cluster_status_hud(state).await
 }
 
 pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {

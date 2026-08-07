@@ -136,6 +136,7 @@ impl SettingsPage {
             SettingsPage::Email,
             SettingsPage::Connections,
             SettingsPage::Agent,
+            SettingsPage::Theme,
             SettingsPage::Memory,
             SettingsPage::Activity,
             SettingsPage::Subconscious,
@@ -151,7 +152,6 @@ impl SettingsPage {
             SettingsPage::RdpHost,
             SettingsPage::Display,
             SettingsPage::Plugins,
-            SettingsPage::Theme,
             SettingsPage::Language,
             SettingsPage::About,
         ]
@@ -254,6 +254,7 @@ impl SettingsPage {
             | SettingsPage::Email
             | SettingsPage::Connections
             | SettingsPage::Agent
+            | SettingsPage::Theme
             | SettingsPage::Memory
             | SettingsPage::Activity
             | SettingsPage::Subconscious
@@ -267,7 +268,6 @@ impl SettingsPage {
             | SettingsPage::RdpHost
             | SettingsPage::Display
             | SettingsPage::Plugins
-            | SettingsPage::Theme
             | SettingsPage::Language
             | SettingsPage::About => "settings.nav.group.system",
         }
@@ -540,6 +540,8 @@ pub struct SettingsView {
     update_tone: StatusTone,
     update_busy: bool,
     scroll: ClippedScrollStateHandle,
+    /// Settings left-nav list (independent of the right-hand detail pane scroll).
+    nav_scroll: ClippedScrollStateHandle,
     toolbox: ViewHandle<ToolboxView>,
     display: ViewHandle<DisplayView>,
     agent_providers: ViewHandle<AgentProvidersView>,
@@ -644,6 +646,7 @@ impl SettingsView {
             update_tone: StatusTone::Placeholder,
             update_busy: false,
             scroll: ClippedScrollStateHandle::new(),
+            nav_scroll: ClippedScrollStateHandle::new(),
             toolbox,
             display,
             agent_providers,
@@ -1464,8 +1467,7 @@ impl SettingsView {
     }
 
     fn sidebar(&self) -> Box<dyn Element> {
-        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(self.search_box());
+        let mut nav_col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
         let mut visible_total = 0usize;
         for group_key in settings_nav_group_keys() {
@@ -1478,7 +1480,7 @@ impl SettingsView {
             }
             visible_total += pages.len();
             let group_label = wormhole_i18n::t(group_key);
-            col.add_child(
+            nav_col.add_child(
                 Container::new(
                     ui_text::mono(group_label, self.font)
                         .with_color(theme::muted())
@@ -1490,7 +1492,7 @@ impl SettingsView {
                 .finish(),
             );
             for page in pages {
-                col.add_child(
+                nav_col.add_child(
                     Container::new(self.nav_item(page))
                         .with_margin_bottom(2.0)
                         .finish(),
@@ -1498,7 +1500,7 @@ impl SettingsView {
             }
         }
         if visible_total == 0 {
-            col.add_child(
+            nav_col.add_child(
                 Container::new(
                     ui_text::mono(wormhole_i18n::t("settings.search.empty"), self.font)
                         .with_color(theme::muted())
@@ -1509,10 +1511,33 @@ impl SettingsView {
             );
         }
 
-        ConstrainedBox::new(
-            Container::new(col.finish())
-                .with_uniform_padding(12.0)
+        let nav_list = ClippedScrollable::vertical(
+            self.nav_scroll.clone(),
+            Container::new(nav_col.finish())
+                .with_horizontal_padding(12.0)
+                .with_padding_bottom(16.0)
+                .finish(),
+            ScrollbarWidth::Auto,
+            Fill::None,
+            Fill::None,
+            Fill::None,
+        )
+        .finish();
+
+        let mut shell = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        shell.add_child(
+            Container::new(self.search_box())
+                .with_horizontal_padding(12.0)
                 .with_padding_top(16.0)
+                .with_padding_bottom(4.0)
+                .finish(),
+        );
+        shell.add_child(Expanded::new(1.0, nav_list).finish());
+
+        ConstrainedBox::new(
+            Container::new(shell.finish())
                 .with_background(theme::bg())
                 .with_border(Border::right(1.0).with_border_fill(theme::border()))
                 .finish(),
@@ -4446,6 +4471,7 @@ mod tests {
                 SettingsPage::Email,
                 SettingsPage::Connections,
                 SettingsPage::Agent,
+                SettingsPage::Theme,
                 SettingsPage::Memory,
                 SettingsPage::Activity,
                 SettingsPage::Subconscious,
@@ -4465,7 +4491,6 @@ mod tests {
                 SettingsPage::RdpHost,
                 SettingsPage::Display,
                 SettingsPage::Plugins,
-                SettingsPage::Theme,
                 SettingsPage::Language,
                 SettingsPage::About,
             ]

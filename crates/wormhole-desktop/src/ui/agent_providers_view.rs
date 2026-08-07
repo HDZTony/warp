@@ -12,7 +12,8 @@ use wormhole_desktop_core::agent_model_routing::{
     self, AgentModelRoutesDto, UpdateAgentModelRoutesParams,
 };
 use wormhole_desktop_core::agent_ollama::{
-    self, ConfigureOllamaParams, EnsureOllamaParams, OllamaStatusDto,
+    self, local_ai_status_label, ConfigureOllamaParams, EnsureOllamaParams, OllamaStatusDto,
+    OLLAMA_PROVIDER_ID,
 };
 use wormhole_desktop_core::agent_provider_commands;
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
@@ -49,6 +50,7 @@ pub enum AgentProvidersAction {
     SaveRoutes,
     EnsureOllama,
     ToggleOllamaEnabled,
+    ApplyOllamaRecommendation,
 }
 
 pub struct AgentProvidersView {
@@ -598,19 +600,33 @@ impl AgentProvidersView {
         self.route_hint_index = (self.route_hint_index + 1) % n;
         self.sync_route_model_draft_from_table();
         self.route_model_focused = false;
+        let hint = self.current_route_hint();
+        self.status = format!("正在编辑 hint:{}", hint.as_str());
         ctx.notify();
     }
 
     fn save_routes(&mut self, ctx: &mut ViewContext<Self>) {
         let hint = self.current_route_hint();
         let model = self.route_model_draft.trim().to_string();
+        let ollama_registered = self
+            .ollama
+            .as_ref()
+            .map(|s| s.provider_registered)
+            .unwrap_or(false);
         {
             let binding = self.route_table.binding_for_mut(hint);
-            binding.model = if model.is_empty() {
-                None
+            if model.is_empty() {
+                binding.model = None;
+                // Clearing model also clears an ollama-only pin so inherit works.
+                if binding.provider_id.as_deref() == Some(OLLAMA_PROVIDER_ID) {
+                    binding.provider_id = None;
+                }
             } else {
-                Some(model)
-            };
+                binding.model = Some(model);
+                if ollama_registered {
+                    binding.provider_id = Some(OLLAMA_PROVIDER_ID.into());
+                }
+            }
         }
         self.busy = true;
         self.status = "正在保存 Workload Routes…".into();
@@ -645,15 +661,16 @@ impl AgentProvidersView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("Workload Routes", self.font));
         col.add_child(section_hint(
-            "按任务覆盖模型；空=继承当前供应商。主聊→agentic；Persona→summarization；Goals→reasoning。",
+            "「下一项」只切换正在编辑的 hint；改模型后点保存。主聊默认 agentic（继承上方供应商）；chat/summarization 可绑 ollama。",
             self.font,
         ));
         col.add_child(
             Container::new(self.form_field_shell(
-                "Workload hint",
+                "正在编辑的 Workload hint",
                 self.selectable_value_el(
                     &format!("hint:{}", hint.as_str()),
-                    "切换",
+                    "下一项",
+                    "settings:agent_routes:cycle_hint",
                     AgentProvidersAction::CycleRouteHint,
                 ),
             ))
@@ -669,9 +686,13 @@ impl AgentProvidersView {
             .finish(),
         );
         col.add_child(
-            Container::new(self.action_button("保存 Routes", AgentProvidersAction::SaveRoutes))
-                .with_margin_top(8.0)
-                .finish(),
+            Container::new(self.action_button_with_id(
+                "保存 Routes",
+                "settings:agent_routes:save",
+                AgentProvidersAction::SaveRoutes,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
         );
         for h in WorkloadHint::matrix_hints() {
             let binding = self.route_table.binding_for(*h);
@@ -704,68 +725,98 @@ impl AgentProvidersView {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("Local AI (Ollama)", self.font));
         col.add_child(section_hint(
-            "本机 embeddings（768-d / nomic-embed-text）与可选 summarization；点「安装 / 启动」才会协助安装，不会开机静默安装。",
+            "启动 → 启用本机 → Memory 用本机 embeddings；chat/summarization 绑 ollama 后走本机。主 Agent（agentic）默认仍用上方当前供应商。",
             self.font,
         ));
-        let (phase, enabled, daemon, binary, progress, hint, notes, last_err) =
+
+        let (status_label, enabled, chat, embed, failed, binary, daemon, in_progress) =
             match self.ollama.as_ref() {
-                Some(s) => (
-                    s.phase.as_str().to_string(),
-                    s.config.enabled,
-                    s.daemon_reachable,
-                    s.binary_on_path,
-                    format!("{}% {}", s.progress.percent, s.progress.message),
-                    s.install_hint.clone(),
-                    s.notes.clone(),
-                    s.last_error.clone(),
-                ),
+                Some(s) => {
+                    let failed = matches!(s.phase, agent_ollama::OllamaPhase::Failed)
+                        || s.last_error.is_some();
+                    let in_progress = matches!(
+                        s.progress.phase.as_str(),
+                        "installing" | "starting" | "pulling" | "recommend" | "detect" | "register"
+                    ) && !s.progress.message.is_empty();
+                    (
+                        local_ai_status_label(s.binary_on_path, s.daemon_reachable, failed)
+                            .to_string(),
+                        s.config.enabled,
+                        s.config.chat_model.clone(),
+                        s.config.embedding_model.clone(),
+                        failed,
+                        s.binary_on_path,
+                        s.daemon_reachable,
+                        if in_progress {
+                            Some(format!("{}% {}", s.progress.percent, s.progress.message))
+                        } else {
+                            None
+                        },
+                    )
+                }
                 None => (
-                    "unknown".into(),
-                    false,
-                    false,
+                    "未知".into(),
                     false,
                     String::new(),
                     String::new(),
-                    Vec::new(),
+                    false,
+                    false,
+                    false,
                     None,
                 ),
             };
+
+        let status_tone = if failed {
+            StatusTone::Danger
+        } else if daemon {
+            StatusTone::Success
+        } else {
+            StatusTone::Neutral
+        };
         col.add_child(status_line(
             format!(
-                "状态 {phase} · 启用={} · 二进制={} · 守护进程={}",
-                enabled, binary, daemon
+                "状态：{status_label}{}",
+                if enabled { " · 本机已启用" } else { " · 本机未启用" }
             ),
             self.font,
-            StatusTone::Muted,
+            status_tone,
         ));
-        if !progress.trim().is_empty() {
-            col.add_child(status_line(progress, self.font, StatusTone::Neutral));
-        }
-        if let Some(err) = last_err {
-            col.add_child(status_line(err, self.font, StatusTone::Danger));
-        }
-        for note in notes {
-            col.add_child(status_line(note, self.font, StatusTone::Muted));
-        }
-        if !hint.is_empty() {
+        if !chat.is_empty() {
             col.add_child(status_line(
-                format!("手动安装：{hint}"),
+                format!("模型：chat={chat} · embed={embed}"),
                 self.font,
-                StatusTone::Placeholder,
+                StatusTone::Muted,
             ));
         }
+        if let Some(progress) = in_progress {
+            col.add_child(status_line(progress, self.font, StatusTone::Neutral));
+        }
+        if let Some(err) = self.ollama.as_ref().and_then(|s| s.last_error.clone()) {
+            if failed {
+                col.add_child(status_line(err, self.font, StatusTone::Danger));
+            }
+        }
+
+        let primary = if !binary {
+            "安装并启动"
+        } else if !daemon {
+            "启动"
+        } else {
+            "重新检测"
+        };
+
         let mut row = Flex::row();
         row.add_child(self.action_button_with_id(
-            "安装 / 启动 Ollama",
+            primary,
             "settings:agent_local_ai:ensure",
             AgentProvidersAction::EnsureOllama,
         ));
         row.add_child(
             Container::new(self.action_button_with_id(
                 if enabled {
-                    "关闭本机 embeddings"
+                    "关闭本机"
                 } else {
-                    "启用本机 embeddings"
+                    "启用本机"
                 },
                 "settings:agent_local_ai:toggle",
                 AgentProvidersAction::ToggleOllamaEnabled,
@@ -773,6 +824,17 @@ impl AgentProvidersView {
             .with_margin_left(8.0)
             .finish(),
         );
+        if !daemon {
+            row.add_child(
+                Container::new(self.action_button_with_id(
+                    "应用推荐",
+                    "settings:agent_local_ai:apply_rec",
+                    AgentProvidersAction::ApplyOllamaRecommendation,
+                ))
+                .with_margin_left(8.0)
+                .finish(),
+            );
+        }
         col.add_child(
             Container::new(row.finish())
                 .with_margin_top(8.0)
@@ -795,6 +857,7 @@ impl AgentProvidersView {
                         pull_models: None,
                         enable: Some(true),
                         bind_summarization_route: Some(true),
+                        apply_recommendation: None,
                     },
                 )
                 .await
@@ -838,6 +901,7 @@ impl AgentProvidersView {
                         embedding_model: None,
                         pull_models_on_ensure: None,
                         bind_summarization_route: None,
+                        apply_recommendation: None,
                     },
                 )
                 .await
@@ -854,6 +918,42 @@ impl AgentProvidersView {
                         };
                     }
                     Err(err) => view.status = format!("配置失败：{err}"),
+                }
+                view.busy = false;
+                ctx.notify();
+            },
+        );
+    }
+
+    fn apply_ollama_recommendation(&mut self, ctx: &mut ViewContext<Self>) {
+        self.busy = true;
+        self.status = "正在应用设备推荐模型…".into();
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                agent_ollama::configure_ollama(
+                    &state,
+                    ConfigureOllamaParams {
+                        enabled: None,
+                        chat_model: None,
+                        embedding_model: None,
+                        pull_models_on_ensure: None,
+                        bind_summarization_route: None,
+                        apply_recommendation: Some(true),
+                    },
+                )
+                .await
+            },
+            |view, result, ctx| {
+                match result {
+                    Ok(status) => {
+                        let chat = status.config.chat_model.clone();
+                        view.ollama = Some(status);
+                        view.status = format!("已套用设备推荐：{chat}");
+                    }
+                    Err(err) => view.status = format!("应用推荐失败：{err}"),
                 }
                 view.busy = false;
                 ctx.notify();
@@ -1214,28 +1314,4 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::ApiKeyEdit(edit) => {
                 self.api_key_field.apply(&mut self.api_key_draft, edit);
                 ctx.notify();
-            }
-            AgentProvidersAction::BaseUrlEdit(edit) => {
-                self.base_url_field.apply(&mut self.base_url_draft, edit);
-                ctx.notify();
-            }
-            AgentProvidersAction::SaveProvider => self.save_provider(ctx),
-            AgentProvidersAction::TestProvider => self.test_provider(ctx),
-            AgentProvidersAction::CycleRouteHint => self.cycle_route_hint(ctx),
-            AgentProvidersAction::FocusRouteModel => {
-                self.route_model_focused = true;
-                self.api_key_focused = false;
-                self.base_url_focused = false;
-                ctx.notify();
-            }
-            AgentProvidersAction::RouteModelEdit(edit) => {
-                self.route_model_field
-                    .apply(&mut self.route_model_draft, edit);
-                ctx.notify();
-            }
-            AgentProvidersAction::SaveRoutes => self.save_routes(ctx),
-            AgentProvidersAction::EnsureOllama => self.ensure_ollama(ctx),
-            AgentProvidersAction::ToggleOllamaEnabled => self.toggle_ollama_enabled(ctx),
-        }
-    }
-}
+            }
