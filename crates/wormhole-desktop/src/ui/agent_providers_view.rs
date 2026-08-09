@@ -1,6 +1,6 @@
 use warpui::elements::{
-    Border, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler,
-    Expanded, Flex, ParentElement, Radius,
+    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
+    EventHandler, Expanded, Flex, ParentElement, Radius,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -13,9 +13,8 @@ use wormhole_desktop_core::agent_model_routing::{
 };
 use wormhole_desktop_core::agent_ollama::{
     self, local_ai_status_label, ConfigureOllamaParams, EnsureOllamaParams, OllamaStatusDto,
-    OLLAMA_PROVIDER_ID,
 };
-use wormhole_desktop_core::agent_provider_commands;
+use wormhole_desktop_core::agent_provider_commands::{self, AgentModelChoiceDto};
 use wormhole_desktop_core::agent_provider_store::AgentProviderSummaryDto;
 use wormhole_model_routing::{WorkloadHint, WorkloadRouteTable};
 
@@ -44,9 +43,10 @@ pub enum AgentProvidersAction {
     BaseUrlEdit(TextFieldEditAction),
     SaveProvider,
     TestProvider,
-    CycleRouteHint,
-    FocusRouteModel,
-    RouteModelEdit(TextFieldEditAction),
+    /// Expand/collapse the model list for one workload row.
+    ToggleRoutePicker(usize),
+    /// Pick a model for one workload row (`0` = active provider default).
+    SelectRouteModel { hint_index: usize, pick: usize },
     SaveRoutes,
     EnsureOllama,
     ToggleOllamaEnabled,
@@ -73,11 +73,35 @@ pub struct AgentProvidersView {
     base_url_focused: bool,
     /// Workload route matrix (Automatic Model Routing).
     route_table: WorkloadRouteTable,
-    route_hint_index: usize,
-    route_model_draft: String,
-    route_model_field: TextFieldState,
-    route_model_focused: bool,
+    /// Models available in the per-hint picker (`list_agent_model_choices`).
+    model_choices: Vec<AgentModelChoiceDto>,
+    /// Parallel to [`WorkloadHint::matrix_hints`]: `0` = active provider model, `1+` = `model_choices[i-1]`.
+    route_pick_idx: Vec<usize>,
+    /// Which workload row has its model list expanded (`None` = all collapsed).
+    route_picker_open: Option<usize>,
     ollama: Option<OllamaStatusDto>,
+}
+
+fn route_hint_count() -> usize {
+    WorkloadHint::matrix_hints().len()
+}
+
+fn empty_route_picks() -> Vec<usize> {
+    vec![0usize; route_hint_count()]
+}
+
+/// Short Chinese title for a workload hint (Settings row label).
+fn workload_hint_title(hint: WorkloadHint) -> &'static str {
+    match hint {
+        WorkloadHint::Chat => "轻量对话",
+        WorkloadHint::Reasoning => "规划 / 反思",
+        WorkloadHint::Agentic => "主 Agent",
+        WorkloadHint::Burst => "高吞吐预扫",
+        WorkloadHint::Coding => "代码任务",
+        WorkloadHint::Summarization => "Memory 摘要",
+        WorkloadHint::Vision => "看图 / OCR",
+        WorkloadHint::Subconscious => "潜意识",
+    }
 }
 
 fn byok_presets() -> Vec<CodexProviderPreset> {
@@ -113,10 +137,9 @@ impl AgentProvidersView {
             base_url_field: TextFieldState::new(),
             base_url_focused: false,
             route_table: WorkloadRouteTable::default(),
-            route_hint_index: 0,
-            route_model_draft: String::new(),
-            route_model_field: TextFieldState::new(),
-            route_model_focused: false,
+            model_choices: Vec::new(),
+            route_pick_idx: empty_route_picks(),
+            route_picker_open: None,
             ollama: None,
         };
         if let Some(preset) = view.current_preset() {
@@ -525,10 +548,11 @@ impl AgentProvidersView {
                 let llm = wormhole_desktop_core::agent_llm_commands::agent_llm_config(&state).await;
                 let routes = agent_model_routing::get_agent_model_routes(&state).await;
                 let ollama = agent_ollama::ollama_status(&state).await;
-                (providers, llm, routes, ollama)
+                let choices = agent_provider_commands::list_agent_model_choices(&state).await;
+                (providers, llm, routes, ollama, choices)
             },
             |view, output, ctx| {
-                let (providers, llm, routes, ollama) = output;
+                let (providers, llm, routes, ollama, choices) = output;
                 match providers {
                     Ok(list) => {
                         view.active_provider_id = list.active_provider_id.clone();
@@ -548,6 +572,12 @@ impl AgentProvidersView {
                     }
                     Err(error) => {
                         view.status = format!("刷新失败：{error}");
+                    }
+                }
+                match choices {
+                    Ok(dto) => view.model_choices = dto.choices,
+                    Err(err) => {
+                        view.status = format!("模型列表读取失败：{err}");
                     }
                 }
                 if let Ok(routes) = routes {
@@ -579,57 +609,151 @@ impl AgentProvidersView {
 
     fn apply_routes_dto(&mut self, dto: AgentModelRoutesDto) {
         self.route_table = dto.routes;
-        self.sync_route_model_draft_from_table();
+        self.sync_route_picks_from_table();
     }
 
-    fn current_route_hint(&self) -> WorkloadHint {
+    fn ensure_orphan_choice(&mut self, provider_id: Option<&str>, model: &str) -> usize {
+        let model = model.trim();
+        if let Some(idx) = self.find_choice_index(provider_id, model) {
+            return idx + 1;
+        }
+        let provider = provider_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown");
+        let label = if provider == "unknown" {
+            format!("{model}（已保存）")
+        } else {
+            format!("{provider} · {model}（已保存）")
+        };
+        self.model_choices.push(AgentModelChoiceDto {
+            id: format!("{provider}:{model}"),
+            provider_id: provider.to_string(),
+            model: model.to_string(),
+            label,
+            source: "saved".into(),
+            is_active: false,
+        });
+        self.model_choices.len()
+    }
+
+    fn find_choice_index(&self, provider_id: Option<&str>, model: &str) -> Option<usize> {
+        let model = model.trim();
+        if model.is_empty() {
+            return None;
+        }
+        let provider = provider_id.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(p) = provider {
+            return self
+                .model_choices
+                .iter()
+                .position(|c| c.provider_id == p && c.model == model);
+        }
+        // Model-only binding: only auto-match when exactly one provider owns that model.
+        let matches: Vec<usize> = self
+            .model_choices
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.model == model)
+            .map(|(i, _)| i)
+            .collect();
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    fn sync_route_picks_from_table(&mut self) {
         let hints = WorkloadHint::matrix_hints();
-        hints[self.route_hint_index % hints.len()]
+        if self.route_pick_idx.len() != hints.len() {
+            self.route_pick_idx = empty_route_picks();
+        }
+        let snapshot: Vec<(Option<String>, Option<String>)> = hints
+            .iter()
+            .map(|h| {
+                let binding = self.route_table.binding_for(*h);
+                (
+                    binding.provider_id.clone(),
+                    binding
+                        .model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                )
+            })
+            .collect();
+        for (i, (provider_id, model)) in snapshot.into_iter().enumerate() {
+            self.route_pick_idx[i] = match model.as_deref() {
+                None => 0,
+                Some(m) => self.ensure_orphan_choice(provider_id.as_deref(), m),
+            };
+        }
     }
 
-    fn sync_route_model_draft_from_table(&mut self) {
-        let hint = self.current_route_hint();
-        self.route_model_draft = self
-            .route_table
-            .binding_for(hint)
-            .model
-            .clone()
-            .unwrap_or_default();
-        self.route_model_field.move_cursor_to_end(&self.route_model_draft);
+    /// Concrete label for the active Agent provider/model (used when a route has no override).
+    fn active_model_label(&self) -> String {
+        if let Some(choice) = self.model_choices.iter().find(|c| c.is_active) {
+            return choice.label.clone();
+        }
+        if let Some(active_id) = self.active_provider_id.as_deref() {
+            if let Some(choice) = self
+                .model_choices
+                .iter()
+                .find(|c| c.provider_id == active_id)
+            {
+                return choice.label.clone();
+            }
+            if let Some(provider) = self.providers.iter().find(|p| p.id == active_id) {
+                let name = provider.name.trim();
+                let model = provider.model.trim();
+                if !name.is_empty() && !model.is_empty() {
+                    return format!("{name} · {model}");
+                }
+                if !model.is_empty() {
+                    return model.to_string();
+                }
+            }
+        }
+        "未配置模型".into()
     }
 
-    fn cycle_route_hint(&mut self, ctx: &mut ViewContext<Self>) {
-        let n = WorkloadHint::matrix_hints().len();
-        self.route_hint_index = (self.route_hint_index + 1) % n;
-        self.sync_route_model_draft_from_table();
-        self.route_model_focused = false;
-        let hint = self.current_route_hint();
-        self.status = format!("正在编辑 hint:{}", hint.as_str());
-        ctx.notify();
+    fn route_pick_label(&self, index: usize) -> String {
+        let pick = self.route_pick_idx.get(index).copied().unwrap_or(0);
+        if pick == 0 {
+            return self.active_model_label();
+        }
+        self.model_choices
+            .get(pick - 1)
+            .map(|c| c.label.clone())
+            .unwrap_or_else(|| self.active_model_label())
+    }
+
+    fn apply_pick_to_binding(&mut self, index: usize) {
+        let hints = WorkloadHint::matrix_hints();
+        let Some(hint) = hints.get(index).copied() else {
+            return;
+        };
+        let pick = self.route_pick_idx.get(index).copied().unwrap_or(0);
+        let binding = self.route_table.binding_for_mut(hint);
+        if pick == 0 {
+            binding.provider_id = None;
+            binding.model = None;
+            return;
+        }
+        let Some(choice) = self.model_choices.get(pick - 1).cloned() else {
+            binding.provider_id = None;
+            binding.model = None;
+            return;
+        };
+        binding.provider_id = Some(choice.provider_id);
+        binding.model = Some(choice.model);
     }
 
     fn save_routes(&mut self, ctx: &mut ViewContext<Self>) {
-        let hint = self.current_route_hint();
-        let model = self.route_model_draft.trim().to_string();
-        let ollama_registered = self
-            .ollama
-            .as_ref()
-            .map(|s| s.provider_registered)
-            .unwrap_or(false);
-        {
-            let binding = self.route_table.binding_for_mut(hint);
-            if model.is_empty() {
-                binding.model = None;
-                // Clearing model also clears an ollama-only pin so inherit works.
-                if binding.provider_id.as_deref() == Some(OLLAMA_PROVIDER_ID) {
-                    binding.provider_id = None;
-                }
-            } else {
-                binding.model = Some(model);
-                if ollama_registered {
-                    binding.provider_id = Some(OLLAMA_PROVIDER_ID.into());
-                }
-            }
+        for i in 0..route_hint_count() {
+            self.apply_pick_to_binding(i);
         }
         self.busy = true;
         self.status = "正在保存 Workload Routes…".into();
@@ -659,68 +783,137 @@ impl AgentProvidersView {
         );
     }
 
+    fn toggle_route_picker(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        if index >= route_hint_count() {
+            return;
+        }
+        self.route_picker_open = if self.route_picker_open == Some(index) {
+            None
+        } else {
+            Some(index)
+        };
+        ctx.notify();
+    }
+
+    fn select_route_model(&mut self, hint_index: usize, pick: usize, ctx: &mut ViewContext<Self>) {
+        if hint_index >= route_hint_count() {
+            return;
+        }
+        let max = self.model_choices.len();
+        if pick > max {
+            return;
+        }
+        if let Some(slot) = self.route_pick_idx.get_mut(hint_index) {
+            *slot = pick;
+        }
+        self.route_picker_open = None;
+        let title = WorkloadHint::matrix_hints()
+            .get(hint_index)
+            .copied()
+            .map(workload_hint_title)
+            .unwrap_or("?");
+        self.status = format!("{title} → {}", self.route_pick_label(hint_index));
+        ctx.notify();
+    }
+
+    fn route_option_label(&self, pick: usize) -> String {
+        if pick == 0 {
+            format!("当前供应商 · {}", self.active_model_label())
+        } else {
+            self.model_choices
+                .get(pick - 1)
+                .map(|c| c.label.clone())
+                .unwrap_or_else(|| self.active_model_label())
+        }
+    }
+
+    fn route_picker_list(&self, hint_index: usize, hint: WorkloadHint) -> Box<dyn Element> {
+        let selected = self.route_pick_idx.get(hint_index).copied().unwrap_or(0);
+        let mut list = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        let option_count = self.model_choices.len() + 1;
+        for pick in 0..option_count {
+            let label = self.route_option_label(pick);
+            let mark = if pick == selected { "✓ " } else { "  " };
+            let btn = self.action_button_with_id(
+                &format!("{mark}{label}"),
+                &format!(
+                    "settings:agent_routes:option:{}:{}",
+                    hint.as_str(),
+                    pick
+                ),
+                AgentProvidersAction::SelectRouteModel {
+                    hint_index,
+                    pick,
+                },
+            );
+            list.add_child(
+                Container::new(btn)
+                    .with_margin_top(if pick == 0 { 0.0 } else { 4.0 })
+                    .finish(),
+            );
+        }
+        Container::new(list.finish())
+            .with_margin_top(6.0)
+            .with_margin_left(108.0)
+            .with_uniform_padding(8.0)
+            .with_background(theme::canvas())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
+            .finish()
+    }
+
     fn routes_block(&self) -> Box<dyn Element> {
-        let hint = self.current_route_hint();
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         col.add_child(section_title("Workload Routes", self.font));
         col.add_child(section_hint(
-            "「下一项」只切换正在编辑的 hint；改模型后点保存。主聊默认 agentic（继承上方供应商）；chat/summarization 可绑 ollama。",
+            "按任务选模型。点「选择」展开全部可选模型（可同时看到 Ollama / DeepSeek 等）。每行独立；未覆盖时用上方当前供应商。改完点「保存全部」。",
             self.font,
         ));
-        col.add_child(
-            Container::new(self.form_field_shell(
-                "正在编辑的 Workload hint",
-                self.selectable_value_el(
-                    &format!("hint:{}", hint.as_str()),
-                    "下一项",
-                    "settings:agent_routes:cycle_hint",
-                    AgentProvidersAction::CycleRouteHint,
-                ),
-            ))
-            .with_margin_top(8.0)
-            .finish(),
-        );
-        col.add_child(
-            Container::new(self.form_field_shell(
-                "模型覆盖",
-                self.route_model_field_element(),
-            ))
-            .with_margin_top(6.0)
-            .finish(),
-        );
+        for (i, h) in WorkloadHint::matrix_hints().iter().enumerate() {
+            let title = workload_hint_title(*h);
+            let pick_label = self.route_pick_label(i);
+            let open = self.route_picker_open == Some(i);
+            let toggle_label = if open { "收起" } else { "选择" };
+            let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+            row.add_child(
+                ConstrainedBox::new(
+                    ui_text::body(title.to_string(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_width(108.0)
+                .finish(),
+            );
+            row.add_child(
+                Expanded::new(
+                    1.0,
+                    self.selectable_value_el(
+                        &pick_label,
+                        toggle_label,
+                        &format!("settings:agent_routes:pick:{}", h.as_str()),
+                        AgentProvidersAction::ToggleRoutePicker(i),
+                    ),
+                )
+                .finish(),
+            );
+            col.add_child(
+                Container::new(row.finish())
+                    .with_margin_top(6.0)
+                    .finish(),
+            );
+            if open {
+                col.add_child(self.route_picker_list(i, *h));
+            }
+        }
         col.add_child(
             Container::new(self.action_button_with_id(
-                "保存 Routes",
+                "保存全部 Routes",
                 "settings:agent_routes:save",
                 AgentProvidersAction::SaveRoutes,
             ))
-            .with_margin_top(8.0)
+            .with_margin_top(10.0)
             .finish(),
         );
-        for h in WorkloadHint::matrix_hints() {
-            let binding = self.route_table.binding_for(*h);
-            let provider = binding
-                .provider_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let model = binding
-                .model
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let target = match (provider, model) {
-                (Some(p), Some(m)) => format!("{p}:{m}"),
-                (Some(p), None) => format!("{p}:(inherit model)"),
-                (None, Some(m)) => m.to_string(),
-                (None, None) => "inherit".into(),
-            };
-            col.add_child(status_line(
-                format!("  hint:{} → {target}", h.as_str()),
-                self.font,
-                StatusTone::Muted,
-            ));
-        }
         col.finish()
     }
 
@@ -962,39 +1155,6 @@ impl AgentProvidersView {
                 ctx.notify();
             },
         );
-    }
-
-    fn route_model_field_element(&self) -> Box<dyn Element> {
-        let field = render_field_with_caret(
-            &self.route_model_draft,
-            &self.route_model_field.marked_text,
-            "模型覆盖（空=继承）",
-            self.font,
-            self.route_model_focused,
-            false,
-            false,
-            self.route_model_field.cursor,
-        );
-        let input = TextFieldInput::builder(field, |ctx, action| {
-            ctx.dispatch_typed_action(AgentProvidersAction::RouteModelEdit(action));
-        })
-        .focused(self.route_model_focused)
-        .ime_preedit(!self.route_model_field.marked_text.is_empty())
-        .finish();
-        let input = wrap_text_field_focus_on_click(input, |ctx| {
-            ctx.dispatch_typed_action(AgentProvidersAction::FocusRouteModel);
-        });
-        Container::new(input)
-            .with_uniform_padding(10.0)
-            .with_vertical_margin(4.0)
-            .with_background(theme::canvas())
-            .with_border(Border::all(1.0).with_border_fill(if self.route_model_focused {
-                theme::accent_cool()
-            } else {
-                theme::border()
-            }))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(5.0)))
-            .finish()
     }
 
     fn activate(&mut self, id: String, ctx: &mut ViewContext<Self>) {
@@ -1299,6 +1459,15 @@ mod tests {
     }
 
     #[test]
+    fn workload_hint_titles_cover_matrix() {
+        for hint in WorkloadHint::matrix_hints() {
+            assert!(!workload_hint_title(*hint).is_empty());
+        }
+        assert_eq!(workload_hint_title(WorkloadHint::Agentic), "主 Agent");
+        assert_eq!(workload_hint_title(WorkloadHint::Chat), "轻量对话");
+    }
+
+    #[test]
     fn control_plane_is_hidden_from_settings_ui_helpers() {
         assert!(is_control_plane_id("control_plane"));
         assert!(!is_control_plane_id("zai"));
@@ -1325,13 +1494,11 @@ impl TypedActionView for AgentProvidersView {
             AgentProvidersAction::FocusApiKey => {
                 self.api_key_focused = true;
                 self.base_url_focused = false;
-                self.route_model_focused = false;
                 ctx.notify();
             }
             AgentProvidersAction::FocusBaseUrl => {
                 self.base_url_focused = true;
                 self.api_key_focused = false;
-                self.route_model_focused = false;
                 ctx.notify();
             }
             AgentProvidersAction::ApiKeyEdit(edit) => {
@@ -1344,17 +1511,9 @@ impl TypedActionView for AgentProvidersView {
             }
             AgentProvidersAction::SaveProvider => self.save_provider(ctx),
             AgentProvidersAction::TestProvider => self.test_provider(ctx),
-            AgentProvidersAction::CycleRouteHint => self.cycle_route_hint(ctx),
-            AgentProvidersAction::FocusRouteModel => {
-                self.route_model_focused = true;
-                self.api_key_focused = false;
-                self.base_url_focused = false;
-                ctx.notify();
-            }
-            AgentProvidersAction::RouteModelEdit(edit) => {
-                self.route_model_field
-                    .apply(&mut self.route_model_draft, edit);
-                ctx.notify();
+            AgentProvidersAction::ToggleRoutePicker(index) => self.toggle_route_picker(*index, ctx),
+            AgentProvidersAction::SelectRouteModel { hint_index, pick } => {
+                self.select_route_model(*hint_index, *pick, ctx)
             }
             AgentProvidersAction::SaveRoutes => self.save_routes(ctx),
             AgentProvidersAction::EnsureOllama => self.ensure_ollama(ctx),
@@ -1365,4 +1524,3 @@ impl TypedActionView for AgentProvidersView {
         }
     }
 }
-     
