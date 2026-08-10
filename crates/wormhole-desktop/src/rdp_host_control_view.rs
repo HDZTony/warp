@@ -9,7 +9,7 @@ use warpui::elements::{
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 use warpui_core::keymap::Keystroke;
-use wormhole_desktop_rdp::settings::{load_settings, save_settings, RdpSettings};
+use wormhole_desktop_core::rdp_settings::{load_settings, save_settings, RdpSettings};
 use wormhole_desktop_rdp::wol::send_magic_packet;
 use wormhole_desktop_rdp::{
     apply_host_side_effects, format_addressbook_entries, format_entries, generate_totp_secret,

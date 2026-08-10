@@ -146,12 +146,31 @@ pub fn apply_stored_theme(data_dir: &Path, system_is_dark: bool) -> Theme {
 
 /// Snapshot of login-modal remember / auto-login prefs.
 pub fn load_login_prefs(data_dir: &Path) -> LoginPrefs {
+    use wormhole_desktop_core::security::secret_store::get_slot;
+    use wormhole_desktop_core::security::slots::SecretSlot;
+
     let prefs = load(data_dir);
+    let saved_password = get_slot(SecretSlot::AuthSavedPassword)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            // One-shot migrate from plaintext prefs field.
+            let legacy = prefs.auth_saved_password.clone()?;
+            if legacy.trim().is_empty() {
+                return None;
+            }
+            let _ = wormhole_desktop_core::security::secret_store::set_slot(
+                SecretSlot::AuthSavedPassword,
+                &legacy,
+            );
+            let _ = update(data_dir, |p| p.auth_saved_password = None);
+            Some(legacy)
+        });
     LoginPrefs {
         remember: prefs.auth_remember,
         auto_login: prefs.auth_auto_login,
         email: prefs.auth_email,
-        saved_password: prefs.auth_saved_password,
+        saved_password,
     }
 }
 
@@ -163,24 +182,30 @@ pub fn persist_login_prefs(
     remember: bool,
     auto_login: bool,
 ) -> Result<(), String> {
+    use wormhole_desktop_core::security::secret_store::{delete_slot, set_slot};
+    use wormhole_desktop_core::security::slots::SecretSlot;
+
     let mut remember = remember;
     let auto_login = auto_login;
     if auto_login {
         remember = true;
     }
+    if remember {
+        if !password.is_empty() {
+            set_slot(SecretSlot::AuthSavedPassword, password).map_err(|e| e.to_string())?;
+        }
+    } else {
+        let _ = delete_slot(SecretSlot::AuthSavedPassword);
+    }
     update(data_dir, |prefs| {
         prefs.auth_remember = remember;
         prefs.auth_auto_login = auto_login;
+        prefs.auth_saved_password = None;
         if remember {
             let email = email.trim();
             if !email.is_empty() {
                 prefs.auth_email = Some(email.to_string());
             }
-            if !password.is_empty() {
-                prefs.auth_saved_password = Some(password.to_string());
-            }
-        } else {
-            prefs.auth_saved_password = None;
         }
     })
 }

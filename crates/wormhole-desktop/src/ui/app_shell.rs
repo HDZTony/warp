@@ -32,6 +32,9 @@ use crate::ui::hud_avatar_panel::{
 };
 use crate::ui::hud_effects::HudBackdrop;
 use crate::ui::icons;
+use crate::ui::keyring_consent_modal::{
+    KeyringConsentEvent, KeyringConsentModalView,
+};
 use crate::ui::login_modal::{LoginModalAction, LoginModalEvent, LoginModalView};
 use crate::ui::panel_primitives::StatusTone;
 use crate::ui::panel_primitives::{section_hint, tab_content_fill, HUD_RADIUS};
@@ -180,6 +183,8 @@ pub struct AppShellView {
     settings: ViewHandle<SettingsView>,
     login_modal: ViewHandle<LoginModalView>,
     login_modal_open: bool,
+    keyring_consent_modal: ViewHandle<KeyringConsentModalView>,
+    keyring_consent_open: bool,
     auth_authenticated: bool,
     auth_device_id: Option<String>,
     auth_email: Option<String>,
@@ -323,6 +328,26 @@ impl AppShellView {
             }
             ctx.notify();
         });
+        let keyring_consent_modal =
+            ctx.add_typed_action_view(|ctx| KeyringConsentModalView::new(ctx, core.clone()));
+        let keyring_consent_open = wormhole_desktop_core::security::keyring_consent_status()
+            .consent_required;
+        ctx.subscribe_to_view(&keyring_consent_modal, |view, _, event, ctx| {
+            match event {
+                KeyringConsentEvent::OpenChanged { open } => {
+                    view.keyring_consent_open = *open;
+                }
+                KeyringConsentEvent::Decided { .. } => {
+                    view.keyring_consent_open =
+                        wormhole_desktop_core::security::keyring_consent_status().consent_required;
+                    let settings_handle = view.settings.clone();
+                    ctx.update_view(&settings_handle, |settings, ctx| {
+                        settings.reload_security(ctx);
+                    });
+                }
+            }
+            ctx.notify();
+        });
         ctx.subscribe_to_view(&settings, |view, _, event, ctx| {
             match event {
                 SettingsEvent::AccountChanged { authenticated } => {
@@ -420,6 +445,8 @@ impl AppShellView {
             settings,
             login_modal,
             login_modal_open: false,
+            keyring_consent_modal,
+            keyring_consent_open,
             auth_authenticated: false,
             auth_device_id: None,
             auth_email: None,
@@ -473,6 +500,14 @@ impl AppShellView {
         view.start_hud_poll(ctx);
         view.refresh_voice_status();
         view.start_voice_wake_poll(ctx);
+        {
+            let consent = view.keyring_consent_modal.clone();
+            ctx.update_view(&consent, |modal, ctx| {
+                modal.refresh_visibility(ctx);
+            });
+            view.keyring_consent_open =
+                wormhole_desktop_core::security::keyring_consent_status().consent_required;
+        }
         view.refresh_auth_status(ctx);
         view.start_event_listener(ctx);
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -1979,6 +2014,7 @@ impl View for AppShellView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let current_tab = self.tab;
         let login_modal_open = self.login_modal_open;
+        let keyring_consent_open = self.keyring_consent_open;
         let ai_panel_open = self.ai_panel_open;
         let redeem_modal_open = self.redeem_modal_open;
         let purchase_modal_open = self.purchase_modal_open;
@@ -1989,7 +2025,7 @@ impl View for AppShellView {
         let shell = EventHandler::new(shell)
             .with_always_handle()
             .on_keydown(move |ctx, _, keystroke| {
-                if login_modal_open {
+                if login_modal_open || keyring_consent_open {
                     return DispatchEventResult::PropagateToParent;
                 }
                 if keystroke.key.as_str() == "escape" {
@@ -2092,6 +2128,7 @@ impl View for AppShellView {
             ));
         }
         stack.add_child(ChildView::new(&self.login_modal).finish());
+        stack.add_child(ChildView::new(&self.keyring_consent_modal).finish());
 
         if traffic_light_data
             .as_ref()

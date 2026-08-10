@@ -7,7 +7,9 @@ use warpui::elements::{
     Hoverable, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
+use warpui::{
+    AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
+};
 
 use crate::ui::agent_panel::sidebar::{load_archived_snapshots, ArchivedSessionSnapshot};
 use crate::ui::core_handle::CoreHandle;
@@ -18,6 +20,7 @@ use crate::ui::activity_view::ActivityView;
 use crate::ui::subconscious_view::SubconsciousView;
 use crate::ui::tokenjuice_view::TokenJuiceView;
 use crate::ui::web_search_view::WebSearchView;
+use crate::ui::security_view::SecurityView;
 use crate::ui::cron_view::CronView;
 use crate::ui::panel_primitives::{section_hint, status_line, tab_content_fill, StatusTone};
 use crate::ui::text_field_input::{
@@ -63,6 +66,7 @@ use wormhole_desktop_core::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
     Account,
+    Security,
     Email,
     Connections,
     Agent,
@@ -133,6 +137,7 @@ impl SettingsPage {
     fn all() -> &'static [SettingsPage] {
         &[
             SettingsPage::Account,
+            SettingsPage::Security,
             SettingsPage::Email,
             SettingsPage::Connections,
             SettingsPage::Agent,
@@ -160,6 +165,7 @@ impl SettingsPage {
     fn nav_automation_id(self) -> &'static str {
         match self {
             SettingsPage::Account => "settings:nav_account",
+            SettingsPage::Security => "settings:nav_security",
             SettingsPage::Email => "settings:nav_email",
             SettingsPage::Connections => "settings:nav_connections",
             SettingsPage::Agent => "settings:nav_agent",
@@ -187,6 +193,7 @@ impl SettingsPage {
     fn title(self) -> String {
         let key = match self {
             SettingsPage::Account => "settings.page.account",
+            SettingsPage::Security => "settings.page.security",
             SettingsPage::Email => "settings.page.email",
             SettingsPage::Connections => "settings.page.connections",
             SettingsPage::Agent => "settings.page.agent",
@@ -215,6 +222,7 @@ impl SettingsPage {
     fn eyebrow(self) -> (&'static str, String) {
         match self {
             SettingsPage::Account => ("ACCOUNT", wormhole_i18n::t("settings.eyebrow.account")),
+            SettingsPage::Security => ("SECURITY", wormhole_i18n::t("settings.eyebrow.security")),
             SettingsPage::Email => ("CONNECTORS", wormhole_i18n::t("settings.eyebrow.email")),
             SettingsPage::Connections => {
                 ("CONNECTIONS", wormhole_i18n::t("settings.eyebrow.connections"))
@@ -251,6 +259,7 @@ impl SettingsPage {
     fn group_key(self) -> &'static str {
         match self {
             SettingsPage::Account
+            | SettingsPage::Security
             | SettingsPage::Email
             | SettingsPage::Connections
             | SettingsPage::Agent
@@ -279,7 +288,7 @@ impl SettingsPage {
 
     fn icon_path(self) -> &'static str {
         match self {
-            SettingsPage::Account | SettingsPage::Email => "agent-user.svg",
+            SettingsPage::Account | SettingsPage::Security | SettingsPage::Email => "agent-user.svg",
             SettingsPage::Connections => "tab-toolbox.svg",
             SettingsPage::Agent => "tab-agent.svg",
             SettingsPage::Memory => "share-file.svg",
@@ -551,6 +560,7 @@ pub struct SettingsView {
     subconscious: ViewHandle<SubconsciousView>,
     tokenjuice: ViewHandle<TokenJuiceView>,
     web_search: ViewHandle<WebSearchView>,
+    security: ViewHandle<SecurityView>,
     cron: ViewHandle<CronView>,
     theme_studio: crate::ui::theme_studio::ThemeStudioState,
 }
@@ -583,6 +593,8 @@ impl SettingsView {
             ctx.add_typed_action_view(|ctx| TokenJuiceView::new(ctx, core.clone()));
         let web_search =
             ctx.add_typed_action_view(|ctx| WebSearchView::new(ctx, core.clone()));
+        let security =
+            ctx.add_typed_action_view(|ctx| SecurityView::new(ctx, core.clone()));
         let cron = ctx.add_typed_action_view(|ctx| CronView::new(ctx, core.clone()));
         let mut view = Self {
             core,
@@ -656,6 +668,7 @@ impl SettingsView {
             subconscious,
             tokenjuice,
             web_search,
+            security,
             cron,
             theme_studio: crate::ui::theme_studio::ThemeStudioState::default(),
         };
@@ -683,6 +696,13 @@ impl SettingsView {
         self.search_focused = false;
         self.storage_focused = false;
         ctx.notify();
+    }
+
+    pub fn reload_security(&mut self, ctx: &mut ViewContext<Self>) {
+        let security = self.security.clone();
+        ctx.update_view(&security, |view, ctx| {
+            view.reload(ctx);
+        });
     }
 
     pub fn refresh_account(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1551,6 +1571,7 @@ impl SettingsView {
         col.add_child(self.page_header(self.selected_page));
         match self.selected_page {
             SettingsPage::Account => col.add_child(self.account_block()),
+            SettingsPage::Security => col.add_child(ChildView::new(&self.security).finish()),
             SettingsPage::Email => col.add_child(self.email_connectors_block()),
             SettingsPage::Connections => col.add_child(self.connections_block()),
             SettingsPage::Agent => col.add_child(ChildView::new(&self.agent_providers).finish()),
@@ -3402,6 +3423,12 @@ impl TypedActionView for SettingsView {
                     SettingsPage::Archive => self.archive_expanded = true,
                     SettingsPage::Connections => self.refresh_connections(ctx),
                     SettingsPage::Account => self.refresh_account(ctx),
+                    SettingsPage::Security => {
+                        let security = self.security.clone();
+                        ctx.update_view(&security, |view, ctx| {
+                            view.reload(ctx);
+                        });
+                    }
                     _ => {}
                 }
                 ctx.notify();
@@ -4468,6 +4495,7 @@ mod tests {
             settings_pages_in_group_key("settings.nav.group.general"),
             vec![
                 SettingsPage::Account,
+                SettingsPage::Security,
                 SettingsPage::Email,
                 SettingsPage::Connections,
                 SettingsPage::Agent,

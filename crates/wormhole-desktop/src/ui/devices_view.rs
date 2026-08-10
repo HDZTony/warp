@@ -1,13 +1,17 @@
 use pathfinder_color::ColorU;
+use warpui::assets::asset_cache::AssetCache;
 use warpui::elements::Fill;
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex,
+    CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex, Image,
     MainAxisAlignment, MainAxisSize, ParentElement, Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
-use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use warpui::{AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext};
+use warpui_core::assets::asset_cache::AssetSource;
+use warpui_core::image_cache::{CacheOption, ImageType};
 
+use crate::ui::chat::image_asset::decode_image_asset_payload;
 use crate::ui::clipboard::{read_clipboard_text, write_clipboard_text};
 use crate::ui::cluster_topology_panel::{
     device_matches_query, node_display_label, node_remote_desktop_available, ClusterTopologyPanel,
@@ -27,6 +31,9 @@ use crate::ui::text_field_input::{
 };
 use crate::ui::theme;
 use crate::ui_text;
+use wormhole_desktop_core::agent_pair_commands::{
+    create_agent_pair_code, AgentPairCodeDto, CreateAgentPairCodeParams,
+};
 use wormhole_desktop_core::cluster_commands::{
     add_storage_volume_to_node, cached_cluster_invite_from_json, cached_cluster_invite_if_fresh,
     create_cluster as create_cluster_command, create_share_entry, delete_cluster,
@@ -123,6 +130,12 @@ pub struct DevicesView {
     cluster_picker_open: bool,
     copy_invite_ack: bool,
     copy_invite_busy: bool,
+    agent_pair_modal_open: bool,
+    agent_pair_busy: bool,
+    agent_pair: Option<AgentPairCodeDto>,
+    agent_pair_error: Option<String>,
+    agent_pair_qr_asset_id: Option<String>,
+    agent_pair_copy_ack: bool,
     create_cluster_busy: bool,
     share_scroll: ClippedScrollStateHandle,
     topology_scroll: ClippedScrollStateHandle,
@@ -227,6 +240,12 @@ impl DevicesView {
             cluster_picker_open: false,
             copy_invite_ack: false,
             copy_invite_busy: false,
+            agent_pair_modal_open: false,
+            agent_pair_busy: false,
+            agent_pair: None,
+            agent_pair_error: None,
+            agent_pair_qr_asset_id: None,
+            agent_pair_copy_ack: false,
             create_cluster_busy: false,
             share_scroll: ClippedScrollStateHandle::new(),
             topology_scroll: ClippedScrollStateHandle::new(),
@@ -2937,6 +2956,13 @@ impl DevicesView {
                     !self.copy_invite_busy,
                     false,
                 ));
+                menu.add_child(self.cluster_menu_action(
+                    &wormhole_i18n::t("devices.cluster.agent_pair"),
+                    DevicesAction::OpenAgentPairModal,
+                    false,
+                    true,
+                    false,
+                ));
             } else {
                 menu.add_child(self.cluster_menu_action(
                     &wormhole_i18n::t("devices.cluster.copy_invite_needs_member"),
@@ -3256,6 +3282,113 @@ impl DevicesView {
                 }
             },
         );
+    }
+
+    fn open_agent_pair_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.agent_pair_modal_open = true;
+        self.agent_pair = None;
+        self.agent_pair_error = None;
+        self.agent_pair_qr_asset_id = None;
+        self.agent_pair_copy_ack = false;
+        self.cluster_picker_open = false;
+        ctx.notify();
+        self.create_agent_pair(ctx);
+    }
+
+    fn close_agent_pair_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.agent_pair_modal_open = false;
+        self.agent_pair_busy = false;
+        self.agent_pair_error = None;
+        self.agent_pair_copy_ack = false;
+        ctx.notify();
+    }
+
+    fn create_agent_pair(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.agent_pair_busy {
+            return;
+        }
+        self.agent_pair_busy = true;
+        self.agent_pair_error = None;
+        self.agent_pair = None;
+        self.agent_pair_qr_asset_id = None;
+        ctx.notify();
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let state = core.runtime().state.clone();
+                create_agent_pair_code(&state, CreateAgentPairCodeParams { ttl_secs: None }).await
+            },
+            |view, output, ctx| {
+                view.agent_pair_busy = false;
+                match output {
+                    Ok(pair) => view.apply_agent_pair_success(pair, ctx),
+                    Err(err) => {
+                        view.agent_pair_error = Some(err);
+                        ctx.notify();
+                    }
+                }
+            },
+        );
+    }
+
+    fn apply_agent_pair_success(&mut self, pair: AgentPairCodeDto, ctx: &mut ViewContext<Self>) {
+        let asset_id = format!("wormhole-agent-pair-qr-{}", pair.code);
+        match base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            pair.qr_png_base64.as_bytes(),
+        ) {
+            Ok(png_bytes) => match decode_image_asset_payload(png_bytes) {
+                Ok(payload) => {
+                    AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
+                        cache.insert_raw_asset_bytes::<ImageType>(
+                            asset_id.clone(),
+                            &payload,
+                            model_ctx,
+                        );
+                    });
+                    self.agent_pair_qr_asset_id = Some(asset_id);
+                }
+                Err(err) => {
+                    tracing::warn!("agent pair qr decode failed: {err}");
+                    self.agent_pair_qr_asset_id = None;
+                }
+            },
+            Err(err) => {
+                tracing::warn!("agent pair qr base64 failed: {err}");
+                self.agent_pair_qr_asset_id = None;
+            }
+        }
+        self.agent_pair = Some(pair);
+        self.agent_pair_error = None;
+        ctx.notify();
+    }
+
+    fn copy_agent_pair_url(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(url) = self.agent_pair.as_ref().map(|pair| pair.pair_url.clone()) else {
+            return;
+        };
+        match write_clipboard_text(&url) {
+            Ok(()) => {
+                self.agent_pair_copy_ack = true;
+                self.status_flash =
+                    Some(wormhole_i18n::t("devices.modal.agent_pair_copied_flash"));
+                ctx.notify();
+                ctx.spawn(
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(2600)).await;
+                    },
+                    |view, _, ctx| {
+                        view.agent_pair_copy_ack = false;
+                        view.status_flash = None;
+                        ctx.notify();
+                    },
+                );
+            }
+            Err(err) => {
+                self.agent_pair_error = Some(err);
+                ctx.notify();
+            }
+        }
     }
 
     fn open_join_modal(&mut self, ctx: &mut ViewContext<Self>) {
@@ -3995,6 +4128,162 @@ impl DevicesView {
             .finish()
     }
 
+    fn agent_pair_modal(&self) -> Box<dyn Element> {
+        let mut dialog = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        dialog.add_child(
+            ui_text::title(wormhole_i18n::t("devices.modal.agent_pair_title"), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        dialog.add_child(
+            Container::new(
+                ui_text::body(wormhole_i18n::t("devices.modal.agent_pair_body"), self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_vertical_margin(8.0)
+            .finish(),
+        );
+
+        if let Some(pair) = &self.agent_pair {
+            let ready = if pair.agent_mode_enabled && pair.agentd_running {
+                wormhole_i18n::t("devices.modal.agent_pair_ready")
+            } else if !pair.agent_mode_enabled {
+                wormhole_i18n::t("devices.modal.agent_pair_need_mode")
+            } else {
+                wormhole_i18n::t("devices.modal.agent_pair_need_agentd")
+            };
+            dialog.add_child(status_line(
+                ready,
+                self.font,
+                if pair.agent_mode_enabled && pair.agentd_running {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Warn
+                },
+            ));
+            if let Some(asset_id) = &self.agent_pair_qr_asset_id {
+                dialog.add_child(
+                    Container::new(
+                        ConstrainedBox::new(
+                            Image::new(
+                                AssetSource::Raw {
+                                    id: asset_id.clone(),
+                                },
+                                CacheOption::BySize,
+                            )
+                            .finish(),
+                        )
+                        .with_width(220.0)
+                        .with_height(220.0)
+                        .finish(),
+                    )
+                    .with_vertical_margin(12.0)
+                    .finish(),
+                );
+            }
+            dialog.add_child(
+                Container::new(
+                    ui_text::mono(truncate_middle(&pair.pair_url, 64), self.mono)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_uniform_padding(10.0)
+                .with_vertical_margin(8.0)
+                .with_background(theme::canvas())
+                .with_border(Border::all(1.0).with_border_fill(theme::border()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+                .finish(),
+            );
+        } else if self.agent_pair_busy {
+            dialog.add_child(status_line(
+                wormhole_i18n::t("devices.modal.agent_pair_creating"),
+                self.font,
+                StatusTone::Muted,
+            ));
+        }
+
+        if let Some(err) = &self.agent_pair_error {
+            dialog.add_child(status_line(err.clone(), self.font, StatusTone::Danger));
+        }
+
+        let mut actions = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::End)
+            .with_main_axis_size(MainAxisSize::Max);
+        actions.add_child(self.toolbar_button(
+            &wormhole_i18n::t("common.cancel"),
+            DevicesAction::CloseAgentPairModal,
+            false,
+            72.0,
+            true,
+        ));
+        actions.add_child(
+            Container::new(Flex::column().finish())
+                .with_horizontal_margin(8.0)
+                .finish(),
+        );
+        if self.agent_pair.is_some() {
+            let copy_label = if self.agent_pair_copy_ack {
+                wormhole_i18n::t("devices.modal.agent_pair_copied")
+            } else {
+                wormhole_i18n::t("devices.modal.agent_pair_copy")
+            };
+            actions.add_child(self.toolbar_button(
+                &copy_label,
+                DevicesAction::CopyAgentPairUrl,
+                true,
+                120.0,
+                true,
+            ));
+        } else {
+            actions.add_child(self.toolbar_button(
+                &wormhole_i18n::t("devices.modal.agent_pair_retry"),
+                DevicesAction::CreateAgentPair,
+                true,
+                100.0,
+                !self.agent_pair_busy,
+            ));
+        }
+        dialog.add_child(
+            Container::new(actions.finish())
+                .with_vertical_margin(12.0)
+                .finish(),
+        );
+
+        let panel = EventHandler::new(
+            Container::new(
+                ConstrainedBox::new(dialog.finish())
+                    .with_width(480.0)
+                    .finish(),
+            )
+            .with_uniform_padding(24.0)
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(HUD_RADIUS)))
+            .finish(),
+        )
+        .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+        .with_automation_label("手机连本机 Agent")
+        .with_automation_id("devices:agent_pair_dialog")
+        .finish();
+
+        let scrim = Container::new(
+            Align::new(Container::new(panel).with_uniform_padding(24.0).finish()).finish(),
+        )
+        .with_background(ColorU::new(8, 7, 11, 180))
+        .finish();
+
+        EventHandler::new(scrim)
+            .with_automation_label("关闭手机连本机")
+            .with_automation_id("devices:scrim_agent_pair")
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::CloseAgentPairModal);
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
     fn grid_view(&self) -> Box<dyn Element> {
         let mut header = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -4236,6 +4525,7 @@ impl DevicesView {
     fn grid_shell(&self) -> Box<dyn Element> {
         let has_overlay = self.join_modal_open
             || self.create_cluster_modal_open
+            || self.agent_pair_modal_open
             || self.delete_modal_node_id.is_some()
             || self.delete_modal_cluster_id.is_some()
             || self.device_context_menu.is_some()
@@ -4247,6 +4537,7 @@ impl DevicesView {
         let grid = if self.cluster_picker_open
             && !self.join_modal_open
             && !self.create_cluster_modal_open
+            && !self.agent_pair_modal_open
             && self.delete_modal_node_id.is_none()
             && self.delete_modal_cluster_id.is_none()
             && self.device_context_menu.is_none()
@@ -4298,10 +4589,14 @@ impl DevicesView {
         if self.join_modal_open {
             stack.add_child(self.join_modal());
         }
+        if self.agent_pair_modal_open {
+            stack.add_child(self.agent_pair_modal());
+        }
         let delete_node_modal_open = self.delete_modal_node_id.is_some();
         let delete_cluster_modal_open = self.delete_modal_cluster_id.is_some();
         let device_menu_open = self.device_context_menu.is_some();
         let join_modal_open = self.join_modal_open;
+        let agent_pair_modal_open = self.agent_pair_modal_open;
         let create_cluster_modal_open = self.create_cluster_modal_open;
         let cluster_picker_open = self.cluster_picker_open;
         EventHandler::new(stack.finish())
@@ -4326,6 +4621,8 @@ impl DevicesView {
                     ctx.dispatch_typed_action(DevicesAction::CloseDeviceContextMenu);
                 } else if join_modal_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseJoinModal);
+                } else if agent_pair_modal_open {
+                    ctx.dispatch_typed_action(DevicesAction::CloseAgentPairModal);
                 } else if create_cluster_modal_open {
                     ctx.dispatch_typed_action(DevicesAction::CloseCreateClusterModal);
                 } else if cluster_picker_open {
@@ -6699,6 +6996,13 @@ impl TypedActionView for DevicesView {
                 self.close_cluster_picker(ctx);
                 self.copy_invite(ctx);
             }
+            DevicesAction::OpenAgentPairModal => {
+                self.close_cluster_picker(ctx);
+                self.open_agent_pair_modal(ctx);
+            }
+            DevicesAction::CloseAgentPairModal => self.close_agent_pair_modal(ctx),
+            DevicesAction::CreateAgentPair => self.create_agent_pair(ctx),
+            DevicesAction::CopyAgentPairUrl => self.copy_agent_pair_url(ctx),
             DevicesAction::OpenJoinModal => {
                 self.close_cluster_picker(ctx);
                 self.open_join_modal(ctx);
