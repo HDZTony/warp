@@ -59,15 +59,31 @@ fn default_data_dir() -> PathBuf {
 
 fn bundled_resource_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let macos_dir = exe.parent()?;
-    if macos_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
-        return None;
+    let exe_dir = exe.parent()?;
+
+    // Windows / Linux portable & NSIS: `resources/` next to the main exe, else exe dir
+    // (so `desktop.config.json` beside Wormhole.exe resolves).
+    #[cfg(not(target_os = "macos"))]
+    {
+        let resources = exe_dir.join("resources");
+        if resources.is_dir() {
+            return Some(resources);
+        }
+        return Some(exe_dir.to_path_buf());
     }
-    let contents_dir = macos_dir.parent()?;
-    if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
-        return None;
+
+    #[cfg(target_os = "macos")]
+    {
+        let macos_dir = exe_dir;
+        if macos_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+            return Some(exe_dir.to_path_buf());
+        }
+        let contents_dir = macos_dir.parent()?;
+        if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
+            return None;
+        }
+        Some(contents_dir.join("Resources"))
     }
-    Some(contents_dir.join("Resources"))
 }
 
 /// XDG desktop / Wayland `app_id` / X11 `WM_CLASS` — must match

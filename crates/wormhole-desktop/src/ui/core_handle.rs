@@ -5,10 +5,13 @@ use tokio::runtime::Runtime;
 use wormhole_desktop_core::desktop_runtime_spawn;
 use wormhole_desktop_core::DesktopRuntime;
 
+use crate::ui::desktop_update::{self, DesktopUpdateHandle};
+
 #[derive(Clone)]
 pub struct CoreHandle {
     runtime: Arc<DesktopRuntime>,
     tokio: Arc<Runtime>,
+    update: DesktopUpdateHandle,
 }
 
 impl CoreHandle {
@@ -18,6 +21,7 @@ impl CoreHandle {
         Self {
             runtime: Arc::new(runtime),
             tokio,
+            update: desktop_update::new_handle(),
         }
     }
 
@@ -27,6 +31,10 @@ impl CoreHandle {
 
     pub fn data_dir(&self) -> std::path::PathBuf {
         self.runtime.data_dir().to_path_buf()
+    }
+
+    pub fn update(&self) -> &DesktopUpdateHandle {
+        &self.update
     }
 
     pub fn block_on<F, T>(&self, fut: F) -> T

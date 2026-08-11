@@ -24,6 +24,7 @@ use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
+use crate::ui::desktop_update::DesktopUpdatePhase;
 use crate::ui::devices_view::{DevicesEvent, DevicesView};
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
@@ -163,6 +164,9 @@ pub enum AppShellAction {
     SubmitRedeem,
     /// Open Settings → Memory (from Agent composer memory chip).
     OpenSettingsMemory,
+    InstallDesktopUpdate,
+    DismissUpdateBanner,
+    RetryDesktopUpdateDownload,
 }
 
 pub struct AppShellView {
@@ -410,6 +414,9 @@ impl AppShellView {
                         ctx.notify();
                     });
                 }
+                SettingsEvent::UpdateSessionChanged => {
+                    ctx.notify();
+                }
             }
             ctx.notify();
         });
@@ -521,7 +528,219 @@ impl AppShellView {
             });
         }
         view.consume_startup_deeplinks(ctx);
+        view.start_update_poll(ctx);
         view
+    }
+
+    fn start_update_poll(&self, ctx: &mut ViewContext<Self>) {
+        const INITIAL_DELAY_SECS: u64 = 5;
+        const RECHECK_INTERVAL_SECS: u64 = 15 * 60;
+        let (tick_tx, tick_rx) = async_channel::unbounded::<()>();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(INITIAL_DELAY_SECS));
+            if tick_tx.send_blocking(()).is_err() {
+                return;
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(RECHECK_INTERVAL_SECS));
+                if tick_tx.send_blocking(()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self::poll_update_once(ctx, tick_rx);
+    }
+
+    fn poll_update_once(ctx: &mut ViewContext<Self>, tick_rx: async_channel::Receiver<()>) {
+        let waiter = tick_rx.clone();
+        ctx.spawn(
+            async move {
+                let _ = waiter.recv().await;
+            },
+            move |view, _, ctx| {
+                let skip = {
+                    let shared = view
+                        .core
+                        .update()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    shared.busy
+                        || matches!(
+                            shared.phase,
+                            DesktopUpdatePhase::Downloading
+                                | DesktopUpdatePhase::Installing
+                                | DesktopUpdatePhase::ReadyToInstall
+                        )
+                };
+                if !skip {
+                    let settings = view.settings.clone();
+                    ctx.update_view(&settings, |settings, ctx| {
+                        settings.start_update_check(ctx);
+                    });
+                }
+                ctx.notify();
+                Self::poll_update_once(ctx, tick_rx);
+            },
+        );
+    }
+
+    fn update_banner(&self) -> Option<Box<dyn Element>> {
+        let shared = self
+            .core
+            .update()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if !shared.banner_visible() {
+            return None;
+        }
+        let version = shared
+            .ready_version()
+            .unwrap_or_else(|| wormhole_i18n::t("settings.about.unknown_version"));
+        let (title, detail) = match shared.phase {
+            DesktopUpdatePhase::ReadyToInstall => (
+                wormhole_i18n::t_args(
+                    "shell.update.ready_title",
+                    &[("version", version.as_str())],
+                ),
+                wormhole_i18n::t("shell.update.ready_detail"),
+            ),
+            DesktopUpdatePhase::Installing => (
+                wormhole_i18n::t("shell.update.installing_title"),
+                wormhole_i18n::t("shell.update.installing_detail"),
+            ),
+            DesktopUpdatePhase::Error => (
+                wormhole_i18n::t("shell.update.error_title"),
+                shared.error.unwrap_or_else(|| {
+                    wormhole_i18n::t("settings.about.unknown_version")
+                }),
+            ),
+            _ => return None,
+        };
+
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(
+            ui_text::body(title, self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        col.add_child(
+            Container::new(
+                ui_text::body(detail, self.font)
+                    .with_color(theme::muted())
+                    .finish(),
+            )
+            .with_margin_top(6.0)
+            .finish(),
+        );
+
+        let mut actions = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        if matches!(shared.phase, DesktopUpdatePhase::ReadyToInstall) {
+            actions.add_child(
+                EventHandler::new(
+                    Container::new(
+                        ui_text::body(
+                            wormhole_i18n::t("settings.about.restart_and_install"),
+                            self.font,
+                        )
+                        .with_color(theme::text())
+                        .finish(),
+                    )
+                    .with_uniform_padding(8.0)
+                    .with_background(theme::accent_bg(40))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+                    .finish(),
+                )
+                .with_automation_id("shell:update_install")
+                .with_automation_label(wormhole_i18n::t("settings.about.restart_and_install"))
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(AppShellAction::InstallDesktopUpdate);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            );
+            actions.add_child(
+                Container::new(
+                    EventHandler::new(
+                        ui_text::body(wormhole_i18n::t("shell.update.later"), self.font)
+                            .with_color(theme::placeholder())
+                            .finish(),
+                    )
+                    .with_automation_id("shell:update_later")
+                    .with_automation_label(wormhole_i18n::t("shell.update.later"))
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(AppShellAction::DismissUpdateBanner);
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+                )
+                .with_margin_left(10.0)
+                .finish(),
+            );
+        }
+        if matches!(shared.phase, DesktopUpdatePhase::Error) {
+            actions.add_child(
+                EventHandler::new(
+                    Container::new(
+                        ui_text::body(
+                            wormhole_i18n::t("settings.about.retry_download"),
+                            self.font,
+                        )
+                        .with_color(theme::text())
+                        .finish(),
+                    )
+                    .with_uniform_padding(8.0)
+                    .with_background(theme::accent_bg(40))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
+                    .finish(),
+                )
+                .with_automation_id("shell:update_retry")
+                .with_automation_label(wormhole_i18n::t("settings.about.retry_download"))
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(AppShellAction::RetryDesktopUpdateDownload);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            );
+            actions.add_child(
+                Container::new(
+                    EventHandler::new(
+                        ui_text::body(wormhole_i18n::t("shell.update.later"), self.font)
+                            .with_color(theme::placeholder())
+                            .finish(),
+                    )
+                    .with_automation_id("shell:update_dismiss_error")
+                    .with_automation_label(wormhole_i18n::t("shell.update.later"))
+                    .on_left_mouse_down(|ctx, _, _| {
+                        ctx.dispatch_typed_action(AppShellAction::DismissUpdateBanner);
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+                )
+                .with_margin_left(10.0)
+                .finish(),
+            );
+        }
+        col.add_child(
+            Container::new(actions.finish())
+                .with_margin_top(10.0)
+                .finish(),
+        );
+
+        Some(
+            EventHandler::new(
+                Container::new(col.finish())
+                    .with_background(theme::panel_elevated())
+                    .with_border(Border::all(1.0).with_border_fill(theme::border_bright()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.0)))
+                    .with_uniform_padding(14.0)
+                    .finish(),
+            )
+            .with_automation_id("shell:update_banner")
+            .with_automation_label(wormhole_i18n::t("shell.update.banner_label"))
+            .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+            .finish(),
+        )
     }
 
     fn sync_titlebar_height(ctx: &mut ViewContext<Self>) {
@@ -2130,6 +2349,18 @@ impl View for AppShellView {
         stack.add_child(ChildView::new(&self.login_modal).finish());
         stack.add_child(ChildView::new(&self.keyring_consent_modal).finish());
 
+        if let Some(banner) = self.update_banner() {
+            stack.add_positioned_child(
+                ConstrainedBox::new(banner).with_max_width(360.0).finish(),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(-16.0, -16.0),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::BottomRight,
+                    ChildAnchor::BottomRight,
+                ),
+            );
+        }
+
         if traffic_light_data
             .as_ref()
             .is_some_and(|data| data.side == window_chrome::TrafficLightSide::Right)
@@ -2238,6 +2469,31 @@ impl TypedActionView for AppShellView {
             AppShellAction::FocusRedeemCode => self.focus_redeem_code(ctx),
             AppShellAction::SubmitRedeem => self.submit_redeem(ctx),
             AppShellAction::OpenSettingsMemory => self.open_settings_memory(ctx),
+            AppShellAction::InstallDesktopUpdate => {
+                let settings = self.settings.clone();
+                ctx.update_view(&settings, |settings, ctx| {
+                    settings.start_update_install(ctx);
+                });
+                ctx.notify();
+            }
+            AppShellAction::DismissUpdateBanner => {
+                {
+                    let mut shared = self
+                        .core
+                        .update()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    shared.banner_dismissed = true;
+                }
+                ctx.notify();
+            }
+            AppShellAction::RetryDesktopUpdateDownload => {
+                let settings = self.settings.clone();
+                ctx.update_view(&settings, |settings, ctx| {
+                    settings.start_update_download(ctx);
+                });
+                ctx.notify();
+            }
         }
     }
 
@@ -2321,6 +2577,18 @@ impl TypedActionView for AppShellView {
             }
             AppShellAction::OpenSettingsMemory => AccessibilityContent::new_without_help(
                 "打开设置中的记忆页",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::InstallDesktopUpdate => AccessibilityContent::new_without_help(
+                "重启并安装更新",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::DismissUpdateBanner => AccessibilityContent::new_without_help(
+                "稍后安装更新",
+                WarpA11yRole::ButtonRole,
+            ),
+            AppShellAction::RetryDesktopUpdateDownload => AccessibilityContent::new_without_help(
+                "重试下载更新",
                 WarpA11yRole::ButtonRole,
             ),
         };

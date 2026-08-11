@@ -7,6 +7,7 @@ pub mod cluster_layout;
 pub mod cluster_topology_panel;
 pub mod core_handle;
 pub mod desktop_prefs;
+pub mod desktop_update;
 pub mod device_gate_view;
 pub mod devices_actions;
 pub mod devices_view;

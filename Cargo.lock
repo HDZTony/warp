@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "agent-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "compute-core",
  "serde",
@@ -604,7 +604,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "cluster-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -3475,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "compute-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "cluster-core",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "computer-use"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "core-graphics 0.24.0",
@@ -4905,7 +4905,7 @@ dependencies = [
 
 [[package]]
 name = "display-client"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4922,7 +4922,7 @@ dependencies = [
 
 [[package]]
 name = "display-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "byteorder",
  "thiserror 1.0.63",
@@ -4932,7 +4932,7 @@ dependencies = [
 
 [[package]]
 name = "display-server"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -9670,7 +9670,7 @@ dependencies = [
 
 [[package]]
 name = "marketplace-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "ed25519-dalek 2.2.0",
@@ -10022,6 +10022,12 @@ dependencies = [
  "bindgen 0.69.5",
  "cc",
 ]
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"
@@ -12916,7 +12922,7 @@ dependencies = [
 
 [[package]]
 name = "provider-protocol"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -15629,7 +15635,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "bytes",
@@ -20624,7 +20630,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-codex-proxy"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -20645,7 +20651,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-cron"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -20711,7 +20717,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-desktop-core"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "agent-core",
@@ -20742,6 +20748,7 @@ dependencies = [
  "keyring",
  "libc",
  "marketplace-core",
+ "minisign-verify",
  "notify 7.0.0",
  "provider-protocol",
  "qrcode",
@@ -20784,7 +20791,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-desktop-platform-windows"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "image",
@@ -20801,7 +20808,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-desktop-rdp"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "agent-core",
  "display-client",
@@ -20821,7 +20828,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-desktop-tray"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "gtk",
@@ -20832,7 +20839,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-fuse"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "fuser",
@@ -20846,7 +20853,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-i18n"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "once_cell",
  "serde",
@@ -20856,7 +20863,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-integrations"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -20873,7 +20880,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-memory"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -20894,7 +20901,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-model-routing"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -20903,7 +20910,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-native-ipc"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -20911,7 +20918,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-nautilus"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -20919,7 +20926,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-notifications"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -20933,7 +20940,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-tokenjuice"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -20946,7 +20953,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-web"
-version = "0.1.1"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",

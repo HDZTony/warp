@@ -58,10 +58,12 @@ use wormhole_desktop_core::sync_commands::{
     migrate_shared_storage, shared_storage_info, SharedStorageInfoDto,
 };
 use wormhole_desktop_core::{
-    check_desktop_update, clear_cloud_auth_token, cloud_auth_status, get_network_relay_status,
-    save_network_relay_config, DesktopUpdateStatusDto, NetworkRelayStatusDto,
-    SaveNetworkRelayParams,
+    check_desktop_update, clear_cloud_auth_token, cloud_auth_status, download_desktop_update,
+    get_network_relay_status, install_desktop_update, save_network_relay_config,
+    desktop_app_version, DesktopUpdateStatusDto, NetworkRelayStatusDto, SaveNetworkRelayParams,
 };
+
+use crate::ui::desktop_update::DesktopUpdatePhase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
@@ -424,6 +426,8 @@ pub enum SettingsEvent {
     OpenRdpHostControl,
     RestoreArchivedSession(String),
     DeleteArchivedSession(String),
+    /// Shared auto-update session changed (banner should refresh).
+    UpdateSessionChanged,
 }
 
 #[derive(Debug, Clone)]
@@ -477,7 +481,8 @@ pub enum SettingsAction {
     RefreshCache,
     ClearCache(String),
     CheckDesktopUpdate,
-    OpenUpdateDownload(String),
+    InstallDesktopUpdate,
+    RetryDesktopUpdateDownload,
     OpenRdpHostControl,
     CopyUserId,
     CopyDeviceId,
@@ -548,6 +553,8 @@ pub struct SettingsView {
     update_message: String,
     update_tone: StatusTone,
     update_busy: bool,
+    /// Compile-time app version (always shown on About; does not require a network check).
+    app_version: String,
     scroll: ClippedScrollStateHandle,
     /// Settings left-nav list (independent of the right-hand detail pane scroll).
     nav_scroll: ClippedScrollStateHandle,
@@ -657,6 +664,7 @@ impl SettingsView {
             update_message: String::new(),
             update_tone: StatusTone::Placeholder,
             update_busy: false,
+            app_version: desktop_app_version().to_string(),
             scroll: ClippedScrollStateHandle::new(),
             nav_scroll: ClippedScrollStateHandle::new(),
             toolbox,
@@ -696,6 +704,27 @@ impl SettingsView {
         self.search_focused = false;
         self.storage_focused = false;
         ctx.notify();
+    }
+
+    /// Refresh About update labels from the shared shell/settings update session.
+    pub fn refresh_update_ui(&mut self, ctx: &mut ViewContext<Self>) {
+        self.sync_update_ui_from_shared();
+        ctx.notify();
+    }
+
+    /// Start download using the shared update session (also used by the shell banner).
+    pub fn start_update_download(&mut self, ctx: &mut ViewContext<Self>) {
+        self.begin_update_download(ctx);
+    }
+
+    /// Confirm install using the shared update session (also used by the shell banner).
+    pub fn start_update_install(&mut self, ctx: &mut ViewContext<Self>) {
+        self.begin_update_install(ctx);
+    }
+
+    /// Kick a background check (+ auto-download) from the shell poller.
+    pub fn start_update_check(&mut self, ctx: &mut ViewContext<Self>) {
+        self.begin_update_check(ctx, true);
     }
 
     pub fn reload_security(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1216,50 +1245,267 @@ impl SettingsView {
         );
     }
 
-    fn check_desktop_update(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.update_busy {
-            return;
+    fn sync_update_ui_from_shared(&mut self) {
+        let shared = self
+            .core
+            .update()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.update_busy = shared.busy
+            || matches!(
+                shared.phase,
+                DesktopUpdatePhase::Checking
+                    | DesktopUpdatePhase::Downloading
+                    | DesktopUpdatePhase::Installing
+            );
+        self.update_status = shared.status.clone();
+        match shared.phase {
+            DesktopUpdatePhase::Idle => {}
+            DesktopUpdatePhase::Checking => {
+                self.update_message = wormhole_i18n::t("settings.about.checking_status");
+                self.update_tone = StatusTone::Placeholder;
+            }
+            DesktopUpdatePhase::Available => {
+                if let Some(status) = &shared.status {
+                    let latest = status
+                        .latest_version
+                        .clone()
+                        .unwrap_or_else(|| wormhole_i18n::t("settings.about.unknown_version"));
+                    self.update_message = wormhole_i18n::t_args(
+                        "settings.about.update_available",
+                        &[
+                            ("latest", latest.as_str()),
+                            ("current", status.current_version.as_str()),
+                        ],
+                    );
+                    self.update_tone = StatusTone::Success;
+                }
+            }
+            DesktopUpdatePhase::Downloading => {
+                self.update_message = wormhole_i18n::t("settings.about.downloading");
+                self.update_tone = StatusTone::Placeholder;
+            }
+            DesktopUpdatePhase::ReadyToInstall => {
+                let version = shared
+                    .ready_version()
+                    .unwrap_or_else(|| wormhole_i18n::t("settings.about.unknown_version"));
+                self.update_message = wormhole_i18n::t_args(
+                    "settings.about.ready_to_install",
+                    &[("version", version.as_str())],
+                );
+                self.update_tone = StatusTone::Success;
+            }
+            DesktopUpdatePhase::Installing => {
+                self.update_message = wormhole_i18n::t("settings.about.installing");
+                self.update_tone = StatusTone::Placeholder;
+            }
+            DesktopUpdatePhase::Error => {
+                let error = shared
+                    .error
+                    .unwrap_or_else(|| wormhole_i18n::t("settings.about.unknown_version"));
+                self.update_message = wormhole_i18n::t_args(
+                    "settings.about.update_failed",
+                    &[("error", error.as_str())],
+                );
+                self.update_tone = StatusTone::Danger;
+            }
         }
-        self.update_busy = true;
-        self.update_message = "正在检查更新…".into();
-        self.update_tone = StatusTone::Placeholder;
+        if shared.phase == DesktopUpdatePhase::Idle {
+            if let Some(status) = &shared.status {
+                if status.manifest_url.is_none() {
+                    self.update_message = wormhole_i18n::t("settings.about.no_manifest");
+                    self.update_tone = StatusTone::Placeholder;
+                } else if !status.update_available {
+                    self.update_message = wormhole_i18n::t_args(
+                        "settings.about.up_to_date",
+                        &[("version", status.current_version.as_str())],
+                    );
+                    self.update_tone = StatusTone::Success;
+                }
+            }
+        }
+    }
+
+    fn begin_update_check(&mut self, ctx: &mut ViewContext<Self>, auto_download: bool) {
+        {
+            let mut shared = self
+                .core
+                .update()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if shared.busy
+                || matches!(
+                    shared.phase,
+                    DesktopUpdatePhase::Downloading | DesktopUpdatePhase::Installing
+                )
+            {
+                return;
+            }
+            shared.busy = true;
+            shared.phase = DesktopUpdatePhase::Checking;
+            shared.error = None;
+        }
+        self.sync_update_ui_from_shared();
         ctx.notify();
+        ctx.emit(SettingsEvent::UpdateSessionChanged);
         let core = self.core.clone();
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
                 check_desktop_update(&runtime).await
             },
-            |view, output, ctx| {
-                view.update_busy = false;
-                match output {
+            move |view, output, ctx| {
+                let should_download = match output {
                     Ok(status) => {
-                        view.update_status = Some(status.clone());
+                        let mut shared = view
+                            .core
+                            .update()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        shared.busy = false;
+                        shared.status = Some(status.clone());
                         if status.manifest_url.is_none() {
-                            view.update_message =
-                                "未配置更新源（desktop.config.json 或 WORMHOLE_UPDATER_MANIFEST_URL）。"
-                                    .into();
-                            view.update_tone = StatusTone::Placeholder;
+                            shared.phase = DesktopUpdatePhase::Idle;
+                            false
                         } else if status.update_available {
-                            let latest = status
-                                .latest_version
-                                .as_deref()
-                                .unwrap_or("未知版本");
-                            view.update_message =
-                                format!("发现新版本 {latest}（当前 {}）", status.current_version);
-                            view.update_tone = StatusTone::Success;
+                            shared.phase = DesktopUpdatePhase::Available;
+                            auto_download
                         } else {
-                            view.update_message =
-                                format!("当前版本 {} 已是最新。", status.current_version);
-                            view.update_tone = StatusTone::Success;
+                            shared.phase = DesktopUpdatePhase::Idle;
+                            false
                         }
                     }
                     Err(error) => {
-                        view.update_message = format!("检查更新失败: {error}");
-                        view.update_tone = StatusTone::Danger;
+                        let mut shared = view
+                            .core
+                            .update()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        shared.busy = false;
+                        shared.phase = DesktopUpdatePhase::Error;
+                        shared.error = Some(error);
+                        false
+                    }
+                };
+                view.sync_update_ui_from_shared();
+                ctx.notify();
+                ctx.emit(SettingsEvent::UpdateSessionChanged);
+                if should_download {
+                    view.begin_update_download(ctx);
+                }
+            },
+        );
+    }
+
+    fn check_desktop_update(&mut self, ctx: &mut ViewContext<Self>) {
+        self.begin_update_check(ctx, true);
+    }
+
+    fn begin_update_download(&mut self, ctx: &mut ViewContext<Self>) {
+        {
+            let mut shared = self
+                .core
+                .update()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if shared.busy
+                || matches!(
+                    shared.phase,
+                    DesktopUpdatePhase::Downloading | DesktopUpdatePhase::Installing
+                )
+            {
+                return;
+            }
+            shared.busy = true;
+            shared.phase = DesktopUpdatePhase::Downloading;
+            shared.error = None;
+            shared.banner_dismissed = false;
+        }
+        self.sync_update_ui_from_shared();
+        ctx.notify();
+        ctx.emit(SettingsEvent::UpdateSessionChanged);
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                download_desktop_update(&runtime).await
+            },
+            |view, output, ctx| {
+                {
+                    let mut shared = view
+                        .core
+                        .update()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    shared.busy = false;
+                    match output {
+                        Ok(download) => {
+                            shared.download = Some(download.clone());
+                            if download.ready {
+                                shared.phase = DesktopUpdatePhase::ReadyToInstall;
+                                shared.error = None;
+                            } else {
+                                shared.phase = DesktopUpdatePhase::Idle;
+                            }
+                        }
+                        Err(error) => {
+                            shared.phase = DesktopUpdatePhase::Error;
+                            shared.error = Some(error);
+                        }
                     }
                 }
+                view.sync_update_ui_from_shared();
                 ctx.notify();
+                ctx.emit(SettingsEvent::UpdateSessionChanged);
+            },
+        );
+    }
+
+    fn begin_update_install(&mut self, ctx: &mut ViewContext<Self>) {
+        {
+            let mut shared = self
+                .core
+                .update()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !matches!(shared.phase, DesktopUpdatePhase::ReadyToInstall) {
+                return;
+            }
+            shared.busy = true;
+            shared.phase = DesktopUpdatePhase::Installing;
+            shared.error = None;
+        }
+        self.sync_update_ui_from_shared();
+        ctx.notify();
+        ctx.emit(SettingsEvent::UpdateSessionChanged);
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                install_desktop_update(&runtime).await
+            },
+            |view, output, ctx| {
+                match output {
+                    Ok(()) => {
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        {
+                            let mut shared = view
+                                .core
+                                .update()
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            shared.busy = false;
+                            shared.phase = DesktopUpdatePhase::Error;
+                            shared.error = Some(error);
+                        }
+                        view.sync_update_ui_from_shared();
+                        ctx.notify();
+                        ctx.emit(SettingsEvent::UpdateSessionChanged);
+                    }
+                }
             },
         );
     }
@@ -2310,36 +2556,61 @@ impl SettingsView {
 
     fn about_block(&self) -> Box<dyn Element> {
         let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        col.add_child(section_hint(
-            "检查 Wormhole 桌面版更新；与 command bridge 的 check_desktop_update 命令一致。",
-            self.font,
-        ));
+        let current = self
+            .update_status
+            .as_ref()
+            .map(|status| status.current_version.as_str())
+            .unwrap_or(self.app_version.as_str());
+        let version_label = wormhole_i18n::t_args(
+            "settings.about.current_version",
+            &[("version", current)],
+        );
+        col.add_child(
+            EventHandler::new(
+                ui_text::section_title(version_label.clone(), self.font)
+                    .with_color(theme::text())
+                    .finish(),
+            )
+            .with_automation_id("settings:about_version")
+            .with_automation_label(version_label)
+            .on_left_mouse_down(|_, _, _| DispatchEventResult::PropagateToParent)
+            .finish(),
+        );
+        col.add_child(
+            Container::new(section_hint(
+                wormhole_i18n::t("settings.about.update_hint"),
+                self.font,
+            ))
+            .with_margin_top(8.0)
+            .finish(),
+        );
         if let Some(status) = &self.update_status {
-            col.add_child(
-                ui_text::mono(
-                    format!("当前版本: {}", status.current_version),
-                    self.font,
-                )
-                .with_color(theme::muted())
-                .finish(),
-            );
             if let Some(latest) = status.latest_version.as_deref() {
                 col.add_child(
                     Container::new(
-                        ui_text::mono(format!("最新版本: {latest}"), self.font)
-                            .with_color(theme::muted())
-                            .finish(),
+                        ui_text::mono(
+                            wormhole_i18n::t_args(
+                                "settings.about.latest_version",
+                                &[("version", latest)],
+                            ),
+                            self.font,
+                        )
+                        .with_color(theme::muted())
+                        .finish(),
                     )
-                    .with_margin_top(6.0)
+                    .with_margin_top(8.0)
                     .finish(),
                 );
             }
             if let Some(url) = status.manifest_url.as_deref() {
                 col.add_child(
                     Container::new(
-                        ui_text::mono(format!("更新源: {url}"), self.font)
-                            .with_color(theme::placeholder())
-                            .finish(),
+                        ui_text::mono(
+                            wormhole_i18n::t_args("settings.about.manifest_url", &[("url", url)]),
+                            self.font,
+                        )
+                        .with_color(theme::placeholder())
+                        .finish(),
                     )
                     .with_margin_top(6.0)
                     .finish(),
@@ -2364,25 +2635,42 @@ impl SettingsView {
                 self.update_tone,
             ));
         }
+        let phase = self
+            .core
+            .update()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .phase;
+        let check_label = if self.update_busy {
+            match phase {
+                DesktopUpdatePhase::Downloading => wormhole_i18n::t("settings.about.downloading"),
+                DesktopUpdatePhase::Installing => wormhole_i18n::t("settings.about.installing"),
+                _ => wormhole_i18n::t("settings.about.checking"),
+            }
+        } else {
+            wormhole_i18n::t("settings.about.check_update")
+        };
         let mut actions = vec![self.stateful_action_button(
-            if self.update_busy {
-                "正在检查…"
-            } else {
-                "检查更新"
-            },
+            check_label.as_str(),
             SettingsAction::CheckDesktopUpdate,
             self.update_busy,
             true,
         )];
-        if let Some(url) = self
-            .update_status
-            .as_ref()
-            .and_then(|status| status.download_url.clone())
-        {
+        if matches!(phase, DesktopUpdatePhase::ReadyToInstall) {
+            let install_label = wormhole_i18n::t("settings.about.restart_and_install");
             actions.push(self.stateful_action_button(
-                "打开下载",
-                SettingsAction::OpenUpdateDownload(url),
+                install_label.as_str(),
+                SettingsAction::InstallDesktopUpdate,
+                self.update_busy,
                 false,
+            ));
+        }
+        if matches!(phase, DesktopUpdatePhase::Error) {
+            let retry_label = wormhole_i18n::t("settings.about.retry_download");
+            actions.push(self.stateful_action_button(
+                retry_label.as_str(),
+                SettingsAction::RetryDesktopUpdateDownload,
+                self.update_busy,
                 false,
             ));
         }
@@ -3423,6 +3711,7 @@ impl TypedActionView for SettingsView {
                     SettingsPage::Archive => self.archive_expanded = true,
                     SettingsPage::Connections => self.refresh_connections(ctx),
                     SettingsPage::Account => self.refresh_account(ctx),
+                    SettingsPage::About => self.check_desktop_update(ctx),
                     SettingsPage::Security => {
                         let security = self.security.clone();
                         ctx.update_view(&security, |view, ctx| {
@@ -4338,19 +4627,8 @@ impl TypedActionView for SettingsView {
                 );
             }
             SettingsAction::CheckDesktopUpdate => self.check_desktop_update(ctx),
-            SettingsAction::OpenUpdateDownload(url) => {
-                match open_external_url(url) {
-                    Ok(()) => {
-                        self.update_message = "已在系统浏览器打开下载链接。".into();
-                        self.update_tone = StatusTone::Success;
-                    }
-                    Err(error) => {
-                        self.update_message = format!("打开下载链接失败: {error}");
-                        self.update_tone = StatusTone::Danger;
-                    }
-                }
-                ctx.notify();
-            }
+            SettingsAction::InstallDesktopUpdate => self.begin_update_install(ctx),
+            SettingsAction::RetryDesktopUpdateDownload => self.begin_update_download(ctx),
             SettingsAction::SetUiLanguage(language) => {
                 let data_dir = self.core.data_dir();
                 if let Err(err) = crate::ui::desktop_prefs::set_ui_language(&data_dir, language) {
