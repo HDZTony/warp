@@ -58,12 +58,13 @@ use wormhole_desktop_core::sync_commands::{
     migrate_shared_storage, shared_storage_info, SharedStorageInfoDto,
 };
 use wormhole_desktop_core::{
-    check_desktop_update, clear_cloud_auth_token, cloud_auth_status, download_desktop_update,
-    get_network_relay_status, install_desktop_update, save_network_relay_config,
-    desktop_app_version, DesktopUpdateStatusDto, NetworkRelayStatusDto, SaveNetworkRelayParams,
+    check_desktop_update, clear_cloud_auth_token, cloud_auth_status, desktop_app_version,
+    download_desktop_update, get_desktop_update_progress, get_network_relay_status,
+    install_desktop_update, save_network_relay_config, DesktopUpdateStatusDto,
+    NetworkRelayStatusDto, SaveNetworkRelayParams,
 };
 
-use crate::ui::desktop_update::DesktopUpdatePhase;
+use crate::ui::desktop_update::{download_progress_detail, DesktopUpdatePhase};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
@@ -1283,7 +1284,7 @@ impl SettingsView {
                 }
             }
             DesktopUpdatePhase::Downloading => {
-                self.update_message = wormhole_i18n::t("settings.about.downloading");
+                self.update_message = download_progress_detail(shared.progress.as_ref());
                 self.update_tone = StatusTone::Placeholder;
             }
             DesktopUpdatePhase::ReadyToInstall => {
@@ -1419,12 +1420,14 @@ impl SettingsView {
             }
             shared.busy = true;
             shared.phase = DesktopUpdatePhase::Downloading;
+            shared.progress = None;
             shared.error = None;
             shared.banner_dismissed = false;
         }
         self.sync_update_ui_from_shared();
         ctx.notify();
         ctx.emit(SettingsEvent::UpdateSessionChanged);
+        self.poll_download_progress_once(ctx);
         let core = self.core.clone();
         ctx.spawn(
             async move {
@@ -1447,17 +1450,49 @@ impl SettingsView {
                                 shared.error = None;
                             } else {
                                 shared.phase = DesktopUpdatePhase::Idle;
+                                shared.progress = None;
                             }
                         }
                         Err(error) => {
                             shared.phase = DesktopUpdatePhase::Error;
                             shared.error = Some(error);
+                            shared.progress = None;
                         }
                     }
                 }
                 view.sync_update_ui_from_shared();
                 ctx.notify();
                 ctx.emit(SettingsEvent::UpdateSessionChanged);
+            },
+        );
+    }
+
+    fn poll_download_progress_once(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            },
+            |view, _, ctx| {
+                let still_downloading = {
+                    let mut shared = view
+                        .core
+                        .update()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if shared.phase != DesktopUpdatePhase::Downloading {
+                        false
+                    } else {
+                        let runtime = view.core.runtime();
+                        shared.progress = get_desktop_update_progress(&runtime);
+                        true
+                    }
+                };
+                if still_downloading {
+                    view.sync_update_ui_from_shared();
+                    ctx.notify();
+                    ctx.emit(SettingsEvent::UpdateSessionChanged);
+                    view.poll_download_progress_once(ctx);
+                }
             },
         );
     }

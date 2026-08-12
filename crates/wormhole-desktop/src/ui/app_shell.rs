@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ClippedScrollable,
-    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, Empty,
-    EventHandler, Expanded, Fill, Flex, Hoverable, MainAxisSize, MouseStateHandle,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, ScrollbarWidth,
-    Shrinkable, Stack,
+    Align, AutomationTarget, Border, ChildAnchor, ChildView, ClippedScrollStateHandle,
+    ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, Empty, EventHandler, Expanded, Fill, Flex, Hoverable, MainAxisSize,
+    MinSize, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
+    Radius, ScrollbarWidth, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{
@@ -24,7 +24,7 @@ use crate::ui::chat::{ChatShellEvent, ChatShellView};
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::desktop_prefs::{self, redeem_history_from_ledger, RedeemHistoryEntry};
-use crate::ui::desktop_update::DesktopUpdatePhase;
+use crate::ui::desktop_update::{download_progress_detail, DesktopUpdatePhase};
 use crate::ui::devices_view::{DevicesEvent, DevicesView};
 use crate::ui::display_view::DisplayView;
 use crate::ui::hud_avatar_panel::{
@@ -584,6 +584,60 @@ impl AppShellView {
         );
     }
 
+    fn update_progress_bar(fraction: Option<f32>) -> Box<dyn Element> {
+        // MinSize inherits Stretch column min-width so the track is visible and
+        // registers non-zero bounds for `#shell:update_progress` in sim-use.
+        let bar = match fraction.filter(|f| f.is_finite()) {
+            Some(fraction) => {
+                let f = fraction.clamp(0.0, 1.0);
+                let fill_w = if f <= 0.0 { 0.001 } else { f };
+                let rest_w = (1.0 - f).max(0.001);
+                let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+                row.add_child(
+                    Expanded::new(
+                        fill_w,
+                        Container::new(
+                            ConstrainedBox::new(Empty::new().finish())
+                                .with_height(6.0)
+                                .finish(),
+                        )
+                        .with_background(theme::accent())
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(3.0)))
+                        .finish(),
+                    )
+                    .finish(),
+                );
+                row.add_child(
+                    Expanded::new(
+                        rest_w,
+                        Container::new(
+                            ConstrainedBox::new(Empty::new().finish())
+                                .with_height(6.0)
+                                .finish(),
+                        )
+                        .with_background(theme::border())
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(3.0)))
+                        .finish(),
+                    )
+                    .finish(),
+                );
+                row.finish()
+            }
+            None => Container::new(
+                ConstrainedBox::new(Empty::new().finish())
+                    .with_height(6.0)
+                    .finish(),
+            )
+            .with_background(theme::border())
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(3.0)))
+            .finish(),
+        };
+        AutomationTarget::new(MinSize::new(bar).finish())
+            .with_id("shell:update_progress")
+            .with_label(wormhole_i18n::t("shell.update.progress_label"))
+            .finish()
+    }
+
     fn update_banner(&self) -> Option<Box<dyn Element>> {
         let shared = self
             .core
@@ -598,6 +652,10 @@ impl AppShellView {
             .ready_version()
             .unwrap_or_else(|| wormhole_i18n::t("settings.about.unknown_version"));
         let (title, detail) = match shared.phase {
+            DesktopUpdatePhase::Downloading => (
+                wormhole_i18n::t("shell.update.downloading_title"),
+                download_progress_detail(shared.progress.as_ref()),
+            ),
             DesktopUpdatePhase::ReadyToInstall => (
                 wormhole_i18n::t_args(
                     "shell.update.ready_title",
@@ -633,6 +691,14 @@ impl AppShellView {
             .with_margin_top(6.0)
             .finish(),
         );
+        if matches!(shared.phase, DesktopUpdatePhase::Downloading) {
+            let fraction = shared.progress.as_ref().and_then(|p| p.fraction);
+            col.add_child(
+                Container::new(Self::update_progress_bar(fraction))
+                    .with_margin_top(10.0)
+                    .finish(),
+            );
+        }
 
         let mut actions = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         if matches!(shared.phase, DesktopUpdatePhase::ReadyToInstall) {
@@ -721,11 +787,16 @@ impl AppShellView {
                 .finish(),
             );
         }
-        col.add_child(
-            Container::new(actions.finish())
-                .with_margin_top(10.0)
-                .finish(),
-        );
+        if matches!(
+            shared.phase,
+            DesktopUpdatePhase::ReadyToInstall | DesktopUpdatePhase::Error
+        ) {
+            col.add_child(
+                Container::new(actions.finish())
+                    .with_margin_top(10.0)
+                    .finish(),
+            );
+        }
 
         Some(
             EventHandler::new(
