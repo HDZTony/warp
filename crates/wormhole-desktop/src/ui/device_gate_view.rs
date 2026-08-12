@@ -11,8 +11,9 @@ use crate::ui::panel_primitives::{
 };
 use crate::ui::theme;
 use wormhole_desktop_core::cluster_commands::{
-    cluster_status, cluster_status_hud, schedule_active_cluster_member_update_if_ready,
-    schedule_cluster_control_plane_reconcile, ClusterStatusDto,
+    cluster_status, cluster_status_hud, cluster_status_manual_refresh,
+    schedule_active_cluster_member_update_if_ready, schedule_cluster_control_plane_reconcile,
+    ClusterStatusDto,
 };
 use wormhole_desktop_core::device_identity::{ensure_device_ready, is_device_ready};
 use wormhole_desktop_core::state::AppState;
@@ -78,6 +79,15 @@ pub async fn fetch_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, 
     schedule_active_cluster_member_update_if_ready(state.clone());
     schedule_cluster_control_plane_reconcile(state);
     cluster_status_hud(state).await
+}
+
+/// Toolbar refresh: await directory GET + force heartbeat (skips full membership reconcile).
+pub async fn refresh_cluster_for_ui(state: &AppState) -> Result<ClusterStatusDto, String> {
+    kick_device_bootstrap(state).await;
+    if !is_device_ready(state).await {
+        return cluster_status(state).await;
+    }
+    cluster_status_manual_refresh(state).await
 }
 
 pub async fn fetch_device_gate_status(state: &AppState) -> DeviceGateStatus {

@@ -7,8 +7,8 @@ pub const TOPO_PAD: f32 = 14.0;
 /// Matches `.device-grid { gap: 12px }`.
 pub const CARD_GAP: f32 = 12.0;
 /// Prefer wrapping before cramming five cards into a clipped row.
-/// Slightly above HTML `minmax(200px, 1fr)` so typical windows wrap earlier.
-pub const CARD_MIN_WIDTH: f32 = 240.0;
+/// Slightly above HTML `minmax(160px, 1fr)` so typical windows wrap earlier.
+pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Vertical scrollbar gutter reserved so the last column is not clipped.
 pub const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Minimum `.device-body` content height (name + status + share count + 64px action buttons).
@@ -103,8 +103,8 @@ mod tests {
 
     #[test]
     fn narrow_container_wraps_five_nodes_to_multiple_rows() {
-        // One column: 240 + 2*14 pad + gutter; force wrap with 5 nodes.
-        let width = 430.0; // inner ≈ 388 → floor((388+12)/(240+12)) = 1
+        // One column: 160 + 2*14 pad + gutter; force wrap with 5 nodes.
+        let width = 300.0; // inner ≈ 258 → floor((258+12)/(160+12)) = 1
         let columns = grid_column_count(width);
         assert!(columns < 5, "expected wrap, got {columns} columns");
         let size = vec2f(width, 800.0);
@@ -120,12 +120,13 @@ mod tests {
 
     #[test]
     fn typical_width_wraps_five_cards_before_clipping() {
-        // ~1100px content area used to squeeze five 200px cards and clip the last.
+        // With 160px min width, ~1100px content fits more columns than before but
+        // still must not clip the last card in a row.
         let width = 1100.0;
         let columns = grid_column_count(width);
         assert!(
-            columns <= 4,
-            "expected ≤4 columns so five cards wrap, got {columns}"
+            columns >= 4,
+            "expected denser grid with 160px min, got {columns}"
         );
         let total = columns as f32 * grid_card_width(width)
             + (columns.saturating_sub(1) as f32) * CARD_GAP

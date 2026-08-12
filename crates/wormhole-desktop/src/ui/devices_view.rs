@@ -17,7 +17,7 @@ use crate::ui::cluster_topology_panel::{
     device_matches_query, node_display_label, node_remote_desktop_available, ClusterTopologyPanel,
 };
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::device_gate_view::fetch_cluster_for_ui;
+use crate::ui::device_gate_view::{fetch_cluster_for_ui, refresh_cluster_for_ui};
 use crate::ui::devices_actions::DevicesAction;
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
@@ -528,7 +528,7 @@ impl DevicesView {
         ctx.spawn(
             async move {
                 let state = core.runtime().state.clone();
-                let status = fetch_cluster_for_ui(&state).await;
+                let status = refresh_cluster_for_ui(&state).await;
                 let remarks = load_device_remarks(&state.data_dir)
                     .await
                     .unwrap_or_default();
