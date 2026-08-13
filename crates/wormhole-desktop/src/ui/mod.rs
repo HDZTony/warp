@@ -22,6 +22,7 @@ pub mod activity_view;
 pub mod subconscious_view;
 pub mod tokenjuice_view;
 pub mod web_search_view;
+pub mod file_search_view;
 pub mod security_view;
 pub mod keyring_consent_modal;
 pub mod cron_view;

@@ -20,6 +20,7 @@ use crate::ui::activity_view::ActivityView;
 use crate::ui::subconscious_view::SubconsciousView;
 use crate::ui::tokenjuice_view::TokenJuiceView;
 use crate::ui::web_search_view::WebSearchView;
+use crate::ui::file_search_view::FileSearchView;
 use crate::ui::security_view::SecurityView;
 use crate::ui::cron_view::CronView;
 use crate::ui::panel_primitives::{section_hint, status_line, tab_content_fill, StatusTone};
@@ -78,6 +79,7 @@ pub enum SettingsPage {
     Subconscious,
     TokenJuice,
     WebSearch,
+    FileSearch,
     Cron,
     Cluster,
     Relay,
@@ -150,6 +152,7 @@ impl SettingsPage {
             SettingsPage::Subconscious,
             SettingsPage::TokenJuice,
             SettingsPage::WebSearch,
+            SettingsPage::FileSearch,
             SettingsPage::Cron,
             SettingsPage::Cluster,
             SettingsPage::Relay,
@@ -177,6 +180,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "settings:nav_subconscious",
             SettingsPage::TokenJuice => "settings:nav_tokenjuice",
             SettingsPage::WebSearch => "settings:nav_web_search",
+            SettingsPage::FileSearch => "settings:nav_file_search",
             SettingsPage::Cron => "settings:nav_cron",
             SettingsPage::Cluster => "settings:nav_cluster",
             SettingsPage::Relay => "settings:nav_relay",
@@ -205,6 +209,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "settings.page.subconscious",
             SettingsPage::TokenJuice => "settings.page.tokenjuice",
             SettingsPage::WebSearch => "settings.page.web_search",
+            SettingsPage::FileSearch => "settings.page.file_search",
             SettingsPage::Cron => "settings.page.cron",
             SettingsPage::Cluster => "settings.page.cluster",
             SettingsPage::Relay => "settings.page.relay",
@@ -243,6 +248,9 @@ impl SettingsPage {
             SettingsPage::WebSearch => {
                 ("WEB SEARCH", wormhole_i18n::t("settings.eyebrow.web_search"))
             }
+            SettingsPage::FileSearch => {
+                ("FILE SEARCH", wormhole_i18n::t("settings.eyebrow.file_search"))
+            }
             SettingsPage::Cron => ("CRON", wormhole_i18n::t("settings.eyebrow.cron")),
             SettingsPage::Cluster => ("CLUSTER", wormhole_i18n::t("settings.eyebrow.cluster")),
             SettingsPage::Relay => ("P2P", wormhole_i18n::t("settings.eyebrow.relay")),
@@ -272,6 +280,7 @@ impl SettingsPage {
             | SettingsPage::Subconscious
             | SettingsPage::TokenJuice
             | SettingsPage::WebSearch
+            | SettingsPage::FileSearch
             | SettingsPage::Cron => "settings.nav.group.general",
             SettingsPage::Cluster | SettingsPage::Relay => "settings.nav.group.cluster",
             SettingsPage::SharedPath => "settings.nav.group.data",
@@ -299,6 +308,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "share-sync.svg",
             SettingsPage::TokenJuice => "share-sync.svg",
             SettingsPage::WebSearch => "tab-toolbox.svg",
+            SettingsPage::FileSearch => "share-file.svg",
             SettingsPage::Cron => "share-sync.svg",
             SettingsPage::Cluster => "tab-devices.svg",
             SettingsPage::Relay => "cluster-refresh.svg",
@@ -354,6 +364,11 @@ impl SettingsPage {
         if self == SettingsPage::WebSearch {
             haystack.push_str(
                 " web search brave exa byok fetch scraper 网页 搜索 agent-web-search",
+            );
+        }
+        if self == SettingsPage::FileSearch {
+            haystack.push_str(
+                " file search vector store openai knowledge base rag 文件 检索 知识库 agent-file-search",
             );
         }
         if self == SettingsPage::Cron {
@@ -568,6 +583,7 @@ pub struct SettingsView {
     subconscious: ViewHandle<SubconsciousView>,
     tokenjuice: ViewHandle<TokenJuiceView>,
     web_search: ViewHandle<WebSearchView>,
+    file_search: ViewHandle<FileSearchView>,
     security: ViewHandle<SecurityView>,
     cron: ViewHandle<CronView>,
     theme_studio: crate::ui::theme_studio::ThemeStudioState,
@@ -601,6 +617,8 @@ impl SettingsView {
             ctx.add_typed_action_view(|ctx| TokenJuiceView::new(ctx, core.clone()));
         let web_search =
             ctx.add_typed_action_view(|ctx| WebSearchView::new(ctx, core.clone()));
+        let file_search =
+            ctx.add_typed_action_view(|ctx| FileSearchView::new(ctx, core.clone()));
         let security =
             ctx.add_typed_action_view(|ctx| SecurityView::new(ctx, core.clone()));
         let cron = ctx.add_typed_action_view(|ctx| CronView::new(ctx, core.clone()));
@@ -677,6 +695,7 @@ impl SettingsView {
             subconscious,
             tokenjuice,
             web_search,
+            file_search,
             security,
             cron,
             theme_studio: crate::ui::theme_studio::ThemeStudioState::default(),
@@ -1863,6 +1882,7 @@ impl SettingsView {
             }
             SettingsPage::TokenJuice => col.add_child(ChildView::new(&self.tokenjuice).finish()),
             SettingsPage::WebSearch => col.add_child(ChildView::new(&self.web_search).finish()),
+            SettingsPage::FileSearch => col.add_child(ChildView::new(&self.file_search).finish()),
             SettingsPage::Cron => col.add_child(ChildView::new(&self.cron).finish()),
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
             SettingsPage::Relay => col.add_child(self.relay_block()),
@@ -4799,6 +4819,8 @@ mod tests {
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert!(SettingsPage::WebSearch.matches_query("brave"));
         assert!(SettingsPage::WebSearch.matches_query("exa"));
+        assert!(SettingsPage::FileSearch.matches_query("vector"));
+        assert!(SettingsPage::FileSearch.matches_query("文件"));
         assert!(SettingsPage::Activity.matches_query("alerts"));
         assert!(SettingsPage::Activity.matches_query("通知"));
         assert!(SettingsPage::Cron.matches_query("cron"));
@@ -4818,6 +4840,7 @@ mod tests {
                 SettingsPage::Subconscious,
                 SettingsPage::TokenJuice,
                 SettingsPage::WebSearch,
+                SettingsPage::FileSearch,
                 SettingsPage::Cron,
             ]
         );
