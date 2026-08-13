@@ -41,6 +41,8 @@ pub enum ChatShellAction {
     DismissOverlays,
     VoiceCallAccept,
     VoiceCallDecline,
+    SetDropHover(bool),
+    DropFiles(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +70,7 @@ pub struct ChatShellView {
     contacts: ViewHandle<ContactsPanelView>,
     channel_create: ViewHandle<ChannelCreatePanelView>,
     calls: ViewHandle<CallsPanelView>,
+    drop_hover: bool,
 }
 
 impl ChatShellView {
@@ -127,6 +130,7 @@ impl ChatShellView {
         let selected_header = header.clone();
         let selected_thread = thread.clone();
         let selected_sidebar = sidebar.clone();
+        let selected_compose = compose.clone();
         ctx.subscribe_to_view(&sidebar, move |_, _, event, ctx| match event {
             ChatSidebarEvent::Selected(_) => {
                 ctx.update_view(&selected_header, |header, ctx| {
@@ -134,6 +138,9 @@ impl ChatShellView {
                 });
                 ctx.update_view(&selected_thread, |thread, ctx| {
                     thread.selection_changed(ctx);
+                });
+                ctx.update_view(&selected_compose, |compose, ctx| {
+                    compose.selection_changed(ctx);
                 });
                 ctx.notify();
             }
@@ -145,6 +152,7 @@ impl ChatShellView {
         });
         let open_header = header.clone();
         let open_thread = thread.clone();
+        let open_compose = compose.clone();
         ctx.subscribe_to_view(&contacts, move |view, _, event, ctx| match event {
             ContactsPanelEvent::OpenConversation(conv_id) => {
                 if let Ok(mut guard) = view.selection.lock() {
@@ -155,6 +163,7 @@ impl ChatShellView {
                 }
                 ctx.update_view(&open_header, |header, ctx| header.selection_changed(ctx));
                 ctx.update_view(&open_thread, |thread, ctx| thread.selection_changed(ctx));
+                ctx.update_view(&open_compose, |compose, ctx| compose.selection_changed(ctx));
                 ctx.update_view(&selected_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
                 ctx.notify();
             }
@@ -163,6 +172,7 @@ impl ChatShellView {
         let channel_header = header.clone();
         let channel_thread = thread.clone();
         let channel_sidebar = sidebar.clone();
+        let channel_compose = compose.clone();
         ctx.subscribe_to_view(&channel_create, move |view, _, event, ctx| match event {
             ChannelCreateEvent::Created(conv_id) => {
                 if let Ok(mut guard) = view.selection.lock() {
@@ -173,6 +183,7 @@ impl ChatShellView {
                 }
                 ctx.update_view(&channel_header, |header, ctx| header.selection_changed(ctx));
                 ctx.update_view(&channel_thread, |thread, ctx| thread.selection_changed(ctx));
+                ctx.update_view(&channel_compose, |compose, ctx| compose.selection_changed(ctx));
                 ctx.update_view(&channel_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
                 ctx.notify();
             }
@@ -181,6 +192,7 @@ impl ChatShellView {
         let call_header = header.clone();
         let call_thread = thread.clone();
         let call_sidebar = sidebar.clone();
+        let call_compose = compose.clone();
         ctx.subscribe_to_view(&calls, move |view, _, event, ctx| match event {
             CallsPanelEvent::OpenConversation(conv_id) => {
                 if let Ok(mut guard) = view.selection.lock() {
@@ -191,6 +203,7 @@ impl ChatShellView {
                 }
                 ctx.update_view(&call_header, |header, ctx| header.selection_changed(ctx));
                 ctx.update_view(&call_thread, |thread, ctx| thread.selection_changed(ctx));
+                ctx.update_view(&call_compose, |compose, ctx| compose.selection_changed(ctx));
                 ctx.update_view(&call_sidebar, |sidebar, ctx| sidebar.refresh(ctx));
                 ctx.notify();
             }
@@ -231,6 +244,7 @@ impl ChatShellView {
             contacts,
             channel_create,
             calls,
+            drop_hover: false,
         };
         view.poll_gate(ctx);
         view.start_chat_event_listener(ctx);
@@ -449,6 +463,21 @@ impl TypedActionView for ChatShellView {
             ChatShellAction::VoiceCallDecline => {
                 self.spawn_voice_decline(ctx);
             }
+            ChatShellAction::SetDropHover(hover) => {
+                if self.drop_hover != *hover {
+                    self.drop_hover = *hover;
+                    ctx.notify();
+                }
+            }
+            ChatShellAction::DropFiles(paths) => {
+                self.drop_hover = false;
+                let compose = self.compose.clone();
+                let paths = paths.clone();
+                ctx.update_view(&compose, |compose, ctx| {
+                    compose.stage_dropped_paths(paths, ctx);
+                });
+                ctx.notify();
+            }
         }
     }
 }
@@ -487,10 +516,29 @@ impl ChatShellView {
             .with_child(
                 Expanded::new(
                     1.0,
-                    Container::new(main_col.finish())
-                        .with_background(theme::canvas())
-                        .with_border(Border::left(1.0).with_border_fill(theme::border()))
-                        .finish(),
+                    EventHandler::new(
+                        Container::new(main_col.finish())
+                            .with_background(theme::canvas())
+                            .with_border(if self.drop_hover {
+                                Border::all(2.0).with_border_fill(theme::accent_cool())
+                            } else {
+                                Border::left(1.0).with_border_fill(theme::border())
+                            })
+                            .finish(),
+                    )
+                    .on_drag_files(|ctx, _, _| {
+                        ctx.dispatch_typed_action(ChatShellAction::SetDropHover(true));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .on_drag_file_exit(|ctx, _, _| {
+                        ctx.dispatch_typed_action(ChatShellAction::SetDropHover(false));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .on_drag_and_drop_files(|ctx, _, _, paths| {
+                        ctx.dispatch_typed_action(ChatShellAction::DropFiles(paths.to_vec()));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
                 )
                 .finish(),
             );

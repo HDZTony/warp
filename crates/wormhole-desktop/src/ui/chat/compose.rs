@@ -1,19 +1,34 @@
+use std::path::PathBuf;
+
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
     AutomationTarget, Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex, MainAxisAlignment,
+    CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Flex, Image, MainAxisAlignment,
     MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
     Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AccessibilityData, AppContext, Element, Entity, TypedActionView, View, ViewContext};
+use warpui_core::assets::asset_cache::AssetSource;
+use warpui_core::image_cache::CacheOption;
 
-use crate::ui::chat::attach_panel::{attachment_kind_for_path, pick_file_for_kind, AttachKind};
+use crate::ui::chat::attach_panel::{
+    pick_files_for_kind, prepare_dropped_file, prepare_staged_file, prepare_staged_file_with_kind,
+    AttachKind, PreparedStagedFile,
+};
+use crate::ui::chat::bubble::format_file_size;
+use crate::ui::chat::image_asset::{
+    decode_image_asset_from_path, insert_attachment_image_payload,
+};
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingAttachment, SharedChatShellState};
 use crate::ui::chat::sticker_picker::{StickerPickerEvent, StickerPickerView};
+use crate::ui::clipboard::{
+    clipboard_image_kind_and_ext, paths_from_clipboard_content, read_clipboard_existing_paths,
+    read_clipboard_image_png, read_clipboard_text,
+};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::icons::{self, CHAT_COMPOSE_BTN};
 use crate::ui::multiline_input;
@@ -25,6 +40,7 @@ use crate::ui::text_field_input::{
     CaretBlinkHost, TextFieldEditAction, TextFieldInput, TextFieldState,
 };
 use crate::ui::theme;
+use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
     chat_send_message, SendChatAttachmentDto, SendChatMessageParams,
 };
@@ -34,6 +50,8 @@ const ATTACH_POPOVER_WIDTH: f32 = 196.0;
 const ATTACH_POPOVER_RADIUS: f32 = 12.0;
 const ATTACH_ICON_SIZE: f32 = 36.0;
 const ATTACH_ICON_GLYPH: f32 = 18.0;
+const STAGED_THUMB: f32 = 56.0;
+const STAGED_STRIP_PAD: f32 = 8.0;
 
 #[derive(Debug, Clone)]
 pub enum ChatComposeAction {
@@ -43,8 +61,21 @@ pub enum ChatComposeAction {
     ToggleStickerPicker,
     ToggleAttachPanel,
     PickAttachment(AttachKind),
+    RemoveStaged(usize),
+    PasteClipboard,
     ClearAndUnfocus,
     TextEdit(TextFieldEditAction),
+}
+
+#[derive(Debug, Clone)]
+struct StagedAttachment {
+    id: String,
+    path: PathBuf,
+    kind: String,
+    name: String,
+    size: u64,
+    preview_asset_id: Option<String>,
+    delete_on_clear: bool,
 }
 
 pub struct ChatComposeView {
@@ -63,6 +94,8 @@ pub struct ChatComposeView {
     sticker_open: bool,
     attach_open: bool,
     sticker_picker: warpui::ViewHandle<StickerPickerView>,
+    staged: Vec<StagedAttachment>,
+    staged_conv_id: Option<String>,
 }
 
 impl ChatComposeView {
@@ -101,6 +134,8 @@ impl ChatComposeView {
             sticker_open: false,
             attach_open: false,
             sticker_picker,
+            staged: Vec::new(),
+            staged_conv_id: None,
         }
     }
 
@@ -133,12 +168,111 @@ impl ChatComposeView {
         None
     }
 
+    pub fn selection_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
+        if conv_id != self.staged_conv_id {
+            self.clear_staged();
+            ctx.notify();
+        }
+    }
+
+    pub fn stage_dropped_paths(&mut self, paths: Vec<String>, ctx: &mut ViewContext<Self>) {
+        let Some(conv_id) = self.require_selected_conversation(ctx) else {
+            return;
+        };
+        self.bind_staged_conv(conv_id);
+        let mut files = Vec::new();
+        for path in paths {
+            match prepare_dropped_file(PathBuf::from(path)) {
+                Ok(file) => files.push(file),
+                Err(err) => {
+                    self.status = err.message();
+                    self.status_tone = StatusTone::Danger;
+                }
+            }
+        }
+        self.push_staged_files(files, ctx);
+    }
+
+    fn bind_staged_conv(&mut self, conv_id: String) {
+        if self.staged_conv_id.as_ref() != Some(&conv_id) {
+            self.clear_staged();
+            self.staged_conv_id = Some(conv_id);
+        }
+    }
+
+    fn clear_staged(&mut self) {
+        for item in self.staged.drain(..) {
+            if item.delete_on_clear {
+                let _ = std::fs::remove_file(&item.path);
+            }
+        }
+        self.staged_conv_id = None;
+    }
+
+    fn push_staged_files(&mut self, files: Vec<PreparedStagedFile>, ctx: &mut ViewContext<Self>) {
+        if files.is_empty() {
+            ctx.notify();
+            return;
+        }
+        self.status.clear();
+        self.status_tone = StatusTone::Neutral;
+        self.attach_open = false;
+        let mut pending_previews = Vec::new();
+        for file in files {
+            let id = uuid::Uuid::new_v4().to_string();
+            if file.kind == "image" {
+                pending_previews.push((id.clone(), file.path.clone()));
+            }
+            self.staged.push(StagedAttachment {
+                id,
+                path: file.path,
+                kind: file.kind,
+                name: file.name,
+                size: file.size,
+                preview_asset_id: None,
+                delete_on_clear: false,
+            });
+        }
+        self.input_focused = true;
+        sync_caret_blink(self, ctx);
+        ctx.notify();
+        for (id, path) in pending_previews {
+            self.queue_preview_decode(id, path, ctx);
+        }
+    }
+
+    fn queue_preview_decode(
+        &mut self,
+        id: String,
+        path: PathBuf,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || decode_image_asset_from_path(&path))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+            },
+            move |view, payload, ctx| {
+                if let Some(payload) = payload {
+                    if let Some(item) = view.staged.iter_mut().find(|item| item.id == id) {
+                        item.preview_asset_id =
+                            Some(insert_attachment_image_payload(ctx, &id, payload));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
     fn send(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(conv_id) = self.require_selected_conversation(ctx) else {
             return;
         };
         let body = self.draft.trim().to_string();
-        if body.is_empty() {
+        if body.is_empty() && self.staged.is_empty() {
             return;
         }
 
@@ -148,10 +282,28 @@ impl ChatComposeView {
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0);
 
+        let staged = std::mem::take(&mut self.staged);
+        let staged_conv_id = self.staged_conv_id.take();
         self.draft.clear();
         self.field_state.clear_marked();
         self.status.clear();
         self.status_tone = StatusTone::Neutral;
+
+        let pending_attachments = staged
+            .iter()
+            .map(|item| PendingOutgoingAttachment {
+                kind: item.kind.clone(),
+                name: item.name.clone(),
+                size: item.size,
+            })
+            .collect::<Vec<_>>();
+        let attachments = staged
+            .iter()
+            .map(|item| SendChatAttachmentDto {
+                kind: item.kind.clone(),
+                path: item.path.to_string_lossy().into_owned(),
+            })
+            .collect::<Vec<_>>();
 
         if let Ok(mut state) = self.shell_state.lock() {
             state.push_pending_outgoing(
@@ -159,7 +311,7 @@ impl ChatComposeView {
                 conv_id.clone(),
                 body.clone(),
                 sent_at,
-                Vec::new(),
+                pending_attachments,
             );
             state.bump_message_tick();
         }
@@ -169,6 +321,9 @@ impl ChatComposeView {
         let shell_state = self.shell_state.clone();
         let client_id_for_spawn = client_id.clone();
         let body_for_restore = body.clone();
+        let staged_for_restore = staged.clone();
+        let conv_id_for_restore = conv_id.clone();
+        let staged_conv_id_for_restore = staged_conv_id;
         ctx.spawn(
             async move {
                 let runtime = core.runtime();
@@ -178,7 +333,7 @@ impl ChatComposeView {
                     backend: None,
                     peer_bootstrap_addrs: Vec::new(),
                     sticker: None,
-                    attachments: Vec::new(),
+                    attachments,
                 };
                 chat_send_message(runtime.ctx.as_ref(), &runtime.state, params).await
             },
@@ -188,16 +343,37 @@ impl ChatComposeView {
                 }
                 match output {
                     Ok(_) => {
+                        for item in &staged_for_restore {
+                            if item.delete_on_clear {
+                                let _ = std::fs::remove_file(&item.path);
+                            }
+                        }
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.bump_message_tick();
                         }
                     }
                     Err(e) => {
-                        view.draft = body_for_restore;
-                        view.status = wormhole_i18n::t_args(
-                            "chat.send_failed",
-                            &[("err", &e.to_string())],
-                        );
+                        let current = view.selection.lock().ok().and_then(|g| g.clone());
+                        if current.as_ref() == Some(&conv_id_for_restore) {
+                            view.draft = body_for_restore;
+                            view.staged = staged_for_restore;
+                            view.staged_conv_id = staged_conv_id_for_restore
+                                .or(Some(conv_id_for_restore));
+                        } else {
+                            for item in &staged_for_restore {
+                                if item.delete_on_clear {
+                                    let _ = std::fs::remove_file(&item.path);
+                                }
+                            }
+                        }
+                        view.status = if view.staged.is_empty() {
+                            wormhole_i18n::t_args("chat.send_failed", &[("err", &e.to_string())])
+                        } else {
+                            wormhole_i18n::t_args(
+                                "chat.attachment_send_failed",
+                                &[("err", &e.to_string())],
+                            )
+                        };
                         view.status_tone = StatusTone::Danger;
                         if let Ok(mut state) = view.shell_state.lock() {
                             state.bump_message_tick();
@@ -209,91 +385,165 @@ impl ChatComposeView {
         );
     }
 
-    fn send_attachment(
-        &mut self,
-        path: std::path::PathBuf,
-        kind: String,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn pick_attachment(&mut self, kind: AttachKind, ctx: &mut ViewContext<Self>) {
+        self.attach_open = false;
+        if kind == AttachKind::Location {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast(
+                    wormhole_i18n::t("chat.location_unsupported"),
+                    StatusTone::Muted,
+                );
+            }
+            ctx.notify();
+            return;
+        }
         let Some(conv_id) = self.require_selected_conversation(ctx) else {
             return;
         };
-        let name = path
-            .file_name()
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| wormhole_i18n::t("chat.attachment.default_name"));
-        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-        let path_string = path.to_string_lossy().into_owned();
-
-        let client_id = format!("pending:{}", uuid::Uuid::new_v4());
-        let sent_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or(0);
-
-        self.status.clear();
-        self.status_tone = StatusTone::Neutral;
-        self.attach_open = false;
-
-        if let Ok(mut state) = self.shell_state.lock() {
-            state.push_pending_outgoing(
-                client_id.clone(),
-                conv_id.clone(),
-                String::new(),
-                sent_at,
-                vec![PendingOutgoingAttachment {
-                    kind: kind.clone(),
-                    name: name.clone(),
-                    size,
-                }],
-            );
-            state.bump_message_tick();
-        }
+        self.bind_staged_conv(conv_id);
         ctx.notify();
-
-        let core = self.core.clone();
-        let shell_state = self.shell_state.clone();
-        let client_id_for_spawn = client_id.clone();
         ctx.spawn(
             async move {
-                let runtime = core.runtime();
-                let params = SendChatMessageParams {
-                    conv_id,
-                    body: String::new(),
-                    backend: None,
-                    peer_bootstrap_addrs: Vec::new(),
-                    sticker: None,
-                    attachments: vec![SendChatAttachmentDto {
-                        kind,
-                        path: path_string,
-                    }],
-                };
-                chat_send_message(runtime.ctx.as_ref(), &runtime.state, params).await
+                tokio::task::spawn_blocking(move || pick_files_for_kind(kind))
+                    .await
+                    .unwrap_or_default()
             },
-            move |view, output, ctx| {
-                if let Ok(mut state) = shell_state.lock() {
-                    state.remove_pending(&client_id_for_spawn);
-                }
-                match output {
-                    Ok(_) => {
-                        if let Ok(mut state) = view.shell_state.lock() {
-                            state.bump_message_tick();
-                        }
-                    }
-                    Err(e) => {
-                        view.status = wormhole_i18n::t_args(
-                            "chat.attachment_send_failed",
-                            &[("err", &e.to_string())],
-                        );
-                        view.status_tone = StatusTone::Danger;
-                        if let Ok(mut state) = view.shell_state.lock() {
-                            state.bump_message_tick();
+            move |view, paths, ctx| {
+                let mut files = Vec::new();
+                for path in paths {
+                    match prepare_staged_file(path, kind) {
+                        Ok(file) => files.push(file),
+                        Err(err) => {
+                            view.status = err.message();
+                            view.status_tone = StatusTone::Danger;
                         }
                     }
                 }
-                ctx.notify();
+                view.push_staged_files(files, ctx);
             },
         );
+    }
+
+    fn paste_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
+        let content = ctx.clipboard().read();
+        let mut paths = paths_from_clipboard_content(&content);
+        if paths.is_empty() {
+            paths = read_clipboard_existing_paths();
+        }
+        if !paths.is_empty() {
+            self.stage_dropped_paths(
+                paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                ctx,
+            );
+            return;
+        }
+        if let Some(images) = content.images.filter(|images| !images.is_empty()) {
+            let Some(conv_id) = self.require_selected_conversation(ctx) else {
+                return;
+            };
+            self.bind_staged_conv(conv_id);
+            for image in images {
+                let (kind, ext) = clipboard_image_kind_and_ext(&image.mime_type);
+                let name = image
+                    .filename
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| wormhole_i18n::t("chat.attachment.clipboard_image"));
+                self.stage_clipboard_bytes(image.data, name, kind, ext, ctx);
+            }
+            return;
+        }
+        if let Some((png, name)) = read_clipboard_image_png() {
+            let Some(conv_id) = self.require_selected_conversation(ctx) else {
+                return;
+            };
+            self.bind_staged_conv(conv_id);
+            self.stage_clipboard_bytes(png, name, "image", "png", ctx);
+            return;
+        }
+        let text = {
+            let trimmed = content.plain_text.trim();
+            if trimmed.is_empty() {
+                read_clipboard_text()
+            } else {
+                Some(trimmed.to_string())
+            }
+        };
+        if let Some(text) = text {
+            self.field_state
+                .apply(&mut self.draft, &TextFieldEditAction::Paste(text));
+            self.input_focused = true;
+            sync_caret_blink(self, ctx);
+            ctx.notify();
+        }
+    }
+
+    fn stage_clipboard_bytes(
+        &mut self,
+        bytes: Vec<u8>,
+        name: String,
+        kind: &str,
+        ext: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match self.write_clipboard_staging_file(&bytes, ext) {
+            Ok(path) => match prepare_staged_file_with_kind(path.clone(), kind.into()) {
+                Ok(file) => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let preview_path = file.path.clone();
+                    let preview_kind = file.kind.clone();
+                    self.staged.push(StagedAttachment {
+                        id: id.clone(),
+                        path: file.path,
+                        kind: file.kind,
+                        name,
+                        size: file.size,
+                        preview_asset_id: None,
+                        delete_on_clear: true,
+                    });
+                    self.input_focused = true;
+                    sync_caret_blink(self, ctx);
+                    ctx.notify();
+                    if preview_kind == "image" {
+                        self.queue_preview_decode(id, preview_path, ctx);
+                    }
+                }
+                Err(err) => {
+                    let _ = std::fs::remove_file(&path);
+                    self.status = err.message();
+                    self.status_tone = StatusTone::Danger;
+                    ctx.notify();
+                }
+            },
+            Err(err) => {
+                self.status = err;
+                self.status_tone = StatusTone::Danger;
+                ctx.notify();
+            }
+        }
+    }
+
+    fn write_clipboard_staging_file(&self, bytes: &[u8], ext: &str) -> Result<PathBuf, String> {
+        let dir = self.core.data_dir().join("chat").join("compose-staging");
+        std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        let path = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, bytes).map_err(|err| err.to_string())?;
+        Ok(path)
+    }
+
+    fn remove_staged(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        if index < self.staged.len() {
+            let item = self.staged.remove(index);
+            if item.delete_on_clear {
+                let _ = std::fs::remove_file(&item.path);
+            }
+            if self.staged.is_empty() {
+                self.staged_conv_id = None;
+            }
+        }
+        ctx.notify();
     }
 
     fn compose_plain_btn(
@@ -448,6 +698,8 @@ impl ChatComposeView {
         let marked = self.field_state.marked_text.clone();
         let placeholder = if self.sending {
             wormhole_i18n::t("chat.compose.sending")
+        } else if !self.staged.is_empty() {
+            wormhole_i18n::t("chat.compose.caption")
         } else {
             wormhole_i18n::t("chat.compose.placeholder")
         };
@@ -468,6 +720,10 @@ impl ChatComposeView {
         .focused(self.input_focused)
         .disabled(self.sending)
         .ime_preedit(!marked.is_empty())
+        .on_paste(|ctx| {
+            ctx.dispatch_typed_action(ChatComposeAction::PasteClipboard);
+            DispatchEventResult::StopPropagation
+        })
         .on_keydown({
             let sending = self.sending;
             move |ctx, keystroke| {
@@ -547,6 +803,126 @@ impl ChatComposeView {
         .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.0)))
         .finish()
     }
+
+    fn staged_strip(&self) -> Box<dyn Element> {
+        let mut row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_main_axis_size(MainAxisSize::Max);
+        for (index, item) in self.staged.iter().enumerate() {
+            row.add_child(
+                Container::new(self.staged_chip(index, item))
+                    .with_margin_right(8.0)
+                    .finish(),
+            );
+        }
+        AutomationTarget::new(
+            Container::new(row.finish())
+                .with_padding_bottom(STAGED_STRIP_PAD)
+                .finish(),
+        )
+        .with_label("待发送附件")
+        .with_id("chat:staged_strip")
+        .finish()
+    }
+
+    fn staged_chip(&self, index: usize, item: &StagedAttachment) -> Box<dyn Element> {
+        let thumb = if item.kind == "image" {
+            if let Some(asset_id) = &item.preview_asset_id {
+                ConstrainedBox::new(
+                    Container::new(
+                        Image::new(
+                            AssetSource::Raw {
+                                id: asset_id.clone(),
+                            },
+                            CacheOption::BySize,
+                        )
+                        .finish(),
+                    )
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                    .finish(),
+                )
+                .with_width(STAGED_THUMB)
+                .with_height(STAGED_THUMB)
+                .finish()
+            } else {
+                self.staged_placeholder(wormhole_i18n::t("chat.preview.image"))
+            }
+        } else {
+            self.staged_file_chip(item)
+        };
+        let remove = AutomationTarget::new(
+            EventHandler::new(
+                Container::new(
+                    ui_text::chat_bubble_meta("×".to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_uniform_padding(4.0)
+                .finish(),
+            )
+            .skip_automation()
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(ChatComposeAction::RemoveStaged(index));
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_label(wormhole_i18n::t("chat.compose.remove_attachment"))
+        .with_id(format!("chat:staged_remove_{index}"))
+        .finish();
+
+        let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::End);
+        col.add_child(remove);
+        col.add_child(thumb);
+        col.finish()
+    }
+
+    fn staged_placeholder(&self, label: String) -> Box<dyn Element> {
+        ConstrainedBox::new(
+            Container::new(
+                Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::Center)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        ui_text::chat_bubble_meta(label, self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_background(theme::accent_bg(24))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish(),
+        )
+        .with_width(STAGED_THUMB)
+        .with_height(STAGED_THUMB)
+        .finish()
+    }
+
+    fn staged_file_chip(&self, item: &StagedAttachment) -> Box<dyn Element> {
+        let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
+        col.add_child(
+            ui_text::chat_bubble_meta(item.name.clone(), self.font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        col.add_child(
+            ui_text::chat_bubble_meta(format_file_size(item.size), self.font)
+                .with_color(theme::muted())
+                .finish(),
+        );
+        ConstrainedBox::new(
+            Container::new(col.finish())
+                .with_uniform_padding(8.0)
+                .with_background(theme::accent_bg(24))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                .finish(),
+        )
+        .with_min_width(STAGED_THUMB)
+        .with_max_width(160.0)
+        .with_height(STAGED_THUMB)
+        .finish()
+    }
 }
 
 impl Entity for ChatComposeView {
@@ -560,6 +936,7 @@ impl View for ChatComposeView {
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let draft_empty = self.draft.trim().is_empty();
+        let has_staged = !self.staged.is_empty();
         let input_height = compose_input_height(&self.draft, &self.field_state.marked_text);
 
         let attach_btn = self.attach_button();
@@ -572,7 +949,7 @@ impl View for ChatComposeView {
             "chat:sticker",
         );
 
-        let send_btn = if draft_empty {
+        let send_btn = if draft_empty && !has_staged {
             Self::compose_plain_btn(
                 "chat-compose-mic.svg",
                 theme::accent_cool(),
@@ -610,8 +987,11 @@ impl View for ChatComposeView {
             );
 
         let mut compose_col = Flex::column()
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .with_child(bar.finish());
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if has_staged {
+            compose_col.add_child(self.staged_strip());
+        }
+        compose_col.add_child(bar.finish());
         if !self.status.is_empty() && self.status_tone != StatusTone::Success {
             compose_col.add_child(status_line(
                 self.status.clone(),
@@ -719,27 +1099,18 @@ impl TypedActionView for ChatComposeView {
                 }
                 ctx.notify();
             }
-            ChatComposeAction::PickAttachment(kind) => {
-                self.attach_open = false;
-                if *kind == AttachKind::Location {
-                    if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast(wormhole_i18n::t("chat.location_unsupported"), StatusTone::Muted);
-                    }
-                    ctx.notify();
-                    return;
-                }
-                if let Some(path) = pick_file_for_kind(*kind) {
-                    let attachment_kind = attachment_kind_for_path(&path, *kind);
-                    self.send_attachment(path, attachment_kind, ctx);
-                } else {
-                    ctx.notify();
-                }
-            }
+            ChatComposeAction::PickAttachment(kind) => self.pick_attachment(*kind, ctx),
+            ChatComposeAction::RemoveStaged(index) => self.remove_staged(*index, ctx),
+            ChatComposeAction::PasteClipboard => self.paste_clipboard(ctx),
             ChatComposeAction::ClearAndUnfocus => {
                 if !self.sending {
-                    self.draft.clear();
-                    self.field_state.clear_marked();
-                    self.input_focused = false;
+                    if !self.staged.is_empty() {
+                        self.clear_staged();
+                    } else {
+                        self.draft.clear();
+                        self.field_state.clear_marked();
+                        self.input_focused = false;
+                    }
                     sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
@@ -775,6 +1146,12 @@ impl TypedActionView for ChatComposeView {
             }
             ChatComposeAction::PickAttachment(_) => {
                 AccessibilityContent::new_without_help("选择附件类型", WarpA11yRole::ButtonRole)
+            }
+            ChatComposeAction::RemoveStaged(_) => {
+                AccessibilityContent::new_without_help("移除附件", WarpA11yRole::ButtonRole)
+            }
+            ChatComposeAction::PasteClipboard => {
+                AccessibilityContent::new_without_help("粘贴", WarpA11yRole::ButtonRole)
             }
             ChatComposeAction::ClearAndUnfocus | ChatComposeAction::TextEdit(_) => {
                 AccessibilityContent::new_without_help("编辑消息草稿", WarpA11yRole::TextfieldRole)

@@ -880,6 +880,7 @@ pub fn compose_input_height(draft: &str, marked: &str) -> f32 {
 
 type EditCallback = Rc<dyn Fn(&mut EventContext, TextFieldEditAction)>;
 type KeydownCallback = Rc<dyn Fn(&mut EventContext, &Keystroke) -> DispatchEventResult>;
+type PasteCallback = Rc<dyn Fn(&mut EventContext) -> DispatchEventResult>;
 
 pub struct TextFieldInput {
     child: Box<dyn Element>,
@@ -890,6 +891,7 @@ pub struct TextFieldInput {
     always_handle: bool,
     on_edit: EditCallback,
     on_keydown: Option<KeydownCallback>,
+    on_paste: Option<PasteCallback>,
     child_max_z_index: Option<ZIndex>,
     origin: Option<Point>,
     size: Option<Vector2F>,
@@ -908,6 +910,7 @@ impl TextFieldInput {
             always_handle: true,
             on_edit: Rc::new(on_edit),
             on_keydown: None,
+            on_paste: None,
             child_max_z_index: None,
             origin: None,
             size: None,
@@ -934,6 +937,16 @@ impl TextFieldInput {
         callback: impl Fn(&mut EventContext, &Keystroke) -> DispatchEventResult + 'static,
     ) -> Self {
         self.on_keydown = Some(Rc::new(callback));
+        self
+    }
+
+    /// If the callback returns [`DispatchEventResult::StopPropagation`], the default
+    /// text paste is skipped (the callback is expected to handle clipboard media).
+    pub fn on_paste(
+        mut self,
+        callback: impl Fn(&mut EventContext) -> DispatchEventResult + 'static,
+    ) -> Self {
+        self.on_paste = Some(Rc::new(callback));
         self
     }
 
@@ -1018,6 +1031,11 @@ impl Element for TextFieldInput {
                 }
                 if keystroke.ctrl || keystroke.meta {
                     if keystroke.key.eq_ignore_ascii_case("v") {
+                        if let Some(cb) = &self.on_paste {
+                            if matches!(cb(ctx), DispatchEventResult::StopPropagation) {
+                                return true;
+                            }
+                        }
                         if let Some(text) = read_clipboard_text() {
                             (self.on_edit)(ctx, TextFieldEditAction::Paste(text));
                             return true;

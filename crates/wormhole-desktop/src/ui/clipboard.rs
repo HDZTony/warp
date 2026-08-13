@@ -120,3 +120,125 @@ fn read_clipboard_text_win32() -> Option<String> {
         }
     }
 }
+
+pub fn read_clipboard_image_png() -> Option<(Vec<u8>, String)> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let image = clipboard.get_image().ok()?;
+    if image.width == 0 || image.height == 0 {
+        return None;
+    }
+    let width = u32::try_from(image.width).ok()?;
+    let height = u32::try_from(image.height).ok()?;
+    let buffer = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(buffer)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png),
+            image::ImageFormat::Png,
+        )
+        .ok()?;
+    if png.is_empty() {
+        return None;
+    }
+    Some((
+        png,
+        wormhole_i18n::t("chat.attachment.clipboard_image"),
+    ))
+}
+
+pub fn clipboard_image_kind_and_ext(mime: &str) -> (&'static str, &'static str) {
+    match mime {
+        "image/png" => ("image", "png"),
+        "image/jpeg" | "image/jpg" => ("image", "jpg"),
+        "image/gif" => ("image", "gif"),
+        "image/webp" => ("image", "webp"),
+        "image/bmp" => ("image", "bmp"),
+        "image/heic" | "image/heif" => ("image", "heic"),
+        "image/avif" => ("image", "avif"),
+        _ => ("document", "bin"),
+    }
+}
+
+pub fn paths_from_clipboard_text(text: &str) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path = trimmed
+            .strip_prefix("file://")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(trimmed));
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+pub fn paths_from_clipboard_content(
+    content: &warpui_core::clipboard::ClipboardContent,
+) -> Vec<std::path::PathBuf> {
+    if let Some(paths) = &content.paths {
+        let existing = paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        if !existing.is_empty() {
+            return existing;
+        }
+    }
+    paths_from_clipboard_text(&content.plain_text)
+}
+
+pub fn read_clipboard_existing_paths() -> Vec<std::path::PathBuf> {
+    let text = match read_clipboard_text() {
+        Some(text) => text,
+        None => return Vec::new(),
+    };
+    paths_from_clipboard_text(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_image_kind_routes_raster_and_unknown() {
+        assert_eq!(clipboard_image_kind_and_ext("image/png"), ("image", "png"));
+        assert_eq!(clipboard_image_kind_and_ext("image/jpeg"), ("image", "jpg"));
+        assert_eq!(
+            clipboard_image_kind_and_ext("image/svg+xml"),
+            ("document", "bin")
+        );
+    }
+
+    #[test]
+    fn paths_from_clipboard_text_keeps_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("photo.png");
+        std::fs::write(&file, b"png").unwrap();
+        let missing = dir.path().join("gone.png");
+        let text = format!("file://{}\n\"{}\"\n{}", file.display(), file.display(), missing.display());
+        let paths = paths_from_clipboard_text(&text);
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path.ends_with("photo.png")));
+    }
+
+    #[test]
+    fn paths_from_clipboard_content_prefers_native_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("clip.mov");
+        std::fs::write(&file, b"mov").unwrap();
+        let content = warpui_core::clipboard::ClipboardContent {
+            plain_text: "not-a-path".into(),
+            paths: Some(vec![file.to_string_lossy().into_owned()]),
+            html: None,
+            images: None,
+        };
+        let paths = paths_from_clipboard_content(&content);
+        assert_eq!(paths, vec![file]);
+    }
+}

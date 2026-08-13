@@ -80,6 +80,19 @@ pub fn insert_attachment_image_asset<V: warpui::View>(
     Ok(asset_id)
 }
 
+/// Insert already-decoded RGB asset payload (from a background decode).
+pub fn insert_attachment_image_payload<V: warpui::View>(
+    ctx: &mut ViewContext<V>,
+    attachment_id: &str,
+    payload: Vec<u8>,
+) -> String {
+    let asset_id = chat_attachment_asset_id(attachment_id);
+    AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
+        cache.insert_raw_asset_bytes::<ImageType>(asset_id.clone(), &payload, model_ctx);
+    });
+    asset_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1443,7 +1443,9 @@ fn format_usage_result(result: &agent_provider_commands::AgentUsageResultDto) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{is_control_plane_id, provider_status_tone, StatusTone};
+    use super::{
+        is_control_plane_id, provider_status_tone, workload_hint_title, StatusTone, WorkloadHint,
+    };
 
     #[test]
     fn provider_operation_status_has_explicit_tone() {
