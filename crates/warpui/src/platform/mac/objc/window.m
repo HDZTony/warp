@@ -885,6 +885,8 @@ void open_file_picker(void *callback, NSArray<NSString *> *fileTypes, BOOL allow
         for (NSString *fileType in fileTypes) {
             if ([fileType isEqualToString:@"Image"]) {
                 [contentTypes addObject:UTTypeImage];
+            } else if ([fileType isEqualToString:@"Movie"]) {
+                [contentTypes addObject:UTTypeMovie];
             } else if ([fileType isEqualToString:@"Markdown"]) {
                 UTType *markdownType = [UTType typeWithFilenameExtension:@"md"];
                 [contentTypes addObject:markdownType];
@@ -893,12 +895,21 @@ void open_file_picker(void *callback, NSArray<NSString *> *fileTypes, BOOL allow
             }
         }
 
-        [openPanel setAllowedContentTypes:contentTypes];
+        if ([contentTypes count] > 0) {
+            [openPanel setAllowedContentTypes:contentTypes];
+        }
     } else {
         NSMutableArray *contentTypes = [NSMutableArray array];
         for (NSString *fileType in fileTypes) {
             if ([fileType isEqualToString:@"Image"]) {
                 [contentTypes addObjectsFromArray:[NSImage imageTypes]];
+            } else if ([fileType isEqualToString:@"Movie"]) {
+                [contentTypes addObject:@"mp4"];
+                [contentTypes addObject:@"mov"];
+                [contentTypes addObject:@"m4v"];
+                [contentTypes addObject:@"webm"];
+                [contentTypes addObject:@"mkv"];
+                [contentTypes addObject:@"avi"];
             } else if ([fileType isEqualToString:@"Markdown"]) {
                 [contentTypes addObject:@"md"];
             } else if ([fileType isEqualToString:@"Yaml"]) {
@@ -907,7 +918,9 @@ void open_file_picker(void *callback, NSArray<NSString *> *fileTypes, BOOL allow
             }
         }
 
-        [openPanel setAllowedFileTypes:contentTypes];
+        if ([contentTypes count] > 0) {
+            [openPanel setAllowedFileTypes:contentTypes];
+        }
     }
 
     // Open panel as sheet on main window.

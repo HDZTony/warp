@@ -1,6 +1,5 @@
 use chrono::TimeZone;
 use std::collections::HashMap;
-use std::path::Path;
 use warpui::elements::{
     Align, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Expanded,
     Flex, Image, MainAxisSize, ParentElement, Radius, Shrinkable,
@@ -10,8 +9,7 @@ use warpui::{AppContext, Element, Entity, View, ViewContext};
 use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
-use crate::ui::chat::image_asset::insert_attachment_image_asset;
-use crate::ui::chat::layout::bubble_corner_radius;
+use crate::ui::chat::layout::{attachment_preview_width, bubble_corner_radius};
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
     chat_bubble_in_bg, chat_bubble_out_bg, chat_bubble_out_border, TG_BUBBLE_MAX_WIDTH,
@@ -51,23 +49,10 @@ impl ChatBubbleView {
         read: bool,
         search_hit: bool,
         max_bubble_width: f32,
+        image_assets: HashMap<String, String>,
     ) -> Self {
         let font = crate::ui::fonts::load_ui_font(ctx);
         let emoji_font = crate::ui::fonts::load_emoji_font(ctx);
-        let mut image_assets = HashMap::new();
-        for attachment in &attachments {
-            if attachment.kind != "image" {
-                continue;
-            }
-            let Some(local_path) = attachment.local_path.as_deref() else {
-                continue;
-            };
-            if let Ok(asset_id) =
-                insert_attachment_image_asset(ctx, &attachment.id, Path::new(local_path))
-            {
-                image_assets.insert(attachment.id.clone(), asset_id);
-            }
-        }
         Self {
             font,
             emoji_font,
@@ -133,6 +118,7 @@ impl ChatBubbleView {
     }
 
     fn render_media_attachment(&self, attachment: &ChatAttachmentDto) -> Box<dyn Element> {
+        let preview_w = attachment_preview_width(self.max_bubble_width);
         if attachment.kind == "image" {
             if let Some(asset_id) = self.image_assets.get(&attachment.id) {
                 return ConstrainedBox::new(
@@ -148,8 +134,7 @@ impl ChatBubbleView {
                     .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
                     .finish(),
                 )
-                .with_min_width(160.0)
-                .with_max_width(self.max_bubble_width)
+                .with_width(preview_w)
                 .with_height(ATTACH_MEDIA_PREVIEW_HEIGHT)
                 .finish();
             }
@@ -189,8 +174,8 @@ impl ChatBubbleView {
             .finish(),
         );
         ConstrainedBox::new(col.finish())
-            .with_min_width(160.0)
-            .with_max_width(self.max_bubble_width)
+            .with_width(preview_w)
+            .with_height(ATTACH_MEDIA_PLACEHOLDER_HEIGHT)
             .finish()
     }
 

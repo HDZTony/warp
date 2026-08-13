@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use storage_core::MAX_ATTACHMENT_BYTES;
+use warpui_core::platform::file_picker::{FilePickerConfiguration, FileType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachKind {
@@ -65,37 +66,20 @@ impl StageError {
     }
 }
 
-pub fn pick_files_for_kind(kind: AttachKind) -> Vec<PathBuf> {
+/// Native picker config for an attach-menu kind.
+///
+/// Uses Warp `open_file_picker` (macOS `beginWithCompletionHandler`) instead of
+/// `rfd` on a blocking thread, which deadlocks `NSOpenPanel` against the UI
+/// runloop. Empty `file_types` means all files (document menu).
+pub fn picker_config_for_kind(kind: AttachKind) -> Option<FilePickerConfiguration> {
     match kind {
-        AttachKind::Location => Vec::new(),
-        AttachKind::Media => rfd::FileDialog::new()
-            .set_title("选择图片或视频")
-            .add_filter(
-                "图片",
-                &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic"],
-            )
-            .add_filter("视频", &["mp4", "mov", "webm", "mkv", "avi"])
-            .pick_files()
-            .unwrap_or_default(),
-        AttachKind::Document => rfd::FileDialog::new()
-            .set_title("选择文档")
-            .add_filter(
-                "文档",
-                &[
-                    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "zip", "rar",
-                    "7z", "csv", "json",
-                ],
-            )
-            .add_filter(
-                "图片或视频（按文件发送）",
-                &[
-                    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic", "mp4", "mov",
-                    "webm", "mkv", "avi",
-                ],
-            )
-            .add_filter("所有文件", &["*"])
-            .pick_files()
-            .unwrap_or_default(),
+        AttachKind::Location => None,
+        AttachKind::Media => Some(
+            FilePickerConfiguration::new()
+                .allow_multi_select()
+                .set_allowed_file_types(vec![FileType::Image, FileType::Movie]),
+        ),
+        AttachKind::Document => Some(FilePickerConfiguration::new().allow_multi_select()),
     }
 }
 
@@ -191,6 +175,28 @@ mod tests {
         assert_eq!(AttachKind::Media.desc(), "从相册或终端共享选择");
         assert_eq!(AttachKind::Document.desc(), "PDF、Office、压缩包等");
         assert_eq!(AttachKind::Location.desc(), "发送位置（即将支持）");
+    }
+
+    #[test]
+    fn media_picker_allows_images_movies_and_multi_select() {
+        let config = picker_config_for_kind(AttachKind::Media).expect("media has a picker");
+        assert!(config.allows_multi_select());
+        assert_eq!(
+            config.file_types(),
+            &vec![FileType::Image, FileType::Movie]
+        );
+    }
+
+    #[test]
+    fn document_picker_allows_all_files() {
+        let config = picker_config_for_kind(AttachKind::Document).expect("document has a picker");
+        assert!(config.allows_multi_select());
+        assert!(config.file_types().is_empty());
+    }
+
+    #[test]
+    fn location_has_no_picker() {
+        assert!(picker_config_for_kind(AttachKind::Location).is_none());
     }
 
     #[test]

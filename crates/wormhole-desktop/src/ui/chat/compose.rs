@@ -15,7 +15,7 @@ use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::chat::attach_panel::{
-    pick_files_for_kind, prepare_dropped_file, prepare_staged_file, prepare_staged_file_with_kind,
+    picker_config_for_kind, prepare_dropped_file, prepare_staged_file, prepare_staged_file_with_kind,
     AttachKind, PreparedStagedFile,
 };
 use crate::ui::chat::bubble::format_file_size;
@@ -61,6 +61,11 @@ pub enum ChatComposeAction {
     ToggleStickerPicker,
     ToggleAttachPanel,
     PickAttachment(AttachKind),
+    StagePicked {
+        kind: AttachKind,
+        paths: Vec<PathBuf>,
+    },
+    PickerFailed(String),
     RemoveStaged(usize),
     PasteClipboard,
     ClearAndUnfocus,
@@ -96,6 +101,7 @@ pub struct ChatComposeView {
     sticker_picker: warpui::ViewHandle<StickerPickerView>,
     staged: Vec<StagedAttachment>,
     staged_conv_id: Option<String>,
+    picking: bool,
 }
 
 impl ChatComposeView {
@@ -136,6 +142,7 @@ impl ChatComposeView {
             sticker_picker,
             staged: Vec::new(),
             staged_conv_id: None,
+            picking: false,
         }
     }
 
@@ -143,6 +150,7 @@ impl ChatComposeView {
     /// and open failures from a true "no session selected" state.
     fn require_selected_conversation(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
         if let Some(id) = self.selection.lock().ok().and_then(|g| g.clone()) {
+            self.clear_opening_status();
             return Some(id);
         }
         let (pending, open_error) = self
@@ -170,9 +178,23 @@ impl ChatComposeView {
 
     pub fn selection_changed(&mut self, ctx: &mut ViewContext<Self>) {
         let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
+        if conv_id.is_some() {
+            self.clear_opening_status();
+        }
         if conv_id != self.staged_conv_id {
-            self.clear_staged();
+            if self.staged_conv_id.is_none() && conv_id.is_some() && !self.staged.is_empty() {
+                self.staged_conv_id = conv_id;
+            } else {
+                self.clear_staged();
+            }
             ctx.notify();
+        }
+    }
+
+    fn clear_opening_status(&mut self) {
+        if self.status == wormhole_i18n::t("chat.header.opening") {
+            self.status.clear();
+            self.status_tone = StatusTone::Neutral;
         }
     }
 
@@ -286,7 +308,8 @@ impl ChatComposeView {
         let staged_conv_id = self.staged_conv_id.take();
         self.draft.clear();
         self.field_state.clear_marked();
-        self.status.clear();
+        self.sending = true;
+        self.status = wormhole_i18n::t("chat.compose.sending");
         self.status_tone = StatusTone::Neutral;
 
         let pending_attachments = staged
@@ -295,6 +318,7 @@ impl ChatComposeView {
                 kind: item.kind.clone(),
                 name: item.name.clone(),
                 size: item.size,
+                local_path: Some(item.path.to_string_lossy().into_owned()),
             })
             .collect::<Vec<_>>();
         let attachments = staged
@@ -338,6 +362,11 @@ impl ChatComposeView {
                 chat_send_message(runtime.ctx.as_ref(), &runtime.state, params).await
             },
             move |view, output, ctx| {
+                view.sending = false;
+                if view.status == wormhole_i18n::t("chat.compose.sending") {
+                    view.status.clear();
+                    view.status_tone = StatusTone::Neutral;
+                }
                 if let Ok(mut state) = shell_state.lock() {
                     state.remove_pending(&client_id_for_spawn);
                 }
@@ -397,31 +426,76 @@ impl ChatComposeView {
             ctx.notify();
             return;
         }
-        let Some(conv_id) = self.require_selected_conversation(ctx) else {
+        if self.picking {
+            return;
+        }
+        let conv_id = self.selection.lock().ok().and_then(|g| g.clone());
+        if let Some(conv_id) = conv_id {
+            self.bind_staged_conv(conv_id);
+            self.clear_opening_status();
+        } else {
+            let pending = self
+                .shell_state
+                .lock()
+                .map(|state| state.pending_open.is_some())
+                .unwrap_or(false);
+            if !pending {
+                let _ = self.require_selected_conversation(ctx);
+                return;
+            }
+        }
+        let Some(config) = picker_config_for_kind(kind) else {
             return;
         };
-        self.bind_staged_conv(conv_id);
+        self.picking = true;
         ctx.notify();
-        ctx.spawn(
-            async move {
-                tokio::task::spawn_blocking(move || pick_files_for_kind(kind))
-                    .await
-                    .unwrap_or_default()
+        ctx.open_file_picker(
+            move |result, ctx| {
+                let action = match result {
+                    Ok(paths) => ChatComposeAction::StagePicked {
+                        kind,
+                        paths: paths.into_iter().map(PathBuf::from).collect(),
+                    },
+                    Err(err) => ChatComposeAction::PickerFailed(err.to_string()),
+                };
+                ctx.dispatch_typed_action(&action);
             },
-            move |view, paths, ctx| {
-                let mut files = Vec::new();
-                for path in paths {
-                    match prepare_staged_file(path, kind) {
-                        Ok(file) => files.push(file),
-                        Err(err) => {
-                            view.status = err.message();
-                            view.status_tone = StatusTone::Danger;
-                        }
-                    }
-                }
-                view.push_staged_files(files, ctx);
-            },
+            config,
         );
+    }
+
+    fn stage_picked_paths(
+        &mut self,
+        kind: AttachKind,
+        paths: Vec<PathBuf>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.picking = false;
+        if let Some(conv_id) = self.selection.lock().ok().and_then(|g| g.clone()) {
+            self.bind_staged_conv(conv_id);
+            self.clear_opening_status();
+        } else if self.staged_conv_id.is_none() {
+            let pending = self
+                .shell_state
+                .lock()
+                .map(|state| state.pending_open.is_some())
+                .unwrap_or(false);
+            if !pending {
+                let _ = self.require_selected_conversation(ctx);
+                return;
+            }
+        }
+        let mut files = Vec::new();
+        for path in paths {
+            match prepare_staged_file(path, kind) {
+                Ok(file) => files.push(file),
+                Err(err) => {
+                    self.status = err.message();
+                    self.status_tone = StatusTone::Danger;
+                }
+            }
+        }
+        self.push_staged_files(files, ctx);
     }
 
     fn paste_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1100,6 +1174,15 @@ impl TypedActionView for ChatComposeView {
                 ctx.notify();
             }
             ChatComposeAction::PickAttachment(kind) => self.pick_attachment(*kind, ctx),
+            ChatComposeAction::StagePicked { kind, paths } => {
+                self.stage_picked_paths(*kind, paths.clone(), ctx)
+            }
+            ChatComposeAction::PickerFailed(err) => {
+                self.picking = false;
+                self.status = err.clone();
+                self.status_tone = StatusTone::Danger;
+                ctx.notify();
+            }
             ChatComposeAction::RemoveStaged(index) => self.remove_staged(*index, ctx),
             ChatComposeAction::PasteClipboard => self.paste_clipboard(ctx),
             ChatComposeAction::ClearAndUnfocus => {
@@ -1144,7 +1227,9 @@ impl TypedActionView for ChatComposeView {
             ChatComposeAction::ToggleAttachPanel => {
                 AccessibilityContent::new_without_help("附件菜单", WarpA11yRole::ButtonRole)
             }
-            ChatComposeAction::PickAttachment(_) => {
+            ChatComposeAction::PickAttachment(_)
+            | ChatComposeAction::StagePicked { .. }
+            | ChatComposeAction::PickerFailed(_) => {
                 AccessibilityContent::new_without_help("选择附件类型", WarpA11yRole::ButtonRole)
             }
             ChatComposeAction::RemoveStaged(_) => {

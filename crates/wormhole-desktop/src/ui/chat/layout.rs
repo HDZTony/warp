@@ -12,6 +12,10 @@ pub fn message_is_grouped(prev_outgoing: Option<bool>, outgoing: bool) -> bool {
     prev_outgoing == Some(outgoing)
 }
 
+pub fn attachment_preview_width(max_bubble_width: f32) -> f32 {
+    max_bubble_width.clamp(160.0, 280.0)
+}
+
 pub fn bubble_max_width(parent_width: f32) -> f32 {
     if !parent_width.is_finite() || parent_width <= 0.0 {
         return TG_BUBBLE_MAX_WIDTH;
@@ -68,6 +72,13 @@ mod tests {
     fn bubble_max_width_caps_at_520() {
         assert_eq!(bubble_max_width(2000.0), 520.0);
         assert!((bubble_max_width(600.0) - 432.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn attachment_preview_width_is_tight() {
+        assert_eq!(attachment_preview_width(520.0), 280.0);
+        assert_eq!(attachment_preview_width(200.0), 200.0);
+        assert_eq!(attachment_preview_width(80.0), 160.0);
     }
 
     #[test]

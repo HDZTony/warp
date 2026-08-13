@@ -7,6 +7,8 @@ pub struct PendingOutgoingAttachment {
     pub kind: String,
     pub name: String,
     pub size: u64,
+    /// Local path used for optimistic image preview while send is in flight.
+    pub local_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]

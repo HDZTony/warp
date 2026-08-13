@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::Fill;
@@ -12,7 +13,8 @@ use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, Vie
 
 use crate::ui::chat::bubble::{format_message_time_pub, outgoing_message_read, ChatBubbleView};
 use crate::ui::chat::image_asset::{
-    chat_wallpaper_asset_id, insert_wallpaper_asset, load_wallpaper_bytes_from_path,
+    chat_wallpaper_asset_id, decode_image_asset_from_path, insert_attachment_image_payload,
+    insert_wallpaper_asset, load_wallpaper_bytes_from_path,
 };
 use crate::ui::chat::layout::{
     bubble_max_width, message_is_grouped, message_row_margin_bottom, TG_THREAD_PAD_BOTTOM,
@@ -77,6 +79,8 @@ pub struct ChatThreadView {
     wallpaper_asset_id: Option<String>,
     wallpaper_loaded: bool,
     last_wallpaper_tick: u64,
+    attachment_previews: HashMap<String, String>,
+    attachment_decode_inflight: HashSet<String>,
 }
 
 fn messages_snapshot_equal(a: &[ChatMessageDto], b: &[ChatMessageDto]) -> bool {
@@ -145,12 +149,10 @@ pub(crate) fn merge_pending_messages(
     let author = local_endpoint.unwrap_or("");
     let mut merged = messages.to_vec();
     for item in pending {
-        if merged.iter().any(|msg| msg.id == item.client_id) {
-            continue;
-        }
-        if merged.iter().any(|msg| {
-            msg.body == item.body && msg.sent_at.abs_diff(item.sent_at) <= PENDING_DEDUP_WINDOW_MS
-        }) {
+        if merged
+            .iter()
+            .any(|msg| pending_is_represented_by(msg, item))
+        {
             continue;
         }
         merged.push(ChatMessageDto {
@@ -169,7 +171,7 @@ pub(crate) fn merge_pending_messages(
                     size: attachment.size,
                     mime: None,
                     source_hash: None,
-                    local_path: None,
+                    local_path: attachment.local_path.clone(),
                 })
                 .collect(),
             source_kind: None,
@@ -177,6 +179,33 @@ pub(crate) fn merge_pending_messages(
     }
     merged.sort_by_key(|msg| msg.sent_at);
     merged
+}
+
+fn pending_is_represented_by(msg: &ChatMessageDto, item: &PendingOutgoingMessage) -> bool {
+    if msg.id == item.client_id {
+        return true;
+    }
+    if msg.body != item.body {
+        return false;
+    }
+    if msg.sent_at.abs_diff(item.sent_at) > PENDING_DEDUP_WINDOW_MS {
+        return false;
+    }
+    attachment_names(msg) == pending_attachment_names(item)
+}
+
+fn attachment_names(msg: &ChatMessageDto) -> Vec<&str> {
+    msg.attachments
+        .iter()
+        .map(|attachment| attachment.name.as_str())
+        .collect()
+}
+
+fn pending_attachment_names(item: &PendingOutgoingMessage) -> Vec<&str> {
+    item.attachments
+        .iter()
+        .map(|attachment| attachment.name.as_str())
+        .collect()
 }
 
 fn message_is_outgoing(msg: &ChatMessageDto, local: Option<&str>) -> bool {
@@ -224,6 +253,8 @@ impl ChatThreadView {
             wallpaper_asset_id: None,
             wallpaper_loaded: false,
             last_wallpaper_tick: 0,
+            attachment_previews: HashMap::new(),
+            attachment_decode_inflight: HashSet::new(),
         };
         view.start_poll(ctx);
         view
@@ -953,6 +984,7 @@ impl ChatThreadView {
     }
 
     fn rebuild_bubbles(&mut self, ctx: &mut ViewContext<Self>) {
+        self.queue_attachment_previews(ctx);
         self.bubbles.clear();
         let max_bubble_width = self.bubble_width_cap();
         let local = self.local_endpoint.as_deref();
@@ -984,6 +1016,12 @@ impl ChatThreadView {
                 && outgoing_message_read(msg.sent_at, last_outgoing_index == Some(index));
             let search_hit = active_search_id.as_deref() == Some(msg.id.as_str());
             let visible = true;
+            let mut image_assets = HashMap::new();
+            for attachment in &attachments {
+                if let Some(asset_id) = self.attachment_previews.get(&attachment.id) {
+                    image_assets.insert(attachment.id.clone(), asset_id.clone());
+                }
+            }
             let handle = ctx.add_view(move |ctx| {
                 ChatBubbleView::new(
                     ctx,
@@ -995,6 +1033,7 @@ impl ChatThreadView {
                     read,
                     search_hit,
                     max_bubble_width,
+                    image_assets,
                 )
             });
             let video_room_id = parse_video_room_signal(&msg.body).map(|p| p.room_id);
@@ -1005,6 +1044,47 @@ impl ChatThreadView {
                 video_room_id,
                 handle,
             });
+        }
+    }
+
+    fn queue_attachment_previews(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut pending = Vec::new();
+        for msg in &self.messages {
+            for attachment in &msg.attachments {
+                if attachment.kind != "image" {
+                    continue;
+                }
+                let Some(local_path) = attachment.local_path.clone() else {
+                    continue;
+                };
+                if self.attachment_previews.contains_key(&attachment.id) {
+                    continue;
+                }
+                if !self.attachment_decode_inflight.insert(attachment.id.clone()) {
+                    continue;
+                }
+                pending.push((attachment.id.clone(), local_path));
+            }
+        }
+        for (id, local_path) in pending {
+            let path = PathBuf::from(local_path);
+            ctx.spawn(
+                async move {
+                    tokio::task::spawn_blocking(move || decode_image_asset_from_path(&path))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                },
+                move |view, payload, ctx| {
+                    view.attachment_decode_inflight.remove(&id);
+                    if let Some(payload) = payload {
+                        let asset_id = insert_attachment_image_payload(ctx, &id, payload);
+                        view.attachment_previews.insert(id, asset_id);
+                        view.rebuild_bubbles(ctx);
+                    }
+                    ctx.notify();
+                },
+            );
         }
     }
 }
@@ -1310,16 +1390,51 @@ mod tests {
     }
 
     #[test]
-    fn merge_pending_messages_dedupes_confirmed_server_message() {
-        let base = vec![sample_message("m2", "same text", 5_000)];
+    fn merge_pending_messages_keeps_empty_caption_image() {
+        let base = vec![sample_message("m1", "", 5_000)];
         let pending = vec![PendingOutgoingMessage {
-            client_id: "pending:2".into(),
+            client_id: "pending:img".into(),
             conv_id: "conv".into(),
-            body: "same text".into(),
+            body: String::new(),
             sent_at: 5_100,
-            attachments: Vec::new(),
+            attachments: vec![crate::ui::chat::shell_state::PendingOutgoingAttachment {
+                kind: "image".into(),
+                name: "shot.png".into(),
+                size: 12,
+                local_path: Some("/tmp/shot.png".into()),
+            }],
         }];
         let merged = merge_pending_messages(&base, &pending, Some("local"));
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1].id, "pending:img");
+        assert_eq!(merged[1].attachments[0].local_path.as_deref(), Some("/tmp/shot.png"));
+    }
+
+    #[test]
+    fn merge_pending_messages_dedupes_confirmed_image_by_name() {
+        let mut confirmed = sample_message("m2", "", 5_000);
+        confirmed.attachments = vec![ChatAttachmentDto {
+            id: "att-1".into(),
+            kind: "image".into(),
+            name: "shot.png".into(),
+            size: 12,
+            mime: None,
+            source_hash: None,
+            local_path: Some("/tmp/shot.png".into()),
+        }];
+        let pending = vec![PendingOutgoingMessage {
+            client_id: "pending:img".into(),
+            conv_id: "conv".into(),
+            body: String::new(),
+            sent_at: 5_100,
+            attachments: vec![crate::ui::chat::shell_state::PendingOutgoingAttachment {
+                kind: "image".into(),
+                name: "shot.png".into(),
+                size: 12,
+                local_path: Some("/tmp/shot.png".into()),
+            }],
+        }];
+        let merged = merge_pending_messages(&[confirmed], &pending, Some("local"));
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "m2");
     }

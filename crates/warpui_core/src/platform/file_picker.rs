@@ -19,8 +19,14 @@ pub type FilePickerCallback =
 pub type SaveFilePickerCallback =
     Box<dyn FnOnce(Option<String>, &mut crate::AppContext) + Send + Sync>;
 
+/// Categories understood by the native file picker.
+///
+/// `display_name()` is the identifier passed to macOS `window.m` (`Image` /
+/// `Movie` / `Yaml` / `Markdown`). Empty `file_types` means “all files”.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     Image,
+    Movie,
     Yaml,
     Markdown,
 }
@@ -29,7 +35,10 @@ impl FileType {
     /// List of supported file extensions for this file type.
     pub fn extensions(&self) -> &[&str] {
         match self {
-            FileType::Image => &["png", "jpg", "jpeg"],
+            FileType::Image => &[
+                "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic", "heif",
+            ],
+            FileType::Movie => &["mp4", "mov", "webm", "mkv", "avi"],
             FileType::Yaml => &["yaml", "yml"],
             FileType::Markdown => &["md", "markdown"],
         }
@@ -39,6 +48,7 @@ impl FileType {
     pub fn display_name(&self) -> &str {
         match self {
             FileType::Image => "Image",
+            FileType::Movie => "Movie",
             FileType::Yaml => "Yaml",
             FileType::Markdown => "Markdown",
         }
@@ -59,6 +69,7 @@ impl fmt::Display for FileType {
 ///   single-directory picker is shown, regardless of the other settings.
 /// * macOS supports any combination of allowing files, allowing folders, and allowing
 ///   multi-select.
+/// * Empty [`Self::file_types`] means all files (the panel does not set a type filter).
 pub struct FilePickerConfiguration {
     allows_files: bool,
     allows_folder: bool,
