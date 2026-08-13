@@ -20,6 +20,7 @@ use crate::ui::activity_view::ActivityView;
 use crate::ui::subconscious_view::SubconsciousView;
 use crate::ui::tokenjuice_view::TokenJuiceView;
 use crate::ui::web_search_view::WebSearchView;
+use crate::ui::exit_node_view::ExitNodeView;
 use crate::ui::file_search_view::FileSearchView;
 use crate::ui::security_view::SecurityView;
 use crate::ui::cron_view::CronView;
@@ -79,6 +80,7 @@ pub enum SettingsPage {
     Subconscious,
     TokenJuice,
     WebSearch,
+    ExitNode,
     FileSearch,
     Cron,
     Cluster,
@@ -152,6 +154,7 @@ impl SettingsPage {
             SettingsPage::Subconscious,
             SettingsPage::TokenJuice,
             SettingsPage::WebSearch,
+            SettingsPage::ExitNode,
             SettingsPage::FileSearch,
             SettingsPage::Cron,
             SettingsPage::Cluster,
@@ -180,6 +183,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "settings:nav_subconscious",
             SettingsPage::TokenJuice => "settings:nav_tokenjuice",
             SettingsPage::WebSearch => "settings:nav_web_search",
+            SettingsPage::ExitNode => "settings:nav_exit_node",
             SettingsPage::FileSearch => "settings:nav_file_search",
             SettingsPage::Cron => "settings:nav_cron",
             SettingsPage::Cluster => "settings:nav_cluster",
@@ -209,6 +213,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "settings.page.subconscious",
             SettingsPage::TokenJuice => "settings.page.tokenjuice",
             SettingsPage::WebSearch => "settings.page.web_search",
+            SettingsPage::ExitNode => "settings.page.exit_node",
             SettingsPage::FileSearch => "settings.page.file_search",
             SettingsPage::Cron => "settings.page.cron",
             SettingsPage::Cluster => "settings.page.cluster",
@@ -248,6 +253,9 @@ impl SettingsPage {
             SettingsPage::WebSearch => {
                 ("WEB SEARCH", wormhole_i18n::t("settings.eyebrow.web_search"))
             }
+            SettingsPage::ExitNode => {
+                ("EXIT NODE", wormhole_i18n::t("settings.eyebrow.exit_node"))
+            }
             SettingsPage::FileSearch => {
                 ("FILE SEARCH", wormhole_i18n::t("settings.eyebrow.file_search"))
             }
@@ -280,6 +288,7 @@ impl SettingsPage {
             | SettingsPage::Subconscious
             | SettingsPage::TokenJuice
             | SettingsPage::WebSearch
+            | SettingsPage::ExitNode
             | SettingsPage::FileSearch
             | SettingsPage::Cron => "settings.nav.group.general",
             SettingsPage::Cluster | SettingsPage::Relay => "settings.nav.group.cluster",
@@ -308,6 +317,7 @@ impl SettingsPage {
             SettingsPage::Subconscious => "share-sync.svg",
             SettingsPage::TokenJuice => "share-sync.svg",
             SettingsPage::WebSearch => "tab-toolbox.svg",
+            SettingsPage::ExitNode => "share-sync.svg",
             SettingsPage::FileSearch => "share-file.svg",
             SettingsPage::Cron => "share-sync.svg",
             SettingsPage::Cluster => "tab-devices.svg",
@@ -364,6 +374,11 @@ impl SettingsPage {
         if self == SettingsPage::WebSearch {
             haystack.push_str(
                 " web search brave exa byok fetch scraper 网页 搜索 agent-web-search",
+            );
+        }
+        if self == SettingsPage::ExitNode {
+            haystack.push_str(
+                " exit node tun vless reality vision xray proxy vpn 出口 节点 隧道",
             );
         }
         if self == SettingsPage::FileSearch {
@@ -583,6 +598,7 @@ pub struct SettingsView {
     subconscious: ViewHandle<SubconsciousView>,
     tokenjuice: ViewHandle<TokenJuiceView>,
     web_search: ViewHandle<WebSearchView>,
+    exit_node: ViewHandle<ExitNodeView>,
     file_search: ViewHandle<FileSearchView>,
     security: ViewHandle<SecurityView>,
     cron: ViewHandle<CronView>,
@@ -617,6 +633,8 @@ impl SettingsView {
             ctx.add_typed_action_view(|ctx| TokenJuiceView::new(ctx, core.clone()));
         let web_search =
             ctx.add_typed_action_view(|ctx| WebSearchView::new(ctx, core.clone()));
+        let exit_node =
+            ctx.add_typed_action_view(|ctx| ExitNodeView::new(ctx, core.clone()));
         let file_search =
             ctx.add_typed_action_view(|ctx| FileSearchView::new(ctx, core.clone()));
         let security =
@@ -695,6 +713,7 @@ impl SettingsView {
             subconscious,
             tokenjuice,
             web_search,
+            exit_node,
             file_search,
             security,
             cron,
@@ -1882,6 +1901,7 @@ impl SettingsView {
             }
             SettingsPage::TokenJuice => col.add_child(ChildView::new(&self.tokenjuice).finish()),
             SettingsPage::WebSearch => col.add_child(ChildView::new(&self.web_search).finish()),
+            SettingsPage::ExitNode => col.add_child(ChildView::new(&self.exit_node).finish()),
             SettingsPage::FileSearch => col.add_child(ChildView::new(&self.file_search).finish()),
             SettingsPage::Cron => col.add_child(ChildView::new(&self.cron).finish()),
             SettingsPage::Cluster => col.add_child(self.cluster_block()),
@@ -4819,6 +4839,8 @@ mod tests {
         assert!(!SettingsPage::Cache.matches_query("虚拟机"));
         assert!(SettingsPage::WebSearch.matches_query("brave"));
         assert!(SettingsPage::WebSearch.matches_query("exa"));
+        assert!(SettingsPage::ExitNode.matches_query("vless"));
+        assert!(SettingsPage::ExitNode.matches_query("出口"));
         assert!(SettingsPage::FileSearch.matches_query("vector"));
         assert!(SettingsPage::FileSearch.matches_query("文件"));
         assert!(SettingsPage::Activity.matches_query("alerts"));
@@ -4840,6 +4862,7 @@ mod tests {
                 SettingsPage::Subconscious,
                 SettingsPage::TokenJuice,
                 SettingsPage::WebSearch,
+                SettingsPage::ExitNode,
                 SettingsPage::FileSearch,
                 SettingsPage::Cron,
             ]
