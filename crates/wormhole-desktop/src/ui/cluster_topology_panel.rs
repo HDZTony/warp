@@ -27,8 +27,8 @@ const DEVICE_CHROME_INSET: f32 = 6.0;
 const DEVICE_ADMIN_BADGE_INSET: f32 = 5.0;
 const DEVICE_ADMIN_BADGE_SIZE: f32 = 28.0;
 const DEVICE_DELETE_BTN: f32 = 26.0;
-const DEVICE_ACTION_BTN_SIZE: f32 = 64.0;
-const DEVICE_ACTION_GAP: f32 = 8.0;
+const DEVICE_ACTION_BTN_SIZE: f32 = 24.0;
+const DEVICE_ACTION_GAP: f32 = 6.0;
 
 /// Control-plane manage roles that may remove members (`owner` / `admin`).
 pub(crate) fn node_is_cluster_admin(role: &str) -> bool {
@@ -487,20 +487,16 @@ fn device_action_button(
             )
         } else {
             (
-                theme::text(),
                 if hovered {
-                    Some(theme::accent_cool_bg(16))
+                    theme::accent()
                 } else {
-                    None
+                    theme::accent_cool()
                 },
+                None,
             )
         };
 
-        let button_content =
-            ConstrainedBox::new(Align::new(icons::device_action_icon(kind, color)).finish())
-                .with_width(DEVICE_ACTION_BTN_SIZE)
-                .with_height(DEVICE_ACTION_BTN_SIZE)
-                .finish();
+        let button_content = device_action_slot(icons::device_action_icon(kind, color));
         let button = match background {
             Some(background) => Container::new(button_content)
                 .with_background(background)
@@ -527,6 +523,13 @@ fn device_action_button(
     .finish()
 }
 
+fn device_action_slot(child: Box<dyn Element>) -> Box<dyn Element> {
+    ConstrainedBox::new(Align::new(child).finish())
+        .with_width(DEVICE_ACTION_BTN_SIZE)
+        .with_height(DEVICE_ACTION_BTN_SIZE)
+        .finish()
+}
+
 fn share_files_button(node_id: String, clickable: bool, mono: FamilyId) -> Box<dyn Element> {
     let inner = device_action_button(
         icons::DeviceActionIconKind::ShareFiles,
@@ -541,6 +544,7 @@ fn share_files_button(node_id: String, clickable: bool, mono: FamilyId) -> Box<d
             .with_automation_label("共享文件")
             .with_automation_id(format!("devices:share_files:{node_id}"))
             .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::OpenNode(node_id.clone()));
                 DispatchEventResult::StopPropagation
             })
             .finish()
@@ -563,6 +567,7 @@ fn remote_desktop_button(node_id: String, available: bool, mono: FamilyId) -> Bo
             .with_automation_label("远程桌面")
             .with_automation_id(format!("devices:remote_desktop:{node_id}"))
             .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(DevicesAction::OpenRemoteDesktop(node_id.clone()));
                 DispatchEventResult::StopPropagation
             })
             .finish()
@@ -655,16 +660,14 @@ fn node_card(
             node_share_browsable(node, is_local),
             mono,
         ))
-        .with_margin_right(if !is_local { DEVICE_ACTION_GAP } else { 0.0 })
+        .with_margin_right(DEVICE_ACTION_GAP)
         .finish(),
     );
-    if !is_local {
-        actions.add_child(remote_desktop_button(
-            node_id.clone(),
-            node_remote_desktop_available(node, is_local),
-            mono,
-        ));
-    }
+    actions.add_child(remote_desktop_button(
+        node_id.clone(),
+        node_remote_desktop_available(node, is_local),
+        mono,
+    ));
     let actions_block = Container::new(
         Align::new(
             Container::new(actions.finish())

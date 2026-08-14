@@ -11,11 +11,11 @@ pub const CARD_GAP: f32 = 12.0;
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Vertical scrollbar gutter reserved so the last column is not clipped.
 pub const SCROLLBAR_GUTTER: f32 = 14.0;
-/// Minimum `.device-body` content height (name + status + share count + 64px action buttons).
+/// Minimum `.device-body` content height (name + status + share count + 24px action buttons).
 /// Kept tight to natural content so the card does not leave empty space under the actions.
-pub const BODY_MIN_HEIGHT: f32 = 120.0;
+pub const BODY_MIN_HEIGHT: f32 = 88.0;
 pub const BODY_PADDING_TOP: f32 = 10.0;
-pub const BODY_PADDING_BOTTOM: f32 = 8.0;
+pub const BODY_PADDING_BOTTOM: f32 = 10.0;
 pub const BODY_VERTICAL_PADDING: f32 = BODY_PADDING_TOP + BODY_PADDING_BOTTOM;
 pub const CARD_BORDER: f32 = 1.0;
 

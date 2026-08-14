@@ -36,6 +36,8 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("device-remove.svg"),
     bundled_icon!("device-admin-crown.svg"),
     bundled_icon!("share-folder.svg"),
+    bundled_icon!("device-action-folder.svg"),
+    bundled_icon!("device-action-rdp.svg"),
     bundled_icon!("share-file.svg"),
     bundled_icon!("share-pdf.svg"),
     bundled_icon!("share-json.svg"),
@@ -142,6 +144,8 @@ mod tests {
     fn bundled_device_action_icons_resolve() {
         let assets = WormholeAssets;
         for name in [
+            "device-action-folder.svg",
+            "device-action-rdp.svg",
             "share-folder.svg",
             "chat-header-rdp.svg",
             "device-admin-crown.svg",
@@ -154,6 +158,14 @@ mod tests {
                 "{name} must use a white alpha mask"
             );
             assert!(markup.contains("white"), "{name} must contain a white mask");
+        }
+        for name in ["device-action-folder.svg", "device-action-rdp.svg"] {
+            let bytes = assets.get(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let markup = std::str::from_utf8(&bytes).unwrap_or_else(|_| panic!("{name}: utf-8"));
+            assert!(
+                markup.contains("viewBox=\"0 0 24 24\""),
+                "{name} must share a 24×24 viewBox so card actions sit on one baseline"
+            );
         }
     }
 

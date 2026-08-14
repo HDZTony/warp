@@ -128,7 +128,7 @@ impl TypedActionView for SecurityView {
                 ctx.notify();
             }
             SecurityAction::RetryProbe => {
-                self.status = keyring_consent_retry_probe();
+                self.status = keyring_consent_retry_probe(&self.core.data_dir());
                 self.message = wormhole_i18n::t("settings.security.probe_done");
                 self.tone = if self.status.available {
                     StatusTone::Success

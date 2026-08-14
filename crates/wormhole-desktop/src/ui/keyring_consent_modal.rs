@@ -272,7 +272,7 @@ impl TypedActionView for KeyringConsentModalView {
                 self.apply_decision("local_encrypted", ctx);
             }
             KeyringConsentAction::RetryOsKeyring => {
-                self.status = keyring_consent_retry_probe();
+                self.status = keyring_consent_retry_probe(&self.core.data_dir());
                 self.open = self.status.consent_required;
                 self.message = if self.status.available {
                     wormhole_i18n::t("keyring.consent.retry_ok")

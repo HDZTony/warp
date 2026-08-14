@@ -18,7 +18,7 @@ use crate::ui::spinning_icon;
 use crate::ui::theme;
 
 pub const TAB_ICON_SIZE: f32 = 18.0;
-pub const DEVICE_ACTION_ICON_SIZE: f32 = 32.0;
+pub const DEVICE_ACTION_ICON_SIZE: f32 = 24.0;
 pub const SHARE_ICON_SIZE: f32 = 18.0;
 pub const SHARE_NAV_BTN_SIZE: f32 = 28.0;
 pub const SHARE_NAV_ICON_SIZE: f32 = 14.0;
@@ -116,8 +116,8 @@ pub enum DeviceActionIconKind {
 impl DeviceActionIconKind {
     pub fn asset_path(self) -> &'static str {
         match self {
-            Self::ShareFiles => "share-folder.svg",
-            Self::RemoteDesktop => "chat-header-rdp.svg",
+            Self::ShareFiles => "device-action-folder.svg",
+            Self::RemoteDesktop => "device-action-rdp.svg",
         }
     }
 }
@@ -402,11 +402,11 @@ mod tests {
     fn device_action_icons_use_expected_assets() {
         assert_eq!(
             DeviceActionIconKind::ShareFiles.asset_path(),
-            "share-folder.svg"
+            "device-action-folder.svg"
         );
         assert_eq!(
             DeviceActionIconKind::RemoteDesktop.asset_path(),
-            "chat-header-rdp.svg"
+            "device-action-rdp.svg"
         );
     }
 
