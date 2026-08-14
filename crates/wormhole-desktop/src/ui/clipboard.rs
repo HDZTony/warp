@@ -146,6 +146,21 @@ pub fn read_clipboard_image_png() -> Option<(Vec<u8>, String)> {
     ))
 }
 
+/// Copy an image file onto the system clipboard as RGBA pixels.
+pub fn write_clipboard_image_from_path(path: &std::path::Path) -> Result<(), String> {
+    let rgb = storage_core::decode_chat_image_to_rgb(path).map_err(|err| err.to_string())?;
+    let (width, height) = rgb.dimensions();
+    let rgba = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+        })
+        .map_err(|e| e.to_string())
+}
+
 pub fn clipboard_image_kind_and_ext(mime: &str) -> (&'static str, &'static str) {
     match mime {
         "image/png" => ("image", "png"),

@@ -16,6 +16,7 @@ use crate::ui::chat::channel_create_panel::{ChannelCreateEvent, ChannelCreatePan
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::contacts_panel::{ContactsPanelEvent, ContactsPanelView};
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
+use crate::ui::chat::image_viewer::{image_context_menu_overlay, image_viewer_overlay};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
@@ -43,6 +44,8 @@ pub enum ChatShellAction {
     VoiceCallDecline,
     SetDropHover(bool),
     DropFiles(Vec<String>),
+    ForwardPick(String),
+    ForwardCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +74,7 @@ pub struct ChatShellView {
     channel_create: ViewHandle<ChannelCreatePanelView>,
     calls: ViewHandle<CallsPanelView>,
     drop_hover: bool,
+    last_overlay_tick: u64,
 }
 
 impl ChatShellView {
@@ -245,10 +249,32 @@ impl ChatShellView {
             channel_create,
             calls,
             drop_hover: false,
+            last_overlay_tick: 0,
         };
         view.poll_gate(ctx);
         view.start_chat_event_listener(ctx);
+        view.start_overlay_poll(ctx);
         view
+    }
+
+    fn start_overlay_poll(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            },
+            |view, _, ctx| {
+                let tick = view
+                    .shell_state
+                    .lock()
+                    .map(|state| state.overlay_tick)
+                    .unwrap_or(0);
+                if tick != view.last_overlay_tick {
+                    view.last_overlay_tick = tick;
+                    ctx.notify();
+                }
+                view.start_overlay_poll(ctx);
+            },
+        );
     }
 
     fn start_chat_event_listener(&self, ctx: &mut ViewContext<Self>) {
@@ -393,6 +419,9 @@ impl ChatShellView {
                     || state.contacts_open
                     || state.channel_create_open
                     || state.calls_open
+                    || state.image_viewer.is_some()
+                    || state.image_context_menu.is_some()
+                    || state.forward_draft.is_some()
             })
             .unwrap_or(false)
     }
@@ -429,8 +458,13 @@ impl TypedActionView for ChatShellView {
         match action {
             ChatShellAction::DismissOverlays => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    // Esc hierarchy: confirm → menu → subview → close panel → other overlays
-                    if state.calls_open {
+                    if state.image_viewer.is_some() || state.image_context_menu.is_some() {
+                        state.close_image_viewer();
+                    } else if state.forward_draft.is_some() {
+                        state.clear_forward_draft();
+                    } else if state.reply_draft.is_some() {
+                        state.clear_reply_draft();
+                    } else if state.calls_open {
                         if state.calls_subview == "confirm" {
                             state.calls_subview = "overview".into();
                             state.calls_menu_open = false;
@@ -477,6 +511,15 @@ impl TypedActionView for ChatShellView {
                     compose.stage_dropped_paths(paths, ctx);
                 });
                 ctx.notify();
+            }
+            ChatShellAction::ForwardCancel => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.clear_forward_draft();
+                }
+                ctx.notify();
+            }
+            ChatShellAction::ForwardPick(conv_id) => {
+                self.forward_to_conversation(conv_id.clone(), ctx);
             }
         }
     }
@@ -571,7 +614,181 @@ impl ChatShellView {
         stack.add_child(ChildView::new(&self.contacts).finish());
         stack.add_child(ChildView::new(&self.channel_create).finish());
         stack.add_child(ChildView::new(&self.calls).finish());
+        if let Ok(state) = self.shell_state.lock() {
+            if let Some(viewer) = state.image_viewer.as_ref() {
+                stack.add_child(image_viewer_overlay(
+                    self.font,
+                    viewer,
+                    self.shell_state.clone(),
+                ));
+            }
+            if let Some(menu) = state.image_context_menu.as_ref() {
+                stack.add_child(image_context_menu_overlay(
+                    self.font,
+                    menu,
+                    self.shell_state.clone(),
+                ));
+            }
+            if state.forward_draft.is_some() {
+                stack.add_child(self.forward_picker_overlay());
+            }
+        }
         stack.finish()
+    }
+
+    fn forward_picker_overlay(&self) -> Box<dyn Element> {
+        let font = self.font;
+        let shell_state = self.shell_state.clone();
+        let core = self.core.clone();
+        // Conversations are loaded asynchronously when the overlay opens via ForwardPick after
+        // listing; for the picker UI we show a simple prompt + cancel, and let the user pick
+        // from the already-visible sidebar by tapping a conversation after forward is armed.
+        // Here we expose cancel + instruction; selecting happens when shell receives ForwardPick
+        // from a future sidebar hook. For now provide an explicit "send to current chat" path.
+        let current = self
+            .selection
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+
+        let mut col = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        col.add_child(
+            ui_text::body(wormhole_i18n::t("chat.image.forward_pick"), font)
+                .with_color(theme::text())
+                .finish(),
+        );
+        if let Some(conv_id) = current {
+            let conv_id_click = conv_id.clone();
+            col.add_child(
+                Container::new(
+                    EventHandler::new(
+                        Container::new(
+                            ui_text::body(wormhole_i18n::t("chat.image.forward_here"), font)
+                                .with_color(theme::accent_cool())
+                                .finish(),
+                        )
+                        .with_uniform_padding(10.0)
+                        .finish(),
+                    )
+                    .with_automation_label(wormhole_i18n::t("chat.image.forward_here"))
+                    .with_automation_id("chat:forward_here")
+                    .on_left_mouse_down(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(ChatShellAction::ForwardPick(
+                            conv_id_click.clone(),
+                        ));
+                        DispatchEventResult::StopPropagation
+                    })
+                    .finish(),
+                )
+                .with_margin_top(8.0)
+                .finish(),
+            );
+        }
+        col.add_child(
+            Container::new(
+                EventHandler::new(
+                    Container::new(
+                        ui_text::body(wormhole_i18n::t("chat.image.close"), font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .with_uniform_padding(10.0)
+                    .finish(),
+                )
+                .with_automation_label(wormhole_i18n::t("chat.image.close"))
+                .with_automation_id("chat:forward_cancel")
+                .on_left_mouse_down(|ctx, _, _| {
+                    ctx.dispatch_typed_action(ChatShellAction::ForwardCancel);
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
+            )
+            .with_margin_top(8.0)
+            .finish(),
+        );
+
+        let panel = Container::new(col.finish())
+            .with_uniform_padding(16.0)
+            .with_background(theme::panel())
+            .with_border(Border::all(1.0).with_border_fill(theme::border()))
+            .with_corner_radius(warpui::elements::CornerRadius::with_all(
+                warpui::elements::Radius::Pixels(12.0),
+            ))
+            .finish();
+
+        let _ = (shell_state, core);
+        Align::new(
+            Container::new(panel)
+                .with_background(ColorU::new(0, 0, 0, 160))
+                .finish(),
+        )
+        .finish()
+    }
+
+    fn forward_to_conversation(&mut self, conv_id: String, ctx: &mut ViewContext<Self>) {
+        let draft = self
+            .shell_state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.forward_draft.take());
+        let Some(draft) = draft else {
+            return;
+        };
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let params = wormhole_desktop_core::chat_commands::SendChatMessageParams {
+                    conv_id,
+                    body: String::new(),
+                    backend: None,
+                    peer_bootstrap_addrs: Vec::new(),
+                    sticker: None,
+                    attachments: vec![
+                        wormhole_desktop_core::chat_commands::SendChatAttachmentDto {
+                            kind: draft.kind,
+                            path: draft.local_path,
+                        },
+                    ],
+                    reply_to: None,
+                    forwarded_from: Some(draft.forwarded_from),
+                };
+                wormhole_desktop_core::chat_commands::chat_send_message(
+                    runtime.ctx.as_ref(),
+                    &runtime.state,
+                    params,
+                )
+                .await
+            },
+            move |view, result, ctx| {
+                if let Ok(mut state) = shell_state.lock() {
+                    match result {
+                        Ok(_) => {
+                            state.clear_forward_draft();
+                            state.show_toast(
+                                wormhole_i18n::t("chat.image.forwarded"),
+                                StatusTone::Success,
+                            );
+                            state.bump_message_tick();
+                        }
+                        Err(err) => {
+                            state.show_toast(
+                                format!(
+                                    "{}: {err}",
+                                    wormhole_i18n::t("chat.image.forward_failed")
+                                ),
+                                StatusTone::Danger,
+                            );
+                        }
+                    }
+                }
+                let _ = view;
+                ctx.notify();
+            },
+        );
     }
 
     fn incoming_call_banner(&self) -> Box<dyn Element> {

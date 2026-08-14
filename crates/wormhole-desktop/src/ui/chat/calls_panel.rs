@@ -487,6 +487,8 @@ impl CallsPanelView {
                         peer_bootstrap_addrs: Vec::new(),
                         sticker: None,
                         attachments: Vec::new(),
+                        reply_to: None,
+                        forwarded_from: None,
                     },
                 )
                 .await;

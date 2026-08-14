@@ -8,6 +8,7 @@ pub mod contacts_panel;
 pub mod header;
 pub mod header_menu;
 pub mod image_asset;
+pub mod image_viewer;
 pub mod labels;
 pub mod layout;
 pub mod profile_panel;

@@ -29,6 +29,44 @@ pub struct PendingOpenChat {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImageViewerState {
+    pub attachment_id: String,
+    pub message_id: String,
+    pub asset_id: Option<String>,
+    pub local_path: Option<String>,
+    pub name: String,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplyDraft {
+    pub message_id: String,
+    pub preview: String,
+    pub has_image: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForwardDraft {
+    pub local_path: String,
+    pub name: String,
+    pub kind: String,
+    pub size: u64,
+    pub forwarded_from: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageContextMenu {
+    pub attachment_id: String,
+    pub message_id: String,
+    pub local_path: Option<String>,
+    pub name: String,
+    pub asset_id: Option<String>,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone)]
 pub struct ChatShellState {
     pub thread_search_open: bool,
     pub profile_open: bool,
@@ -74,6 +112,12 @@ pub struct ChatShellState {
     pub pending_outgoing: Vec<PendingOutgoingMessage>,
     /// When set, the open thread scrolls to this message id after load.
     pub pending_jump_message_id: Option<String>,
+    pub image_viewer: Option<ImageViewerState>,
+    pub image_context_menu: Option<ImageContextMenu>,
+    pub reply_draft: Option<ReplyDraft>,
+    pub forward_draft: Option<ForwardDraft>,
+    /// Bumped when lightbox / reply / forward overlays change so shell re-renders.
+    pub overlay_tick: u64,
 }
 
 impl Default for ChatShellState {
@@ -115,6 +159,11 @@ impl Default for ChatShellState {
             open_error: None,
             pending_outgoing: Vec::new(),
             pending_jump_message_id: None,
+            image_viewer: None,
+            image_context_menu: None,
+            reply_draft: None,
+            forward_draft: None,
+            overlay_tick: 0,
         }
     }
 }
@@ -141,6 +190,49 @@ impl ChatShellState {
         self.mute_flyout_open = false;
         self.sidebar_menu_open = false;
         self.calls_menu_open = false;
+        if self.image_context_menu.take().is_some() {
+            self.bump_overlay_tick();
+        }
+    }
+
+    pub fn close_image_viewer(&mut self) {
+        self.image_viewer = None;
+        self.image_context_menu = None;
+        self.bump_overlay_tick();
+    }
+
+    pub fn open_image_viewer(&mut self, viewer: ImageViewerState) {
+        self.image_context_menu = None;
+        self.image_viewer = Some(viewer);
+        self.bump_overlay_tick();
+    }
+
+    pub fn set_reply_draft(&mut self, draft: ReplyDraft) {
+        self.reply_draft = Some(draft);
+        self.forward_draft = None;
+        self.close_image_viewer();
+        self.bump_overlay_tick();
+    }
+
+    pub fn clear_reply_draft(&mut self) {
+        self.reply_draft = None;
+        self.bump_overlay_tick();
+    }
+
+    pub fn set_forward_draft(&mut self, draft: ForwardDraft) {
+        self.forward_draft = Some(draft);
+        self.close_image_viewer();
+        self.image_context_menu = None;
+        self.bump_overlay_tick();
+    }
+
+    pub fn clear_forward_draft(&mut self) {
+        self.forward_draft = None;
+        self.bump_overlay_tick();
+    }
+
+    pub fn bump_overlay_tick(&mut self) {
+        self.overlay_tick = self.overlay_tick.saturating_add(1);
     }
 
     pub fn close_contacts(&mut self) {

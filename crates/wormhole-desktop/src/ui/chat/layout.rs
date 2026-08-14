@@ -16,6 +16,33 @@ pub fn attachment_preview_width(max_bubble_width: f32) -> f32 {
     max_bubble_width.clamp(160.0, 280.0)
 }
 
+/// Longest edge / height caps for Telegram-style photo thumbnails in bubbles.
+pub const ATTACH_PREVIEW_MAX_EDGE: f32 = 280.0;
+pub const ATTACH_PREVIEW_MAX_HEIGHT: f32 = 320.0;
+
+/// Fit source pixel size into the bubble preview box without letterboxing empty
+/// space: the ConstrainedBox size equals the fitted size.
+pub fn fit_attachment_preview(
+    src_w: u32,
+    src_h: u32,
+    max_w: f32,
+    max_h: f32,
+) -> (f32, f32) {
+    let src_w = src_w.max(1) as f32;
+    let src_h = src_h.max(1) as f32;
+    let max_w = max_w.max(1.0);
+    let max_h = max_h.max(1.0);
+    let scale = (max_w / src_w).min(max_h / src_h).min(1.0);
+    ((src_w * scale).round().max(1.0), (src_h * scale).round().max(1.0))
+}
+
+/// Default placeholder box when pixel size is unknown (still square-ish, not 280×180).
+pub fn attachment_placeholder_size(max_bubble_width: f32) -> (f32, f32) {
+    let w = attachment_preview_width(max_bubble_width);
+    let h = (w * 0.75).min(ATTACH_PREVIEW_MAX_HEIGHT);
+    (w, h)
+}
+
 pub fn bubble_max_width(parent_width: f32) -> f32 {
     if !parent_width.is_finite() || parent_width <= 0.0 {
         return TG_BUBBLE_MAX_WIDTH;
@@ -79,6 +106,34 @@ mod tests {
         assert_eq!(attachment_preview_width(520.0), 280.0);
         assert_eq!(attachment_preview_width(200.0), 200.0);
         assert_eq!(attachment_preview_width(80.0), 160.0);
+    }
+
+    #[test]
+    fn fit_attachment_preview_square() {
+        let (w, h) = fit_attachment_preview(800, 800, 280.0, 320.0);
+        assert!((w - 280.0).abs() < 0.5);
+        assert!((h - 280.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn fit_attachment_preview_wide() {
+        let (w, h) = fit_attachment_preview(1600, 900, 280.0, 320.0);
+        assert!((w - 280.0).abs() < 0.5);
+        assert!((h - 157.5).abs() < 1.0);
+    }
+
+    #[test]
+    fn fit_attachment_preview_tall() {
+        let (w, h) = fit_attachment_preview(900, 1600, 280.0, 320.0);
+        assert!((h - 320.0).abs() < 0.5);
+        assert!((w - 180.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn fit_attachment_preview_small_unchanged() {
+        let (w, h) = fit_attachment_preview(120, 80, 280.0, 320.0);
+        assert!((w - 120.0).abs() < 0.5);
+        assert!((h - 80.0).abs() < 0.5);
     }
 
     #[test]

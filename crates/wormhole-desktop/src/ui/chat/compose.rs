@@ -69,6 +69,7 @@ pub enum ChatComposeAction {
     RemoveStaged(usize),
     PasteClipboard,
     ClearAndUnfocus,
+    ClearReply,
     TextEdit(TextFieldEditAction),
 }
 
@@ -277,11 +278,14 @@ impl ChatComposeView {
                     .ok()
                     .and_then(Result::ok)
             },
-            move |view, payload, ctx| {
-                if let Some(payload) = payload {
+            move |view, decoded, ctx| {
+                if let Some(decoded) = decoded {
                     if let Some(item) = view.staged.iter_mut().find(|item| item.id == id) {
-                        item.preview_asset_id =
-                            Some(insert_attachment_image_payload(ctx, &id, payload));
+                        item.preview_asset_id = Some(insert_attachment_image_payload(
+                            ctx,
+                            &id,
+                            decoded.payload,
+                        ));
                     }
                 }
                 ctx.notify();
@@ -329,6 +333,12 @@ impl ChatComposeView {
             })
             .collect::<Vec<_>>();
 
+        let reply_to = self
+            .shell_state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.reply_draft.take().map(|draft| draft.message_id));
+
         if let Ok(mut state) = self.shell_state.lock() {
             state.push_pending_outgoing(
                 client_id.clone(),
@@ -358,6 +368,8 @@ impl ChatComposeView {
                     peer_bootstrap_addrs: Vec::new(),
                     sticker: None,
                     attachments,
+                    reply_to,
+                    forwarded_from: None,
                 };
                 chat_send_message(runtime.ctx.as_ref(), &runtime.state, params).await
             },
@@ -878,6 +890,67 @@ impl ChatComposeView {
         .finish()
     }
 
+    fn reply_strip(&self, preview: &str) -> Box<dyn Element> {
+        let clear = AutomationTarget::new(
+            EventHandler::new(
+                Container::new(
+                    ui_text::chat_bubble_meta("×".to_string(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_uniform_padding(4.0)
+                .finish(),
+            )
+            .skip_automation()
+            .on_left_mouse_down(|ctx, _, _| {
+                ctx.dispatch_typed_action(ChatComposeAction::ClearReply);
+                DispatchEventResult::StopPropagation
+            })
+            .finish(),
+        )
+        .with_label(wormhole_i18n::t("chat.image.clear_reply"))
+        .with_id("chat:reply_clear")
+        .finish();
+
+        AutomationTarget::new(
+            Container::new(
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Expanded::new(
+                            1.0,
+                            Flex::column()
+                                .with_main_axis_size(MainAxisSize::Min)
+                                .with_child(
+                                    ui_text::chat_bubble_meta(
+                                        wormhole_i18n::t("chat.image.reply"),
+                                        self.font,
+                                    )
+                                    .with_color(theme::accent_cool())
+                                    .finish(),
+                                )
+                                .with_child(
+                                    ui_text::chat_bubble_meta(preview.to_string(), self.font)
+                                        .with_color(theme::muted())
+                                        .finish(),
+                                )
+                                .finish(),
+                        )
+                        .finish(),
+                    )
+                    .with_child(clear)
+                    .finish(),
+            )
+            .with_padding_bottom(STAGED_STRIP_PAD)
+            .with_padding_left(4.0)
+            .finish(),
+        )
+        .with_label(wormhole_i18n::t("chat.image.reply"))
+        .with_id("chat:reply_strip")
+        .finish()
+    }
+
     fn staged_strip(&self) -> Box<dyn Element> {
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
@@ -1062,6 +1135,14 @@ impl View for ChatComposeView {
 
         let mut compose_col = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if let Some(reply) = self
+            .shell_state
+            .lock()
+            .ok()
+            .and_then(|state| state.reply_draft.clone())
+        {
+            compose_col.add_child(self.reply_strip(&reply.preview));
+        }
         if has_staged {
             compose_col.add_child(self.staged_strip());
         }
@@ -1189,6 +1270,15 @@ impl TypedActionView for ChatComposeView {
                 if !self.sending {
                     if !self.staged.is_empty() {
                         self.clear_staged();
+                    } else if self
+                        .shell_state
+                        .lock()
+                        .map(|state| state.reply_draft.is_some())
+                        .unwrap_or(false)
+                    {
+                        if let Ok(mut state) = self.shell_state.lock() {
+                            state.clear_reply_draft();
+                        }
                     } else {
                         self.draft.clear();
                         self.field_state.clear_marked();
@@ -1197,6 +1287,12 @@ impl TypedActionView for ChatComposeView {
                     sync_caret_blink(self, ctx);
                     ctx.notify();
                 }
+            }
+            ChatComposeAction::ClearReply => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.clear_reply_draft();
+                }
+                ctx.notify();
             }
             ChatComposeAction::TextEdit(edit) => {
                 if !self.sending {
@@ -1238,7 +1334,9 @@ impl TypedActionView for ChatComposeView {
             ChatComposeAction::PasteClipboard => {
                 AccessibilityContent::new_without_help("粘贴", WarpA11yRole::ButtonRole)
             }
-            ChatComposeAction::ClearAndUnfocus | ChatComposeAction::TextEdit(_) => {
+            ChatComposeAction::ClearAndUnfocus
+            | ChatComposeAction::ClearReply
+            | ChatComposeAction::TextEdit(_) => {
                 AccessibilityContent::new_without_help("编辑消息草稿", WarpA11yRole::TextfieldRole)
             }
         };

@@ -20785,6 +20785,7 @@ dependencies = [
  "wormhole-nautilus",
  "wormhole-notifications",
  "wormhole-tokenjuice",
+ "wormhole-vless-uri",
  "wormhole-web",
  "zbus",
  "zip 2.4.2",
@@ -20950,6 +20951,17 @@ dependencies = [
  "tinyjuice",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "wormhole-vless-uri"
+version = "0.1.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "url",
+ "uuid",
 ]
 
 [[package]]

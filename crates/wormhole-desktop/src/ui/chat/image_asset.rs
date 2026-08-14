@@ -9,6 +9,14 @@ use warpui::assets::asset_cache::AssetCache;
 use warpui::{SingletonEntity, ViewContext};
 use warpui_core::image_cache::{CustomImageFormat, CustomImageHeader, ImageType};
 
+/// Decoded RGB asset payload plus source pixel size for bubble fitting.
+#[derive(Debug, Clone)]
+pub struct DecodedImageAsset {
+    pub payload: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub fn chat_wallpaper_asset_id(conv_id: &str) -> String {
     format!("wormhole-chat-wallpaper-{conv_id}")
 }
@@ -19,22 +27,31 @@ pub fn chat_attachment_asset_id(attachment_id: &str) -> String {
 
 /// Decode bytes via `storage-core` (png/jpeg/gif/webp/bmp/avif/heic) into RGB asset payload.
 pub fn decode_image_asset_payload(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Ok(decode_image_asset_payload_sized(bytes)?.payload)
+}
+
+pub fn decode_image_asset_payload_sized(bytes: Vec<u8>) -> Result<DecodedImageAsset, String> {
     let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
     let path = dir.path().join("chat-preview.bin");
     std::fs::write(&path, &bytes).map_err(|err| err.to_string())?;
     decode_image_asset_from_path(&path)
 }
 
-pub fn decode_image_asset_from_path(path: &Path) -> Result<Vec<u8>, String> {
+pub fn decode_image_asset_from_path(path: &Path) -> Result<DecodedImageAsset, String> {
     let rgb = decode_chat_image_to_rgb(path).map_err(|err| err.to_string())?;
     let (width, height) = rgb.dimensions();
-    CustomImageHeader::prepend_custom_header(
+    let payload = CustomImageHeader::prepend_custom_header(
         rgb.into_raw(),
         width,
         height,
         CustomImageFormat::Rgb,
     )
-    .map_err(|err| format!("{err:?}"))
+    .map_err(|err| format!("{err:?}"))?;
+    Ok(DecodedImageAsset {
+        payload,
+        width,
+        height,
+    })
 }
 
 pub fn load_wallpaper_bytes_from_path(path: &Path) -> Result<Vec<u8>, String> {
@@ -58,10 +75,10 @@ pub fn insert_wallpaper_asset<V: warpui::View>(
     conv_id: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let payload = decode_image_asset_payload(bytes)?;
+    let decoded = decode_image_asset_payload_sized(bytes)?;
     let asset_id = chat_wallpaper_asset_id(conv_id);
     AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
-        cache.insert_raw_asset_bytes::<ImageType>(asset_id, &payload, model_ctx);
+        cache.insert_raw_asset_bytes::<ImageType>(asset_id, &decoded.payload, model_ctx);
     });
     Ok(())
 }
@@ -72,10 +89,10 @@ pub fn insert_attachment_image_asset<V: warpui::View>(
     attachment_id: &str,
     path: &Path,
 ) -> Result<String, String> {
-    let payload = decode_image_asset_from_path(path)?;
+    let decoded = decode_image_asset_from_path(path)?;
     let asset_id = chat_attachment_asset_id(attachment_id);
     AssetCache::handle(ctx).update(ctx, |cache, model_ctx| {
-        cache.insert_raw_asset_bytes::<ImageType>(asset_id.clone(), &payload, model_ctx);
+        cache.insert_raw_asset_bytes::<ImageType>(asset_id.clone(), &decoded.payload, model_ctx);
     });
     Ok(asset_id)
 }
@@ -125,7 +142,8 @@ mod tests {
         DynamicImage::ImageRgb8(img)
             .save_with_format(&path, ImageFormat::Png)
             .unwrap();
-        let payload = decode_image_asset_from_path(&path).unwrap();
-        assert!(!payload.is_empty());
+        let decoded = decode_image_asset_from_path(&path).unwrap();
+        assert!(!decoded.payload.is_empty());
+        assert_eq!((decoded.width, decoded.height), (4, 3));
     }
 }
