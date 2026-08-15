@@ -19,6 +19,7 @@ pub mod icons;
 pub mod login_modal;
 pub mod memory_view;
 pub mod activity_view;
+pub mod pet_view;
 pub mod subconscious_view;
 pub mod tokenjuice_view;
 pub mod web_search_view;

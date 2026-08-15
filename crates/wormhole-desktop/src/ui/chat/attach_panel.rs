@@ -166,6 +166,115 @@ pub fn prepare_staged_file_with_kind(
     })
 }
 
+/// Effective attachment kind for the media-upload dialog send path.
+pub fn effective_upload_kind(path: &Path, send_as_files: bool) -> String {
+    if send_as_files {
+        "document".into()
+    } else {
+        attachment_kind_for_drop_path(path)
+    }
+}
+
+/// One outbound message batch from the upload dialog (caption + attachments).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadSendBatch {
+    pub body: String,
+    pub attachments: Vec<(String, PathBuf)>,
+}
+
+/// Build send batches: grouped = one message; ungrouped = N messages with caption on first.
+pub fn build_upload_send_batches(
+    items: &[(PathBuf, String)],
+    caption: &str,
+    group_items: bool,
+    send_as_files: bool,
+) -> Vec<UploadSendBatch> {
+    let caption = caption.trim();
+    let resolved: Vec<(String, PathBuf)> = items
+        .iter()
+        .map(|(path, _name)| (effective_upload_kind(path, send_as_files), path.clone()))
+        .collect();
+    if resolved.is_empty() {
+        if caption.is_empty() {
+            return Vec::new();
+        }
+        return vec![UploadSendBatch {
+            body: caption.to_string(),
+            attachments: Vec::new(),
+        }];
+    }
+    if group_items || resolved.len() == 1 {
+        return vec![UploadSendBatch {
+            body: caption.to_string(),
+            attachments: resolved,
+        }];
+    }
+    resolved
+        .into_iter()
+        .enumerate()
+        .map(|(idx, att)| UploadSendBatch {
+            body: if idx == 0 {
+                caption.to_string()
+            } else {
+                String::new()
+            },
+            attachments: vec![att],
+        })
+        .collect()
+}
+
+/// Telegram `PreparedList::hasGroupOption` (no slowmode): need at least two items.
+pub fn show_media_upload_group_option(item_count: usize) -> bool {
+    item_count >= 2
+}
+
+/// Telegram `hasSendImagesAsPhotosOption`: show when any image/video is present.
+pub fn show_media_upload_as_file_option<'a>(
+    kinds: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    kinds.into_iter().any(|k| k == "image" || k == "video")
+}
+
+/// Telegram Remember: visible only after Group / as-document differs from open-time values.
+pub fn show_media_upload_remember_option(
+    group: bool,
+    as_file: bool,
+    initial_group: bool,
+    initial_as_file: bool,
+) -> bool {
+    group != initial_group || as_file != initial_as_file
+}
+
+/// Whether Remember should persist the as-file flag (skip hidden / forced-unchanged).
+pub fn should_persist_media_upload_as_file(
+    show_as_file: bool,
+    forced_as_file: bool,
+    send_as_files: bool,
+    initial_send_as_files: bool,
+) -> bool {
+    if !show_as_file {
+        return false;
+    }
+    if forced_as_file && send_as_files == initial_send_as_files {
+        return false;
+    }
+    true
+}
+
+/// When `WORMHOLE_SIM_USE_ATTACH_PATH` lists existing file path(s), skip the OS picker.
+/// Separate multiple paths with `;` (e.g. `a.png;b.png`).
+pub fn sim_use_attach_paths_from_env() -> Vec<PathBuf> {
+    let Ok(raw) = std::env::var("WORMHOLE_SIM_USE_ATTACH_PATH") else {
+        return Vec::new();
+    };
+    raw.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +410,61 @@ mod tests {
             message.contains("huge.bin"),
             "oversize error should name the file: {message}"
         );
+    }
+
+    #[test]
+    fn effective_upload_kind_respects_send_as_files() {
+        assert_eq!(
+            effective_upload_kind(Path::new("a.png"), true),
+            "document"
+        );
+        assert_eq!(effective_upload_kind(Path::new("a.png"), false), "image");
+        assert_eq!(effective_upload_kind(Path::new("a.mp4"), false), "video");
+    }
+
+    #[test]
+    fn build_upload_send_batches_group_and_ungroup() {
+        let items = [
+            (PathBuf::from("a.png"), "a.png".into()),
+            (PathBuf::from("b.png"), "b.png".into()),
+        ];
+        let grouped = build_upload_send_batches(&items, "hi", true, false);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].body, "hi");
+        assert_eq!(grouped[0].attachments.len(), 2);
+
+        let ungrouped = build_upload_send_batches(&items, "hi", false, false);
+        assert_eq!(ungrouped.len(), 2);
+        assert_eq!(ungrouped[0].body, "hi");
+        assert!(ungrouped[1].body.is_empty());
+        assert_eq!(ungrouped[0].attachments.len(), 1);
+        assert_eq!(ungrouped[1].attachments.len(), 1);
+    }
+
+    #[test]
+    fn build_upload_send_batches_as_files() {
+        let items = [(PathBuf::from("a.png"), "a.png".into())];
+        let batches = build_upload_send_batches(&items, "", true, true);
+        assert_eq!(batches[0].attachments[0].0, "document");
+    }
+
+    #[test]
+    fn media_upload_option_visibility_matches_telegram_rules() {
+        assert!(!show_media_upload_group_option(0));
+        assert!(!show_media_upload_group_option(1));
+        assert!(show_media_upload_group_option(2));
+
+        assert!(!show_media_upload_as_file_option(["document"]));
+        assert!(show_media_upload_as_file_option(["image"]));
+        assert!(show_media_upload_as_file_option(["video", "document"]));
+
+        assert!(!show_media_upload_remember_option(true, false, true, false));
+        assert!(show_media_upload_remember_option(false, false, true, false));
+        assert!(show_media_upload_remember_option(true, true, true, false));
+
+        assert!(!should_persist_media_upload_as_file(false, false, true, false));
+        assert!(!should_persist_media_upload_as_file(true, true, true, true));
+        assert!(should_persist_media_upload_as_file(true, true, false, true));
+        assert!(should_persist_media_upload_as_file(true, false, true, false));
     }
 }

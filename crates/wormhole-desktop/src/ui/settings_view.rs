@@ -17,6 +17,7 @@ use crate::ui::icons;
 use crate::ui::clipboard::write_clipboard_text;
 use crate::ui::memory_view::MemoryView;
 use crate::ui::activity_view::ActivityView;
+use crate::ui::pet_view::PetView;
 use crate::ui::subconscious_view::SubconsciousView;
 use crate::ui::tokenjuice_view::TokenJuiceView;
 use crate::ui::web_search_view::WebSearchView;
@@ -75,6 +76,7 @@ pub enum SettingsPage {
     Email,
     Connections,
     Agent,
+    Pet,
     Memory,
     Activity,
     Subconscious,
@@ -148,6 +150,7 @@ impl SettingsPage {
             SettingsPage::Email,
             SettingsPage::Connections,
             SettingsPage::Agent,
+            SettingsPage::Pet,
             SettingsPage::Theme,
             SettingsPage::Memory,
             SettingsPage::Activity,
@@ -178,6 +181,7 @@ impl SettingsPage {
             SettingsPage::Email => "settings:nav_email",
             SettingsPage::Connections => "settings:nav_connections",
             SettingsPage::Agent => "settings:nav_agent",
+            SettingsPage::Pet => "settings:nav_pet",
             SettingsPage::Memory => "settings:nav_memory",
             SettingsPage::Activity => "settings:nav_activity",
             SettingsPage::Subconscious => "settings:nav_subconscious",
@@ -208,6 +212,7 @@ impl SettingsPage {
             SettingsPage::Email => "settings.page.email",
             SettingsPage::Connections => "settings.page.connections",
             SettingsPage::Agent => "settings.page.agent",
+            SettingsPage::Pet => "settings.page.pet",
             SettingsPage::Memory => "settings.page.memory",
             SettingsPage::Activity => "settings.page.activity",
             SettingsPage::Subconscious => "settings.page.subconscious",
@@ -241,6 +246,7 @@ impl SettingsPage {
                 ("CONNECTIONS", wormhole_i18n::t("settings.eyebrow.connections"))
             }
             SettingsPage::Agent => ("AGENT", wormhole_i18n::t("settings.eyebrow.agent")),
+            SettingsPage::Pet => ("PET", wormhole_i18n::t("settings.eyebrow.pet")),
             SettingsPage::Memory => ("MEMORY", wormhole_i18n::t("settings.eyebrow.memory")),
             SettingsPage::Activity => ("ACTIVITY", wormhole_i18n::t("settings.eyebrow.activity")),
             SettingsPage::Subconscious => (
@@ -282,6 +288,7 @@ impl SettingsPage {
             | SettingsPage::Email
             | SettingsPage::Connections
             | SettingsPage::Agent
+            | SettingsPage::Pet
             | SettingsPage::Theme
             | SettingsPage::Memory
             | SettingsPage::Activity
@@ -312,6 +319,7 @@ impl SettingsPage {
             SettingsPage::Account | SettingsPage::Security | SettingsPage::Email => "agent-user.svg",
             SettingsPage::Connections => "tab-toolbox.svg",
             SettingsPage::Agent => "tab-agent.svg",
+            SettingsPage::Pet => "tab-agent.svg",
             SettingsPage::Memory => "share-file.svg",
             SettingsPage::Activity => "share-sync.svg",
             SettingsPage::Subconscious => "share-sync.svg",
@@ -349,6 +357,11 @@ impl SettingsPage {
         if self == SettingsPage::Agent {
             haystack.push_str(
                 " codex llm api key byok kimi zai deepseek openai anthropic qwen minimax 供应商 provider",
+            );
+        }
+        if self == SettingsPage::Pet {
+            haystack.push_str(
+                " pet mascot desktop overlay 桌宠 芭乐 语音唤醒 vcam 会议摄像头 agent-pet",
             );
         }
         if self == SettingsPage::Memory {
@@ -592,6 +605,7 @@ pub struct SettingsView {
     toolbox: ViewHandle<ToolboxView>,
     display: ViewHandle<DisplayView>,
     agent_providers: ViewHandle<AgentProvidersView>,
+    pet: ViewHandle<PetView>,
     plugins: ViewHandle<PluginsView>,
     memory: ViewHandle<MemoryView>,
     activity: ViewHandle<ActivityView>,
@@ -624,6 +638,7 @@ impl SettingsView {
         let display = ctx.add_typed_action_view(|ctx| DisplayView::new(ctx, core.clone()));
         let agent_providers =
             ctx.add_typed_action_view(|ctx| AgentProvidersView::new(ctx, core.clone()));
+        let pet = ctx.add_typed_action_view(|ctx| PetView::new(ctx, core.clone()));
         let plugins = ctx.add_typed_action_view(|ctx| PluginsView::new(ctx, core.clone()));
         let memory = ctx.add_typed_action_view(|ctx| MemoryView::new(ctx, core.clone()));
         let activity = ctx.add_typed_action_view(|ctx| ActivityView::new(ctx, core.clone()));
@@ -707,6 +722,7 @@ impl SettingsView {
             toolbox,
             display,
             agent_providers,
+            pet,
             plugins,
             memory,
             activity,
@@ -1894,6 +1910,7 @@ impl SettingsView {
             SettingsPage::Email => col.add_child(self.email_connectors_block()),
             SettingsPage::Connections => col.add_child(self.connections_block()),
             SettingsPage::Agent => col.add_child(ChildView::new(&self.agent_providers).finish()),
+            SettingsPage::Pet => col.add_child(ChildView::new(&self.pet).finish()),
             SettingsPage::Memory => col.add_child(ChildView::new(&self.memory).finish()),
             SettingsPage::Activity => col.add_child(ChildView::new(&self.activity).finish()),
             SettingsPage::Subconscious => {
@@ -4831,6 +4848,9 @@ mod tests {
         assert!(SettingsPage::Agent.matches_query("codex"));
         assert!(!SettingsPage::Agent.matches_query("bb-browser"));
         assert!(SettingsPage::Agent.matches_query("openai"));
+        assert!(SettingsPage::Pet.matches_query("桌宠"));
+        assert!(SettingsPage::Pet.matches_query("芭乐"));
+        assert!(!SettingsPage::Pet.matches_query("bb-browser"));
         assert!(SettingsPage::Plugins.matches_query("插件市场"));
         assert!(SettingsPage::VirtualMachine.matches_query("工具箱"));
         assert!(SettingsPage::VirtualMachine.matches_query("toolbox"));
@@ -4856,6 +4876,7 @@ mod tests {
                 SettingsPage::Email,
                 SettingsPage::Connections,
                 SettingsPage::Agent,
+                SettingsPage::Pet,
                 SettingsPage::Theme,
                 SettingsPage::Memory,
                 SettingsPage::Activity,

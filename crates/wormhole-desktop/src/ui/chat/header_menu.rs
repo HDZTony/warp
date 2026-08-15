@@ -2,26 +2,26 @@ use std::sync::{Arc, Mutex};
 
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    Align, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex,
-    Hoverable, MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius,
+    Align, Container, CrossAxisAlignment, DispatchEventResult, EventHandler, Flex, Hoverable,
+    MainAxisSize, MouseState, MouseStateHandle, ParentElement,
 };
 use warpui::fonts::FamilyId;
 use warpui::Element;
 
 use crate::ui::chat::header::ChatHeaderAction;
 use crate::ui::panel_primitives::{
-    popover_menu_separator, popover_plain_item, popover_shell, StatusTone,
+    popover_menu_separator, popover_plain_item, popover_plain_item_with_id, popover_shell,
+    StatusTone,
 };
 use crate::ui::theme;
 
 const MENU_WIDTH: f32 = 220.0;
 const FLYOUT_WIDTH: f32 = 200.0;
 
+/// Telegram top-bar actions: flat icon (no circular fill).
 pub fn header_button_colors(active: bool, hovered: bool) -> (ColorU, ColorU) {
-    if active {
-        (theme::accent_cool_bg(32), theme::accent_cool())
-    } else if hovered {
-        (theme::accent_bg_default(), theme::accent_cool())
+    if active || hovered {
+        (ColorU::transparent_black(), theme::accent_cool())
     } else {
         (ColorU::transparent_black(), theme::muted())
     }
@@ -49,9 +49,32 @@ pub fn header_menu_panel(
         col.add_child(mute_flyout(font));
     }
     col.add_child(popover_menu_separator());
-    col.add_child(popover_plain_item(
+    col.add_child(popover_plain_item_with_id(
+        font,
+        "视频通话",
+        Some("chat:video_call"),
+        false,
+        false,
+        |ctx, _, _| {
+            ctx.dispatch_typed_action(ChatHeaderAction::VideoCallPrimary);
+            DispatchEventResult::StopPropagation
+        },
+    ));
+    col.add_child(popover_plain_item_with_id(
+        font,
+        "远程桌面",
+        Some("chat:remote_desktop"),
+        false,
+        false,
+        |ctx, _, _| {
+            ctx.dispatch_typed_action(ChatHeaderAction::OpenRemoteDesktop);
+            DispatchEventResult::StopPropagation
+        },
+    ));
+    col.add_child(popover_plain_item_with_id(
         font,
         "查看个人资料",
+        Some("chat:profile"),
         false,
         false,
         |ctx, _, _| {
@@ -193,7 +216,6 @@ pub fn header_button(
             .finish(),
         )
         .with_background(bg)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(size / 2.0)))
         .finish()
     })
     .finish();
@@ -201,12 +223,10 @@ pub fn header_button(
     let (automation_label, automation_id) = match &action {
         ChatHeaderAction::ToggleThreadSearch => ("搜索消息", "chat:thread_search"),
         ChatHeaderAction::VoiceCallPrimary => ("语音通话", "chat:voice_call"),
-        ChatHeaderAction::VideoCallPrimary => ("视频通话", "chat:video_call"),
-        ChatHeaderAction::OpenRemoteDesktop => ("远程桌面", "chat:remote_desktop"),
-        ChatHeaderAction::ToggleProfile => ("个人资料", "chat:profile"),
         ChatHeaderAction::ToggleHeaderMenu => ("更多", "chat:header_menu"),
         _ => ("聊天操作", "chat:header_action"),
     };
+    let _ = size;
     EventHandler::new(hoverable)
         .with_automation_label(automation_label)
         .with_automation_id(automation_id)
@@ -222,10 +242,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_beats_hover_for_header_button_colors() {
-        let (bg, _) = header_button_colors(true, false);
-        assert_ne!(bg, ColorU::transparent_black());
-        let (bg_hover, _) = header_button_colors(true, true);
-        assert_eq!(bg, bg_hover);
+    fn active_uses_transparent_bg() {
+        let (bg, icon) = header_button_colors(true, false);
+        assert_eq!(bg, ColorU::transparent_black());
+        assert_eq!(icon, theme::accent_cool());
     }
 }

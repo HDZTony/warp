@@ -107,3 +107,28 @@ pub fn accent_cool_bg_default() -> ColorU {
 pub fn is_dark() -> bool {
     runtime::palette().is_dark
 }
+
+/// Chat thread island tint (brand token; not part of shell ActivePalette).
+pub fn chat_thread_tint() -> ColorU {
+    generated::chat_thread_tint()
+}
+
+/// Incoming bubble fill on the light chat island.
+pub fn chat_bubble_in() -> ColorU {
+    generated::chat_bubble_in()
+}
+
+/// Outgoing bubble fill on the light chat island.
+pub fn chat_bubble_out() -> ColorU {
+    generated::chat_bubble_out()
+}
+
+/// Date divider / service capsule fill.
+pub fn chat_date_bg() -> ColorU {
+    generated::chat_date_bg()
+}
+
+/// Bubble body text on the light chat island.
+pub fn chat_bubble_text() -> ColorU {
+    generated::chat_bubble_text()
+}

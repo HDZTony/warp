@@ -5,8 +5,8 @@ use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, Wa
 use warpui::elements::Fill;
 use warpui::elements::{
     Align, ChildView, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
-    DispatchEventResult, EventHandler, Expanded, Flex, MainAxisSize, ParentElement, SavePosition,
-    ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
+    CornerRadius, DispatchEventResult, EventHandler, Expanded, Flex, MainAxisSize, ParentElement,
+    Radius, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, UpdateView, View, ViewContext};
@@ -17,14 +17,15 @@ use crate::ui::chat::image_asset::{
     insert_wallpaper_asset, load_wallpaper_bytes_from_path,
 };
 use crate::ui::chat::layout::{
-    bubble_max_width, message_is_grouped, message_row_margin_bottom, TG_THREAD_PAD_BOTTOM,
-    TG_THREAD_PAD_TOP, TG_THREAD_PAD_X,
+    bubble_max_width, format_date_divider_label, message_is_grouped, message_local_day_key,
+    message_row_margin_bottom, should_insert_date_divider, TG_THREAD_PAD_BOTTOM, TG_THREAD_PAD_TOP,
+    TG_THREAD_PAD_X,
 };
 use crate::ui::chat::shell::ConversationSelection;
 use crate::ui::chat::shell_state::{PendingOutgoingMessage, SharedChatShellState};
 use crate::ui::chat::thread_backdrop::ChatThreadBackdrop;
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
+use crate::ui::panel_primitives::{chat_date_bg, status_line, StatusTone, TG_BUBBLE_MAX_WIDTH};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::{
@@ -1231,13 +1232,13 @@ impl View for ChatThreadView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
         if self.messages.is_empty() {
+            // Telegram-style centered service capsule (not a top-aligned system bubble).
             col.add_child(
                 Container::new(
                     Align::new(ChildView::new(&self.hint_bubble).finish())
-                        .top_center()
                         .finish(),
                 )
-                .with_vertical_margin(48.0)
+                .with_vertical_margin(120.0)
                 .finish(),
             );
         } else {
@@ -1284,9 +1285,46 @@ impl View for ChatThreadView {
                         .finish(),
                 );
             }
+            let mut prev_day: Option<String> = None;
             for (index, bubble) in self.bubbles.iter().enumerate() {
                 if !bubble.visible {
                     continue;
+                }
+                let day_key = self
+                    .messages
+                    .get(index)
+                    .and_then(|msg| message_local_day_key(msg.sent_at));
+                if should_insert_date_divider(prev_day.as_deref(), day_key.as_deref()) {
+                    if let Some(ref key) = day_key {
+                        let label = format_date_divider_label(key);
+                        col.add_child(
+                            Container::new(
+                                Align::new(
+                                    Container::new(
+                                        ui_text::chat_bubble_meta(label, self.font)
+                                            .with_color(theme::text())
+                                            .finish(),
+                                    )
+                                    .with_horizontal_padding(12.0)
+                                    .with_padding_top(3.0)
+                                    .with_padding_bottom(4.0)
+                                    .with_background(chat_date_bg())
+                                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+                                        999.0,
+                                    )))
+                                    .finish(),
+                                )
+                                .top_center()
+                                .finish(),
+                            )
+                            .with_margin_top(10.0)
+                            .with_margin_bottom(12.0)
+                            .finish(),
+                        );
+                    }
+                }
+                if day_key.is_some() {
+                    prev_day = day_key;
                 }
                 let grouped_with_next = self
                     .bubbles

@@ -1,4 +1,4 @@
-//! Telegram-style image lightbox + context menu for chat attachments.
+//! Telegram-style image lightbox + attachment context menu for chat.
 
 use std::path::PathBuf;
 
@@ -15,10 +15,10 @@ use warpui_core::image_cache::CacheOption;
 
 use crate::ui::chat::layout::{fit_attachment_preview, ATTACH_PREVIEW_MAX_EDGE};
 use crate::ui::chat::shell_state::{
-    ChatShellState, ForwardDraft, ImageContextMenu, ImageViewerState, ReplyDraft,
+    AttachmentContextMenu, ChatShellState, ForwardDraft, ImageViewerState, ReplyDraft,
     SharedChatShellState,
 };
-use crate::ui::clipboard::write_clipboard_image_from_path;
+use crate::ui::clipboard::{write_clipboard_files, write_clipboard_image_from_path};
 use crate::ui::panel_primitives::{popover_plain_item, popover_shell, StatusTone};
 use crate::ui::theme;
 use crate::ui_text;
@@ -72,35 +72,35 @@ pub fn image_viewer_overlay(
             wormhole_i18n::t("chat.image.save"),
             "chat:image_save",
             shell_state.clone(),
-            save_image,
+            save_attachment,
         ))
         .with_child(action_btn(
             font,
             wormhole_i18n::t("chat.image.copy"),
             "chat:image_copy",
             shell_state.clone(),
-            copy_image,
+            copy_attachment,
         ))
         .with_child(action_btn(
             font,
             wormhole_i18n::t("chat.image.reveal"),
             "chat:image_reveal",
             shell_state.clone(),
-            reveal_image,
+            reveal_attachment,
         ))
         .with_child(action_btn(
             font,
             wormhole_i18n::t("chat.image.reply"),
             "chat:image_reply",
             shell_state.clone(),
-            reply_image,
+            reply_attachment,
         ))
         .with_child(action_btn(
             font,
             wormhole_i18n::t("chat.image.forward"),
             "chat:image_forward",
             shell_state.clone(),
-            forward_image,
+            forward_attachment,
         ))
         .with_child(action_btn(
             font,
@@ -176,22 +176,35 @@ fn action_btn(
     .finish()
 }
 
-pub fn image_context_menu_overlay(
+pub fn attachment_context_menu_overlay(
     font: FamilyId,
-    menu: &ImageContextMenu,
+    menu: &AttachmentContextMenu,
     shell_state: SharedChatShellState,
 ) -> Box<dyn Element> {
+    let is_image = menu.is_image();
     let mut col = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
-    for (label, on_click) in [
-        (wormhole_i18n::t("chat.image.save"), save_image as fn(&mut ChatShellState)),
-        (wormhole_i18n::t("chat.image.copy"), copy_image),
-        (wormhole_i18n::t("chat.image.reveal"), reveal_image),
-        (wormhole_i18n::t("chat.image.reply"), reply_image),
-        (wormhole_i18n::t("chat.image.forward"), forward_image),
-    ] {
+    let items: Vec<(String, fn(&mut ChatShellState))> = if is_image {
+        vec![
+            (wormhole_i18n::t("chat.image.save"), save_attachment),
+            (wormhole_i18n::t("chat.image.copy"), copy_attachment),
+            (wormhole_i18n::t("chat.image.reveal"), reveal_attachment),
+            (wormhole_i18n::t("chat.image.reply"), reply_attachment),
+            (wormhole_i18n::t("chat.image.forward"), forward_attachment),
+        ]
+    } else {
+        vec![
+            (wormhole_i18n::t("chat.file.save"), save_attachment),
+            (wormhole_i18n::t("chat.file.copy"), copy_attachment),
+            (wormhole_i18n::t("chat.file.reveal"), reveal_attachment),
+            (wormhole_i18n::t("chat.file.reply"), reply_attachment),
+            (wormhole_i18n::t("chat.file.forward"), forward_attachment),
+        ]
+    };
+
+    for (label, on_click) in items {
         let shell_state = shell_state.clone();
         col.add_child(popover_plain_item(
             font,
@@ -208,7 +221,19 @@ pub fn image_context_menu_overlay(
         ));
     }
 
-    let panel = popover_shell(220.0, col.finish());
+    let menu_id = if is_image {
+        "chat:image_menu"
+    } else {
+        "chat:file_menu"
+    };
+    let panel = AutomationTarget::new(popover_shell(220.0, col.finish()))
+        .with_label(if is_image {
+            wormhole_i18n::t("chat.image.menu")
+        } else {
+            wormhole_i18n::t("chat.file.menu")
+        })
+        .with_id(menu_id)
+        .finish();
     Container::new(panel)
         .with_margin_left(menu.x)
         .with_margin_top(menu.y)
@@ -222,7 +247,7 @@ fn current_local_path(state: &ChatShellState) -> Option<String> {
         .and_then(|v| v.local_path.clone())
         .or_else(|| {
             state
-                .image_context_menu
+                .attachment_context_menu
                 .as_ref()
                 .and_then(|m| m.local_path.clone())
         })
@@ -233,8 +258,13 @@ fn current_name(state: &ChatShellState) -> String {
         .image_viewer
         .as_ref()
         .map(|v| v.name.clone())
-        .or_else(|| state.image_context_menu.as_ref().map(|m| m.name.clone()))
-        .unwrap_or_else(|| "image.png".into())
+        .or_else(|| {
+            state
+                .attachment_context_menu
+                .as_ref()
+                .map(|m| m.name.clone())
+        })
+        .unwrap_or_else(|| "attachment".into())
 }
 
 fn current_message_id(state: &ChatShellState) -> Option<String> {
@@ -244,34 +274,78 @@ fn current_message_id(state: &ChatShellState) -> Option<String> {
         .map(|v| v.message_id.clone())
         .or_else(|| {
             state
-                .image_context_menu
+                .attachment_context_menu
                 .as_ref()
                 .map(|m| m.message_id.clone())
         })
+}
+
+fn current_kind(state: &ChatShellState) -> String {
+    state
+        .attachment_context_menu
+        .as_ref()
+        .map(|m| m.kind.clone())
+        .or_else(|| state.image_viewer.as_ref().map(|_| "image".into()))
+        .unwrap_or_else(|| "document".into())
+}
+
+fn current_size(state: &ChatShellState) -> u64 {
+    state
+        .attachment_context_menu
+        .as_ref()
+        .map(|m| m.size)
+        .unwrap_or(0)
+}
+
+fn is_image_context(state: &ChatShellState) -> bool {
+    current_kind(state) == "image" || state.image_viewer.is_some()
+}
+
+fn not_ready_key(state: &ChatShellState) -> &'static str {
+    if is_image_context(state) {
+        "chat.image.not_ready"
+    } else {
+        "chat.file.not_ready"
+    }
 }
 
 fn close_viewer(state: &mut ChatShellState) {
     state.close_image_viewer();
 }
 
-fn save_image(state: &mut ChatShellState) {
+fn save_attachment(state: &mut ChatShellState) {
     let Some(path) = current_local_path(state) else {
-        state.show_toast(wormhole_i18n::t("chat.image.not_ready"), StatusTone::Danger);
+        state.show_toast(wormhole_i18n::t(not_ready_key(state)), StatusTone::Danger);
         return;
     };
     let default_name = current_name(state);
+    let image = is_image_context(state);
     let dest = rfd::FileDialog::new()
         .set_file_name(&default_name)
         .save_file();
     if let Some(dest) = dest {
         match std::fs::copy(&path, &dest) {
             Ok(_) => {
-                state.show_toast(wormhole_i18n::t("chat.image.saved"), StatusTone::Success);
-                state.image_context_menu = None;
+                state.show_toast(
+                    wormhole_i18n::t(if image {
+                        "chat.image.saved"
+                    } else {
+                        "chat.file.saved"
+                    }),
+                    StatusTone::Success,
+                );
+                state.attachment_context_menu = None;
             }
             Err(err) => {
                 state.show_toast(
-                    format!("{}: {err}", wormhole_i18n::t("chat.image.save_failed")),
+                    format!(
+                        "{}: {err}",
+                        wormhole_i18n::t(if image {
+                            "chat.image.save_failed"
+                        } else {
+                            "chat.file.save_failed"
+                        })
+                    ),
                     StatusTone::Danger,
                 );
             }
@@ -279,55 +353,82 @@ fn save_image(state: &mut ChatShellState) {
     }
 }
 
-fn copy_image(state: &mut ChatShellState) {
+fn copy_attachment(state: &mut ChatShellState) {
     let Some(path) = current_local_path(state) else {
-        state.show_toast(wormhole_i18n::t("chat.image.not_ready"), StatusTone::Danger);
+        state.show_toast(wormhole_i18n::t(not_ready_key(state)), StatusTone::Danger);
         return;
     };
-    match write_clipboard_image_from_path(PathBuf::from(path).as_path()) {
+    let image = is_image_context(state);
+    let result = if image {
+        write_clipboard_image_from_path(PathBuf::from(&path).as_path())
+    } else {
+        write_clipboard_files(&[PathBuf::from(path)])
+    };
+    match result {
         Ok(()) => {
-            state.show_toast(wormhole_i18n::t("chat.image.copied"), StatusTone::Success);
-            state.image_context_menu = None;
+            state.show_toast(
+                wormhole_i18n::t(if image {
+                    "chat.image.copied"
+                } else {
+                    "chat.file.copied"
+                }),
+                StatusTone::Success,
+            );
+            state.attachment_context_menu = None;
         }
         Err(err) => {
             state.show_toast(
-                format!("{}: {err}", wormhole_i18n::t("chat.image.copy_failed")),
+                format!(
+                    "{}: {err}",
+                    wormhole_i18n::t(if image {
+                        "chat.image.copy_failed"
+                    } else {
+                        "chat.file.copy_failed"
+                    })
+                ),
                 StatusTone::Danger,
             );
         }
     }
 }
 
-fn reveal_image(state: &mut ChatShellState) {
+fn reveal_attachment(state: &mut ChatShellState) {
     let Some(path) = current_local_path(state) else {
-        state.show_toast(wormhole_i18n::t("chat.image.not_ready"), StatusTone::Danger);
+        state.show_toast(wormhole_i18n::t(not_ready_key(state)), StatusTone::Danger);
         return;
     };
     match reveal_path_in_folder(PathBuf::from(path).as_path()) {
         Ok(()) => {
-            state.image_context_menu = None;
+            state.attachment_context_menu = None;
         }
         Err(err) => state.show_toast(err, StatusTone::Danger),
     }
 }
 
-fn reply_image(state: &mut ChatShellState) {
+fn reply_attachment(state: &mut ChatShellState) {
     let Some(message_id) = current_message_id(state) else {
         return;
     };
+    let image = is_image_context(state);
     state.set_reply_draft(ReplyDraft {
         message_id,
-        preview: wormhole_i18n::t("chat.preview.image"),
-        has_image: true,
+        preview: wormhole_i18n::t(if image {
+            "chat.preview.image"
+        } else {
+            "chat.preview.file"
+        }),
+        has_image: image,
     });
 }
 
-fn forward_image(state: &mut ChatShellState) {
+fn forward_attachment(state: &mut ChatShellState) {
     let Some(path) = current_local_path(state) else {
-        state.show_toast(wormhole_i18n::t("chat.image.not_ready"), StatusTone::Danger);
+        state.show_toast(wormhole_i18n::t(not_ready_key(state)), StatusTone::Danger);
         return;
     };
     let name = current_name(state);
+    let kind = current_kind(state);
+    let size = current_size(state);
     let forwarded_from = state
         .selected_summary
         .as_ref()
@@ -336,8 +437,8 @@ fn forward_image(state: &mut ChatShellState) {
     state.set_forward_draft(ForwardDraft {
         local_path: path,
         name,
-        kind: "image".into(),
-        size: 0,
+        kind,
+        size,
         forwarded_from,
     });
 }

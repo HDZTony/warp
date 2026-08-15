@@ -8,11 +8,11 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::Vector2F;
 use warpui::elements::{
     AfterLayoutContext, AppContext, ConstrainedBox, Container, CrossAxisAlignment,
-    DispatchEventResult, Element, EventContext, EventHandler, Flex, LayoutContext, PaintContext,
-    ParentElement, Point, SizeConstraint, ZIndex,
+    DispatchEventResult, Element, EventContext, EventHandler, Flex, LayoutContext, MainAxisSize,
+    PaintContext, ParentElement, Point, SizeConstraint, Text, ZIndex,
 };
 use warpui::event::DispatchedEvent;
-use warpui::fonts::FamilyId;
+use warpui::fonts::{FamilyId, Properties};
 use warpui::keymap::Keystroke;
 use warpui::{Event, View, ViewContext};
 
@@ -455,6 +455,12 @@ pub fn compose_should_show_placeholder(draft: &str, marked: &str) -> bool {
     draft.is_empty() && marked.is_empty()
 }
 
+/// Compose draft renderer: soft-wrap to the pill width (WeChat / HTML textarea).
+///
+/// Unlike [`render_field_with_caret`], this must **not** place the draft in a
+/// `Flex::row` + `MainAxisSize::Min` — that passes infinite max-width to `Text`,
+/// so soft-wrap never fires and long lines overflow the emoji/send buttons.
+/// Caret is inlined into the soft-wrapped run so it stays in the text flow.
 pub fn render_compose_field_with_caret(
     draft: &str,
     marked: &str,
@@ -466,34 +472,69 @@ pub fn render_compose_field_with_caret(
     cursor: usize,
 ) -> Box<dyn Element> {
     let show_caret = focused && !disabled;
+    let font_size = ui_text::CHAT_COMPOSE_FONT_SIZE;
+    // Match `multiline_input::LINE_HEIGHT` (18) at 14px.
+    let line_height_ratio = crate::ui::multiline_input::LINE_HEIGHT / font_size;
+
     if compose_should_show_placeholder(draft, marked) {
         let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
         row.add_child(
-            warpui::elements::Text::new(
-                placeholder.to_string(),
-                font,
-                ui_text::CHAT_COMPOSE_FONT_SIZE,
-            )
-            .with_color(theme::placeholder())
-            .finish(),
+            Text::new(placeholder.to_string(), font, font_size)
+                .with_color(theme::placeholder())
+                .with_line_height_ratio(line_height_ratio)
+                .finish(),
         );
         if show_caret {
             row.add_child(render_caret(true, caret_blink));
         }
         return row.finish();
     }
-    render_field_with_caret_sized(
-        draft,
-        marked,
-        placeholder,
-        font,
-        focused,
-        disabled,
-        caret_blink,
-        cursor,
-        ui_text::CHAT_COMPOSE_FONT_SIZE,
-    )
+
+    let text_color = if disabled {
+        theme::placeholder()
+    } else {
+        theme::text()
+    };
+    let marked_color = if focused {
+        theme::accent_cool()
+    } else {
+        theme::muted()
+    };
+
+    let cursor = cursor.min(char_len(draft));
+    let (before, after) = split_at_char(draft, cursor);
+    let props = Properties::default();
+    let mut text = Text::new(String::new(), font, font_size)
+        .with_color(text_color)
+        .with_line_height_ratio(line_height_ratio);
+    if !before.is_empty() {
+        text.add_text_with_highlights(&before, text_color, props);
+    }
+    if !marked.is_empty() {
+        text.add_text_with_highlights(marked, marked_color, props);
+    }
+    if show_caret {
+        // Keep a stable glyph slot so blink does not reflow; hide via alpha.
+        let caret_color = if caret_blink {
+            theme::accent_cool()
+        } else {
+            ColorU::transparent_black()
+        };
+        text.add_text_with_highlights(COMPOSE_CARET_GLYPH, caret_color, props);
+    }
+    if !after.is_empty() {
+        text.add_text_with_highlights(&after, text_color, props);
+    }
+
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_child(text.finish())
+        .finish()
 }
+
+/// Narrow caret glyph inlined into soft-wrapped compose text (U+258F).
+const COMPOSE_CARET_GLYPH: &str = "▏";
 
 /// Sidebar / thread search: keep placeholder visible when focused and empty (align AI search).
 pub fn render_search_field_with_caret(
@@ -1170,6 +1211,16 @@ mod tests {
         use super::compose_input_height;
         assert_eq!(compose_input_height("", ""), 22.0);
         assert!(compose_input_height("a\nb\nc", "") > 22.0);
+    }
+
+    #[test]
+    fn compose_input_height_grows_when_long_line_wraps() {
+        use super::compose_input_height;
+        let long = "风格化".repeat(40);
+        assert!(
+            compose_input_height(&long, "") > 22.0,
+            "long CJK without hard newlines should still raise the height estimate"
+        );
     }
 
     #[test]

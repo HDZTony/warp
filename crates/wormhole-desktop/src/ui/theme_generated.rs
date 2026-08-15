@@ -58,6 +58,26 @@ pub fn warn() -> ColorU {
     ColorU::new(229, 199, 107, 255)
 }
 
+pub fn chat_thread_tint() -> ColorU {
+    ColorU::new(238, 242, 247, 255)
+}
+
+pub fn chat_bubble_in() -> ColorU {
+    ColorU::new(255, 255, 255, 255)
+}
+
+pub fn chat_bubble_out() -> ColorU {
+    ColorU::new(222, 241, 253, 255)
+}
+
+pub fn chat_date_bg() -> ColorU {
+    ColorU::new(168, 184, 200, 255)
+}
+
+pub fn chat_bubble_text() -> ColorU {
+    ColorU::new(29, 38, 51, 255)
+}
+
 pub fn accent_bg(alpha: u8) -> ColorU {
     ColorU::new(253, 249, 230, alpha)
 }

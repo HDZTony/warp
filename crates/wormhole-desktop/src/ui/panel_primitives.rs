@@ -14,9 +14,11 @@ use crate::ui_text;
 pub const TG_AVATAR_SIZE: f32 = 46.0;
 pub const TG_AVATAR_SM_SIZE: f32 = 40.0;
 pub const TG_AVATAR_LG_SIZE: f32 = 72.0;
-pub const TG_BUBBLE_MAX_WIDTH: f32 = 520.0;
-pub const TG_BUBBLE_RADIUS: f32 = 12.0;
-pub const TG_BUBBLE_TAIL_RADIUS: f32 = 4.0;
+pub const TG_BUBBLE_MAX_WIDTH: f32 = 430.0;
+pub const TG_BUBBLE_RADIUS: f32 = 16.0;
+pub const TG_BUBBLE_TAIL_RADIUS: f32 = 6.0;
+/// Header avatar (Telegram topBar photoSize); sidebar keeps [`TG_AVATAR_SIZE`].
+pub const TG_HEADER_AVATAR_SIZE: f32 = 42.0;
 
 /// Matches `desktop-current.html` `--panel-pad` / `--radius`.
 pub const SECTION_PADDING: f32 = 14.0;
@@ -355,6 +357,20 @@ pub fn popover_plain_item<F>(
 where
     F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
 {
+    popover_plain_item_with_id(font, label, None, danger, has_flyout, on_click)
+}
+
+pub fn popover_plain_item_with_id<F>(
+    font: FamilyId,
+    label: &str,
+    automation_id: Option<&str>,
+    danger: bool,
+    has_flyout: bool,
+    on_click: F,
+) -> Box<dyn Element>
+where
+    F: 'static + FnMut(&mut EventContext, &AppContext, Vector2F) -> DispatchEventResult,
+{
     let color = if danger {
         theme::danger()
     } else {
@@ -376,13 +392,16 @@ where
         );
     }
     let item_label = label.to_string();
+    let id = automation_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("shell:menu:{item_label}"));
     EventHandler::new(
         Container::new(row.finish())
             .with_uniform_padding(10.0)
             .finish(),
     )
-    .with_automation_label(item_label.clone())
-    .with_automation_id(format!("shell:menu:{item_label}"))
+    .with_automation_label(item_label)
+    .with_automation_id(id)
     .on_left_mouse_down(on_click)
     .finish()
 }
@@ -402,17 +421,27 @@ pub fn popover_menu_separator() -> Box<dyn Element> {
 
 /// `.tg-msg-row.in .tg-bubble` background.
 pub fn chat_bubble_in_bg() -> ColorU {
-    theme::panel_elevated()
+    theme::chat_bubble_in()
 }
 
-/// `.tg-msg-row.out .tg-bubble` — accent-cool 18% + panel-elevated.
+/// `.tg-msg-row.out .tg-bubble` — Day Blue–style cool wash (brand token).
 pub fn chat_bubble_out_bg() -> ColorU {
-    theme::mix_opaque(theme::accent_cool(), theme::panel_elevated(), 18)
+    theme::chat_bubble_out()
 }
 
-/// Outgoing bubble border — accent-cool 35% + border.
-pub fn chat_bubble_out_border() -> ColorU {
-    theme::mix_opaque(theme::accent_cool(), theme::border(), 35)
+/// Date divider capsule (`.tg-date-divider span`).
+pub fn chat_date_bg() -> ColorU {
+    theme::chat_date_bg()
+}
+
+/// Default chat thread tint (light island).
+pub fn chat_thread_tint() -> ColorU {
+    theme::chat_thread_tint()
+}
+
+/// Bubble body text on the light chat island.
+pub fn chat_bubble_text_color() -> ColorU {
+    theme::chat_bubble_text()
 }
 
 /// `.tg-avatar` background — accent-cool 14% + panel-elevated.

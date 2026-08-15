@@ -1,10 +1,13 @@
 use chrono::TimeZone;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use pathfinder_geometry::vector::vec2f;
 use warpui::accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole};
 use warpui::elements::{
-    Align, AutomationTarget, Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DispatchEventResult, Empty, EventHandler, Expanded, Flex, Image, MainAxisSize, ParentElement,
-    Radius, Shrinkable,
+    Align, AutomationTarget, Border, ChildAnchor, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DispatchEventResult, Empty, EventHandler, Expanded, Flex, Image,
+    MainAxisAlignment, MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement,
+    ParentOffsetBounds, Radius, Shrinkable, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
@@ -12,21 +15,27 @@ use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
 use crate::ui::chat::layout::{
-    attachment_placeholder_size, attachment_preview_width, bubble_corner_radius,
+    attachment_loading_chip_size, attachment_preview_width, bubble_corner_radius,
     fit_attachment_preview, ATTACH_PREVIEW_MAX_EDGE, ATTACH_PREVIEW_MAX_HEIGHT,
 };
 use crate::ui::chat::shell_state::{
-    ForwardDraft, ImageContextMenu, ImageViewerState, ReplyDraft, SharedChatShellState,
+    AttachmentContextMenu, ForwardDraft, ImageViewerState, ReplyDraft, SharedChatShellState,
 };
 use crate::ui::icons;
 use crate::ui::panel_primitives::{
-    chat_bubble_in_bg, chat_bubble_out_bg, chat_bubble_out_border, TG_BUBBLE_MAX_WIDTH,
+    chat_bubble_in_bg, chat_bubble_out_bg, StatusTone, TG_BUBBLE_MAX_WIDTH,
 };
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::ChatAttachmentDto;
+use wormhole_desktop_core::cluster_commands::open_path_with_system;
 
 const ATTACH_CHIP_ICON: f32 = 16.0;
+const BUBBLE_PAD_X: f32 = 11.0;
+const BUBBLE_PAD_TOP: f32 = 8.0;
+const BUBBLE_PAD_BOTTOM: f32 = 8.0;
+/// Space reserved under bubble content so positioned timestamp does not cover text.
+const META_RESERVE: f32 = 18.0;
 
 #[derive(Debug, Clone)]
 pub enum ChatBubbleAction {
@@ -38,13 +47,18 @@ pub enum ChatBubbleAction {
         width: Option<u32>,
         height: Option<u32>,
     },
-    OpenImageMenu {
+    OpenAttachmentMenu {
         attachment_id: String,
+        kind: String,
         local_path: Option<String>,
         name: String,
+        size: u64,
         asset_id: Option<String>,
         x: f32,
         y: f32,
+    },
+    OpenFile {
+        local_path: Option<String>,
     },
     Reply,
 }
@@ -143,6 +157,11 @@ impl ChatBubbleView {
         self.body = body;
     }
 
+    /// Single image (or image+caption) Telegram photo bubble without side padding on the image.
+    fn is_photo_bubble(&self) -> bool {
+        self.attachments.len() == 1 && self.attachments[0].kind == "image"
+    }
+
     fn render_attachments(&self) -> Box<dyn Element> {
         let mut col = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
@@ -159,17 +178,22 @@ impl ChatBubbleView {
 
     fn render_attachment_chip(&self, attachment: &ChatAttachmentDto) -> Box<dyn Element> {
         if attachment.kind == "image" || attachment.kind == "video" {
-            return self.render_media_attachment(attachment);
+            return self.render_media_attachment(attachment, false);
         }
         self.render_file_attachment(attachment)
     }
 
-    fn render_media_attachment(&self, attachment: &ChatAttachmentDto) -> Box<dyn Element> {
+    fn render_media_attachment(
+        &self,
+        attachment: &ChatAttachmentDto,
+        edge_to_edge: bool,
+    ) -> Box<dyn Element> {
         let max_w = attachment_preview_width(self.max_bubble_width).min(ATTACH_PREVIEW_MAX_EDGE);
-        let (preview_w, preview_h) = if let Some((sw, sh)) = self.image_sizes.get(&attachment.id) {
-            fit_attachment_preview(*sw, *sh, max_w, ATTACH_PREVIEW_MAX_HEIGHT)
+        let decoded = self.image_sizes.get(&attachment.id).copied();
+        let (preview_w, preview_h) = if let Some((sw, sh)) = decoded {
+            fit_attachment_preview(sw, sh, max_w, ATTACH_PREVIEW_MAX_HEIGHT)
         } else {
-            attachment_placeholder_size(self.max_bubble_width)
+            attachment_loading_chip_size(self.max_bubble_width)
         };
 
         if attachment.kind == "image" {
@@ -178,7 +202,12 @@ impl ChatBubbleView {
                 let local_path = attachment.local_path.clone();
                 let name = attachment.name.clone();
                 let asset_id_for_open = asset_id.clone();
-                let size = self.image_sizes.get(&attachment.id).copied();
+                let size = decoded;
+                let radius = if edge_to_edge {
+                    bubble_corner_radius(self.outgoing, self.grouped)
+                } else {
+                    CornerRadius::with_all(Radius::Pixels(8.0))
+                };
                 let image = ConstrainedBox::new(
                     Container::new(
                         Image::new(
@@ -189,7 +218,7 @@ impl ChatBubbleView {
                         )
                         .finish(),
                     )
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                    .with_corner_radius(radius)
                     .finish(),
                 )
                 .with_width(preview_w)
@@ -214,11 +243,15 @@ impl ChatBubbleView {
                         let local_path = attachment.local_path.clone();
                         let name = attachment.name.clone();
                         let asset_id = asset_id.clone();
+                        let kind = attachment.kind.clone();
+                        let size_bytes = attachment.size;
                         move |ctx, _, position| {
-                            ctx.dispatch_typed_action(ChatBubbleAction::OpenImageMenu {
+                            ctx.dispatch_typed_action(ChatBubbleAction::OpenAttachmentMenu {
                                 attachment_id: attachment_id.clone(),
+                                kind: kind.clone(),
                                 local_path: local_path.clone(),
                                 name: name.clone(),
+                                size: size_bytes,
                                 asset_id: Some(asset_id.clone()),
                                 x: position.x(),
                                 y: position.y(),
@@ -235,44 +268,45 @@ impl ChatBubbleView {
             }
         }
 
-        let label = attachment_kind_label(&attachment.kind);
-        let mut col = Flex::column()
+        // Loading / video placeholder — compact chip, never a fixed 280×210 slab.
+        let label = if attachment.kind == "video" {
+            attachment_kind_label(&attachment.kind).to_string()
+        } else {
+            wormhole_i18n::t("chat.preview.image")
+        };
+        let chip = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Start);
-        col.add_child(
-            Container::new(
-                ConstrainedBox::new(
-                    Flex::row()
-                        .with_main_axis_alignment(warpui::elements::MainAxisAlignment::Center)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_child(
-                            ui_text::chat_bubble_meta(label.to_string(), self.font)
-                                .with_color(theme::muted())
-                                .finish(),
-                        )
-                        .finish(),
-                )
-                .with_height((preview_h - 28.0).max(40.0))
-                .finish(),
-            )
-            .with_uniform_padding(8.0)
-            .with_background(theme::accent_bg(24))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-            .finish(),
-        );
-        col.add_child(
-            Container::new(
-                ui_text::chat_bubble_meta(attachment.name.clone(), self.font)
-                    .with_color(theme::text())
+            .with_child(
+                ui_text::chat_bubble_meta(label, self.font)
+                    .with_color(theme::muted())
                     .finish(),
             )
-            .with_margin_top(4.0)
-            .finish(),
-        );
-        ConstrainedBox::new(col.finish())
-            .with_width(preview_w)
-            .with_height(preview_h)
-            .finish()
+            .with_child(
+                Container::new(
+                    ui_text::chat_bubble_meta(attachment.name.clone(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_margin_left(8.0)
+                .finish(),
+            )
+            .finish();
+        let boxed = ConstrainedBox::new(
+            Container::new(chip)
+                .with_uniform_padding(8.0)
+                .with_background(theme::accent_bg(24))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                .finish(),
+        )
+        .with_width(preview_w)
+        .with_height(preview_h)
+        .finish();
+
+        if attachment.kind == "video" {
+            return self.wrap_file_interactions(attachment, boxed);
+        }
+        boxed
     }
 
     fn render_file_attachment(&self, attachment: &ChatAttachmentDto) -> Box<dyn Element> {
@@ -281,14 +315,14 @@ impl ChatBubbleView {
         } else {
             "chat-compose-attach.svg"
         };
-        Flex::row()
+        let chip = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
             .with_child(
                 Container::new(
                     ConstrainedBox::new(
                         Flex::row()
-                            .with_main_axis_alignment(warpui::elements::MainAxisAlignment::Center)
+                            .with_main_axis_alignment(MainAxisAlignment::Center)
                             .with_cross_axis_alignment(CrossAxisAlignment::Center)
                             .with_child(icons::icon(
                                 icon_path,
@@ -325,53 +359,72 @@ impl ChatBubbleView {
                 .with_margin_left(8.0)
                 .finish(),
             )
+            .finish();
+
+        let padded = Container::new(chip)
+            .with_uniform_padding(4.0)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+            .finish();
+        self.wrap_file_interactions(attachment, padded)
+    }
+
+    fn wrap_file_interactions(
+        &self,
+        attachment: &ChatAttachmentDto,
+        child: Box<dyn Element>,
+    ) -> Box<dyn Element> {
+        let local_path_open = attachment.local_path.clone();
+        let local_path_menu = attachment.local_path.clone();
+        let attachment_id = attachment.id.clone();
+        let kind = attachment.kind.clone();
+        let name = attachment.name.clone();
+        let size = attachment.size;
+        let interactive = EventHandler::new(child)
+            .skip_automation()
+            .on_left_mouse_down(move |ctx, _, _| {
+                ctx.dispatch_typed_action(ChatBubbleAction::OpenFile {
+                    local_path: local_path_open.clone(),
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .on_right_mouse_down(move |ctx, _, position| {
+                ctx.dispatch_typed_action(ChatBubbleAction::OpenAttachmentMenu {
+                    attachment_id: attachment_id.clone(),
+                    kind: kind.clone(),
+                    local_path: local_path_menu.clone(),
+                    name: name.clone(),
+                    size,
+                    asset_id: None,
+                    x: position.x(),
+                    y: position.y(),
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .finish();
+
+        AutomationTarget::new(interactive)
+            .with_label(wormhole_i18n::t("chat.file.open"))
+            .with_id(format!("chat:file_{}", attachment.id))
             .finish()
     }
-}
 
-impl Entity for ChatBubbleView {
-    type Event = ();
-}
-
-impl View for ChatBubbleView {
-    fn ui_name() -> &'static str {
-        "ChatBubbleView"
+    fn has_meta(&self) -> bool {
+        !self.timestamp.is_empty() || (self.outgoing && self.read)
     }
 
-    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        if self.system {
-            return Align::new(
-                Container::new(
-                    ui_text::chat_bubble_meta(self.body.clone(), self.font)
-                        .with_color(theme::muted())
-                        .finish(),
-                )
-                .with_horizontal_padding(12.0)
-                .with_vertical_padding(4.0)
-                .with_background(theme::panel())
-                .with_border(Border::all(1.0).with_border_fill(theme::border()))
-                .with_corner_radius(warpui::elements::CornerRadius::with_all(
-                    warpui::elements::Radius::Pixels(999.0),
-                ))
-                .finish(),
-            )
-            .finish();
-        }
-
-        let (bg, border) = if self.outgoing {
-            (chat_bubble_out_bg(), chat_bubble_out_border())
-        } else {
-            (chat_bubble_in_bg(), theme::border())
-        };
-        let radius = bubble_corner_radius(self.outgoing, self.grouped);
-
+    fn meta_row(&self) -> Box<dyn Element> {
         let mut meta_row = Flex::row()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        let time_color = if self.outgoing {
+            theme::accent_cool()
+        } else {
+            theme::muted()
+        };
         if !self.timestamp.is_empty() {
             meta_row.add_child(
                 ui_text::chat_bubble_meta(self.timestamp.clone(), self.font)
-                    .with_color(theme::muted())
+                    .with_color(time_color)
                     .finish(),
             );
         }
@@ -386,7 +439,190 @@ impl View for ChatBubbleView {
                 .finish(),
             );
         }
+        meta_row.finish()
+    }
 
+    /// Timestamp badge that does **not** expand Stack size (unlike Align).
+    ///
+    /// Must use `add_positioned_child` (not overlay): WarpUI Overlay paints with
+    /// `ClipBounds::None` and escapes `ClippedScrollable`, floating over compose.
+    /// Aligns with tdesktop `InfoDisplayType::Image` (`msgDateImgDelta` /
+    /// `msgDateImgPadding`).
+    fn positioned_meta_badge(&self, on_photo: bool) -> Box<dyn Element> {
+        let badge = if on_photo {
+            Container::new(self.meta_row())
+                .with_horizontal_padding(8.0)
+                .with_vertical_padding(2.0)
+                .with_background(pathfinder_color::ColorU::new(0, 0, 0, 110))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                .finish()
+        } else {
+            self.meta_row()
+        };
+        badge
+    }
+
+    fn with_bottom_right_meta(&self, content: Box<dyn Element>, on_photo: bool) -> Box<dyn Element> {
+        if !self.has_meta() {
+            return content;
+        }
+        let mut stack = Stack::new();
+        stack.add_child(content);
+        // tdesktop msgDateImgDelta = 4px; text/file bubbles sit flush in padding.
+        let inset = if on_photo { 4.0 } else { 0.0 };
+        stack.add_positioned_child(
+            self.positioned_meta_badge(on_photo),
+            OffsetPositioning::offset_from_parent(
+                vec2f(-inset, -inset),
+                ParentOffsetBounds::Unbounded,
+                ParentAnchor::BottomRight,
+                ChildAnchor::BottomRight,
+            ),
+        );
+        stack.finish()
+    }
+
+    fn photo_preview_size(&self, attachment: &ChatAttachmentDto) -> (f32, f32) {
+        let max_w = attachment_preview_width(self.max_bubble_width).min(ATTACH_PREVIEW_MAX_EDGE);
+        if let Some((sw, sh)) = self.image_sizes.get(&attachment.id) {
+            fit_attachment_preview(*sw, *sh, max_w, ATTACH_PREVIEW_MAX_HEIGHT)
+        } else {
+            attachment_loading_chip_size(self.max_bubble_width)
+        }
+    }
+
+    fn header_bits(&self, bubble_col: &mut Flex, max_width: Option<f32>) {
+        if let Some(forwarded) = &self.forwarded_from {
+            let label = Container::new(
+                ui_text::chat_bubble_meta(
+                    format!(
+                        "{} {}",
+                        wormhole_i18n::t("chat.image.forwarded_from"),
+                        forwarded
+                    ),
+                    self.font,
+                )
+                .with_color(theme::accent_cool())
+                .finish(),
+            )
+            .with_margin_bottom(4.0)
+            .with_padding_left(BUBBLE_PAD_X)
+            .with_padding_right(BUBBLE_PAD_X)
+            .with_padding_top(BUBBLE_PAD_TOP)
+            .finish();
+            bubble_col.add_child(match max_width {
+                Some(w) => ConstrainedBox::new(label).with_max_width(w).finish(),
+                None => label,
+            });
+        }
+
+        if let Some(reply) = &self.reply_preview {
+            let reply_block = Container::new(
+                Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_child(
+                        ui_text::chat_bubble_meta(
+                            wormhole_i18n::t("chat.image.reply"),
+                            self.font,
+                        )
+                        .with_color(theme::accent_cool())
+                        .finish(),
+                    )
+                    .with_child(
+                        ui_text::chat_bubble_meta(reply.clone(), self.font)
+                            .with_color(theme::muted())
+                            .finish(),
+                    )
+                    .finish(),
+            )
+            .with_padding_left(8.0)
+            .with_margin_bottom(6.0)
+            .with_margin_left(BUBBLE_PAD_X)
+            .with_margin_right(BUBBLE_PAD_X)
+            .with_border(Border::left(2.0).with_border_fill(theme::accent_cool()))
+            .finish();
+            bubble_col.add_child(match max_width {
+                Some(w) => ConstrainedBox::new(reply_block).with_max_width(w).finish(),
+                None => reply_block,
+            });
+        }
+    }
+
+    fn render_photo_bubble(&self, bg: pathfinder_color::ColorU, border: pathfinder_color::ColorU) -> Box<dyn Element> {
+        let attachment = &self.attachments[0];
+        let photo_only = self.body.trim().is_empty();
+        let (preview_w, _preview_h) = self.photo_preview_size(attachment);
+        let photo = self.render_media_attachment(attachment, true);
+        let photo = if photo_only {
+            self.with_bottom_right_meta(photo, true)
+        } else {
+            photo
+        };
+
+        let mut bubble_col = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Start);
+        self.header_bits(&mut bubble_col, Some(preview_w));
+        bubble_col.add_child(photo);
+
+        if !photo_only {
+            bubble_col.add_child(
+                Container::new(
+                    ui_text::chat_bubble_text(self.body.clone(), self.body_font())
+                        .with_color(theme::chat_bubble_text())
+                        .finish(),
+                )
+                .with_padding_left(BUBBLE_PAD_X)
+                .with_padding_right(BUBBLE_PAD_X)
+                .with_padding_top(6.0)
+                .with_padding_bottom(if self.has_meta() {
+                    META_RESERVE
+                } else {
+                    BUBBLE_PAD_BOTTOM
+                })
+                .finish(),
+            );
+            let content = ConstrainedBox::new(bubble_col.finish())
+                .with_max_width(self.max_bubble_width)
+                .finish();
+            // Caption bubbles: hug content width, meta overlay bottom-right.
+            let content = if self.has_meta() {
+                self.with_bottom_right_meta(
+                    Container::new(content)
+                        .with_padding_right(BUBBLE_PAD_X)
+                        .with_padding_bottom(BUBBLE_PAD_BOTTOM)
+                        .finish(),
+                    false,
+                )
+            } else {
+                content
+            };
+            let radius = bubble_corner_radius(self.outgoing, self.grouped);
+            let mut bubble = Container::new(content)
+                .with_background(bg)
+                .with_corner_radius(radius);
+            if self.search_hit {
+                bubble = bubble.with_border(Border::all(2.0).with_border_fill(theme::accent_cool()));
+            }
+            return bubble.finish();
+        }
+
+        // Photo-only: column width follows image (+ optional capped header).
+        let content = ConstrainedBox::new(bubble_col.finish())
+            .with_max_width(preview_w)
+            .finish();
+        let radius = bubble_corner_radius(self.outgoing, self.grouped);
+        let mut bubble = Container::new(content)
+            .with_background(bg)
+            .with_corner_radius(radius);
+        if self.search_hit {
+            bubble = bubble.with_border(Border::all(2.0).with_border_fill(theme::accent_cool()));
+        }
+        bubble.finish()
+    }
+
+    fn render_text_bubble(&self, bg: pathfinder_color::ColorU, _border: pathfinder_color::ColorU) -> Box<dyn Element> {
+        let radius = bubble_corner_radius(self.outgoing, self.grouped);
         let mut bubble_col = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Start);
@@ -395,7 +631,11 @@ impl View for ChatBubbleView {
             bubble_col.add_child(
                 Container::new(
                     ui_text::chat_bubble_meta(
-                        format!("{} {}", wormhole_i18n::t("chat.image.forwarded_from"), forwarded),
+                        format!(
+                            "{} {}",
+                            wormhole_i18n::t("chat.image.forwarded_from"),
+                            forwarded
+                        ),
                         self.font,
                     )
                     .with_color(theme::accent_cool())
@@ -443,41 +683,84 @@ impl View for ChatBubbleView {
         if !self.body.is_empty() {
             bubble_col.add_child(
                 ui_text::chat_bubble_text(self.body.clone(), self.body_font())
-                    .with_color(theme::text())
+                    .with_color(theme::chat_bubble_text())
                     .finish(),
             );
         }
-        if !self.timestamp.is_empty() || (self.outgoing && self.read) {
+        // Reserve space for positioned timestamp so it does not cover the last line.
+        if self.has_meta() {
             bubble_col.add_child(
-                Container::new(Align::new(meta_row.finish()).right().finish())
-                    .with_margin_top(2.0)
+                ConstrainedBox::new(Empty::new().finish())
+                    .with_height(META_RESERVE)
                     .finish(),
             );
         }
 
-        let mut bubble = Container::new(
-            ConstrainedBox::new(bubble_col.finish())
-                .with_max_width(self.max_bubble_width)
-                .finish(),
-        )
-        .with_padding_left(11.0)
-        .with_padding_right(11.0)
-        .with_padding_top(7.0)
-        .with_padding_bottom(5.0)
-        .with_background(bg)
-        .with_corner_radius(radius);
-        let border_width = if self.search_hit { 2.0 } else { 1.0 };
-        let border_color = if self.search_hit {
-            theme::accent_cool()
+        let inner = ConstrainedBox::new(bubble_col.finish())
+            .with_max_width(self.max_bubble_width)
+            .finish();
+        let content = if self.has_meta() {
+            self.with_bottom_right_meta(inner, false)
         } else {
-            border
+            inner
         };
-        bubble = bubble.with_border(Border::all(border_width).with_border_fill(border_color));
+
+        let mut bubble = Container::new(content)
+            .with_padding_left(BUBBLE_PAD_X)
+            .with_padding_right(BUBBLE_PAD_X)
+            .with_padding_top(BUBBLE_PAD_TOP)
+            .with_padding_bottom(BUBBLE_PAD_BOTTOM)
+            .with_background(bg)
+            .with_corner_radius(radius);
+        if self.search_hit {
+            bubble = bubble.with_border(Border::all(2.0).with_border_fill(theme::accent_cool()));
+        }
+        bubble.finish()
+    }
+}
+
+impl Entity for ChatBubbleView {
+    type Event = ();
+}
+
+impl View for ChatBubbleView {
+    fn ui_name() -> &'static str {
+        "ChatBubbleView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        if self.system {
+            return Align::new(
+                Container::new(
+                    ui_text::chat_bubble_meta(self.body.clone(), self.font)
+                        .with_color(theme::text())
+                        .finish(),
+                )
+                .with_horizontal_padding(12.0)
+                .with_vertical_padding(4.0)
+                .with_background(crate::ui::panel_primitives::chat_date_bg())
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
+                .finish(),
+            )
+            .finish();
+        }
+
+        let bg = if self.outgoing {
+            chat_bubble_out_bg()
+        } else {
+            chat_bubble_in_bg()
+        };
+
+        let bubble = if self.is_photo_bubble() {
+            self.render_photo_bubble(bg, theme::border())
+        } else {
+            self.render_text_bubble(bg, theme::border())
+        };
 
         let bubble = if self.system || self.message_id.is_empty() {
-            bubble.finish()
+            bubble
         } else {
-            EventHandler::new(bubble.finish())
+            EventHandler::new(bubble)
                 .skip_automation()
                 .on_right_mouse_down(|ctx, _, _| {
                     ctx.dispatch_typed_action(ChatBubbleAction::Reply);
@@ -527,25 +810,49 @@ impl TypedActionView for ChatBubbleView {
                 }
                 ctx.notify();
             }
-            ChatBubbleAction::OpenImageMenu {
+            ChatBubbleAction::OpenAttachmentMenu {
                 attachment_id,
+                kind,
                 local_path,
                 name,
+                size,
                 asset_id,
                 x,
                 y,
             } => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    state.image_context_menu = Some(ImageContextMenu {
+                    state.open_attachment_menu(AttachmentContextMenu {
                         attachment_id: attachment_id.clone(),
                         message_id: self.message_id.clone(),
+                        kind: kind.clone(),
                         local_path: local_path.clone(),
                         name: name.clone(),
+                        size: *size,
                         asset_id: asset_id.clone(),
                         x: *x,
                         y: *y,
                     });
-                    state.bump_overlay_tick();
+                }
+                ctx.notify();
+            }
+            ChatBubbleAction::OpenFile { local_path } => {
+                let Some(path) = local_path.as_ref() else {
+                    if let Ok(mut state) = self.shell_state.lock() {
+                        state.show_toast(
+                            wormhole_i18n::t("chat.file.not_ready"),
+                            StatusTone::Danger,
+                        );
+                    }
+                    ctx.notify();
+                    return;
+                };
+                match open_path_with_system(PathBuf::from(path).as_path()) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        if let Ok(mut state) = self.shell_state.lock() {
+                            state.show_toast(err, StatusTone::Danger);
+                        }
+                    }
                 }
                 ctx.notify();
             }
@@ -577,7 +884,11 @@ impl TypedActionView for ChatBubbleView {
     ) -> ActionAccessibilityContent {
         let label = match action {
             ChatBubbleAction::OpenImage { .. } => wormhole_i18n::t("chat.image.open"),
-            ChatBubbleAction::OpenImageMenu { .. } => wormhole_i18n::t("chat.image.menu"),
+            ChatBubbleAction::OpenAttachmentMenu { kind, .. } if kind == "image" => {
+                wormhole_i18n::t("chat.image.menu")
+            }
+            ChatBubbleAction::OpenAttachmentMenu { .. } => wormhole_i18n::t("chat.file.menu"),
+            ChatBubbleAction::OpenFile { .. } => wormhole_i18n::t("chat.file.open"),
             ChatBubbleAction::Reply => wormhole_i18n::t("chat.image.reply"),
         };
         ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
@@ -635,6 +946,81 @@ fn format_message_time(timestamp: u64) -> String {
 
 pub fn format_message_time_pub(timestamp: u64) -> String {
     format_message_time(timestamp)
+}
+
+/// Sidebar last-message time: today `HH:MM`, yesterday `昨天`, else `YYYY/M/D`.
+pub fn format_sidebar_time(timestamp: u64) -> String {
+    use chrono::{Datelike, Duration, Local, TimeZone};
+    let millis = normalize_timestamp_ms(timestamp);
+    if millis == 0 {
+        return String::new();
+    }
+    let secs = millis.div_euclid(1000);
+    let nsec = (millis.rem_euclid(1000) * 1_000_000) as u32;
+    let Some(dt) = Local.timestamp_opt(secs, nsec).single() else {
+        return String::new();
+    };
+    let date = dt.date_naive();
+    let today = Local::now().date_naive();
+    if date == today {
+        return dt.format("%H:%M").to_string();
+    }
+    if date == today - Duration::days(1) {
+        return "昨天".into();
+    }
+    format!("{}/{}/{}", date.year(), date.month(), date.day())
+}
+
+#[cfg(test)]
+mod sidebar_time_tests {
+    use super::{format_message_time, format_sidebar_time, normalize_timestamp_ms};
+    use chrono::{Datelike, Duration, Local};
+
+    fn ms_for_local_date(days_ago: i64, hour: u32, min: u32) -> u64 {
+        let date = Local::now().date_naive() - Duration::days(days_ago);
+        let dt = date
+            .and_hms_opt(hour, min, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .single()
+            .expect("local datetime");
+        dt.timestamp_millis() as u64
+    }
+
+    #[test]
+    fn format_sidebar_time_today_hhmm() {
+        let ms = ms_for_local_date(0, 14, 5);
+        assert_eq!(format_sidebar_time(ms), "14:05");
+        assert_eq!(format_message_time(ms), "14:05");
+    }
+
+    #[test]
+    fn format_sidebar_time_yesterday_label() {
+        let ms = ms_for_local_date(1, 9, 30);
+        assert_eq!(format_sidebar_time(ms), "昨天");
+    }
+
+    #[test]
+    fn format_sidebar_time_older_ymd() {
+        let date = Local::now().date_naive() - Duration::days(10);
+        let dt = date
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .single()
+            .unwrap();
+        let ms = dt.timestamp_millis() as u64;
+        assert_eq!(
+            format_sidebar_time(ms),
+            format!("{}/{}/{}", date.year(), date.month(), date.day())
+        );
+    }
+
+    #[test]
+    fn format_sidebar_time_empty_zero() {
+        assert_eq!(format_sidebar_time(0), "");
+        assert_eq!(normalize_timestamp_ms(0), 0);
+    }
 }
 
 pub fn outgoing_message_read(sent_at: u64, is_last_outgoing: bool) -> bool {

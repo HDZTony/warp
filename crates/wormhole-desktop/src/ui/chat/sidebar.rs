@@ -2,12 +2,12 @@ use pathfinder_color::ColorU;
 use warpui::elements::{
     Align, Border, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container,
     CornerRadius, CrossAxisAlignment, DispatchEventResult, EventHandler, Expanded, Fill, Flex,
-    MainAxisSize, ParentElement, Radius, ScrollbarWidth, Stack,
+    MainAxisAlignment, MainAxisSize, ParentElement, Radius, ScrollbarWidth, Stack,
 };
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext};
 
-use crate::ui::chat::bubble::format_message_time_pub;
+use crate::ui::chat::bubble::format_sidebar_time;
 use crate::ui::chat::labels::{
     chat_avatar_for_os, conversation_device_title, conversation_os_label, conversation_preview,
     find_cluster_node,
@@ -38,7 +38,7 @@ use wormhole_desktop_core::chat_contacts::{
     ContactDto,
 };
 use wormhole_desktop_core::chat_ui_prefs::{
-    load_chat_ui_prefs, set_chat_hidden, set_chat_muted, ChatUiPrefs,
+    load_chat_ui_prefs, mark_chat_read, set_chat_hidden, set_chat_muted, ChatUiPrefs,
 };
 use wormhole_desktop_core::cluster_commands::{cluster_status_hud, ClusterStatusDto};
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
@@ -159,7 +159,7 @@ fn sidebar_row_from_hit(hit: ChatSidebarHitDto) -> SidebarRow {
         id: hit.conv_id.clone(),
         title: hit.conv_title,
         preview,
-        time: format_message_time_pub(hit.sent_at),
+        time: format_sidebar_time(hit.sent_at),
         online: false,
         presence: "unknown".into(),
         unread: 0,
@@ -548,6 +548,9 @@ impl ChatSidebarView {
             *guard = Some(conv_id.clone());
         }
         self.selecting = None;
+        if let Some(row) = self.rows.iter_mut().find(|row| row.id == conv_id) {
+            row.unread = 0;
+        }
         let summary = self.rows.iter().find(|row| {
             row.id == conv_id
                 || self.conversations.iter().any(|conv| {
@@ -565,6 +568,25 @@ impl ChatSidebarView {
             }
             state.bump_selection_tick();
         }
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let core = self.core.clone();
+        let read_id = conv_id.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let state = runtime.state.clone();
+                mark_chat_read(&state.data_dir, &read_id, at_ms).await
+            },
+            move |view, output, ctx| {
+                if let Ok(prefs) = output {
+                    view.ui_prefs = prefs;
+                }
+                let _ = ctx;
+            },
+        );
         ctx.emit(ChatSidebarEvent::Selected(conv_id));
         ctx.notify();
     }
@@ -722,7 +744,7 @@ impl ChatSidebarView {
             let preview = conversation_preview(conv, cluster);
             let time = conv
                 .last_message_at
-                .map(format_message_time_pub)
+                .map(format_sidebar_time)
                 .unwrap_or_default();
             let online = find_cluster_node(conv, cluster)
                 .map(|node| node.online)
@@ -743,7 +765,7 @@ impl ChatSidebarView {
                 time,
                 online,
                 presence,
-                unread: 0,
+                unread: conv.unread_count,
                 os: conversation_os_label(conv, cluster),
                 muted: self.ui_prefs.is_muted(&conv.id),
                 kind,
@@ -1224,17 +1246,26 @@ impl ChatSidebarView {
         };
         let mut top = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Min);
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_main_axis_size(MainAxisSize::Max);
         top.add_child(
-            ui_text::chat_sidebar_name(row.title.clone(), self.font)
-                .with_color(title_color)
-                .finish(),
+            Expanded::new(
+                1.0,
+                ui_text::chat_sidebar_name(row.title.clone(), self.font)
+                    .with_color(title_color)
+                    .finish(),
+            )
+            .finish(),
         );
         if !row.time.is_empty() {
             top.add_child(
-                ui_text::chat_sidebar_time(row.time.clone(), self.font)
-                    .with_color(theme::muted())
-                    .finish(),
+                Container::new(
+                    ui_text::chat_sidebar_time(row.time.clone(), self.font)
+                        .with_color(theme::muted())
+                        .finish(),
+                )
+                .with_margin_left(8.0)
+                .finish(),
             );
         }
 
@@ -1247,7 +1278,8 @@ impl ChatSidebarView {
         };
         let mut preview_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Min);
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_main_axis_size(MainAxisSize::Max);
         let preview_text = if row.muted && !row.preview.is_empty() {
             format!("🔇 {}", row.preview)
         } else {
@@ -1256,22 +1288,38 @@ impl ChatSidebarView {
         let preview_font =
             crate::ui::fonts::chat_message_font(self.font, self.emoji_font, &preview_text);
         preview_row.add_child(
-            ui_text::chat_preview(preview_text, preview_font)
-                .with_color(preview_color)
-                .finish(),
+            Expanded::new(
+                1.0,
+                ui_text::chat_preview(preview_text, preview_font)
+                    .with_color(preview_color)
+                    .finish(),
+            )
+            .finish(),
         );
-        if row.unread > 0 && !row.muted {
+        if row.unread > 0 {
+            let badge_bg = if row.muted {
+                theme::muted()
+            } else {
+                theme::accent_cool()
+            };
+            let badge_fg = if row.muted {
+                theme::text()
+            } else {
+                theme::chat_bubble_text()
+            };
             preview_row.add_child(
                 Container::new(
                     Align::new(
                         ui_text::device_meta(row.unread.to_string(), self.font)
-                            .with_color(theme::text())
+                            .with_color(badge_fg)
                             .finish(),
                     )
                     .finish(),
                 )
-                .with_uniform_padding(4.0)
-                .with_background(theme::accent_cool())
+                .with_margin_left(8.0)
+                .with_horizontal_padding(6.0)
+                .with_vertical_padding(2.0)
+                .with_background(badge_bg)
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(999.0)))
                 .finish(),
             );
@@ -1285,6 +1333,13 @@ impl ChatSidebarView {
                 .finish(),
         );
 
+        // ClippedScrollable gives infinite max width; Max+Expanded must sit inside a
+        // fixed-width ConstrainedBox (avatar 46 + gap 10 leave 220 for text).
+        let text_col_width = CHAT_ITEM_INNER_WIDTH - TG_SIDEBAR_AVATAR - 10.0;
+        let text_col = ConstrainedBox::new(col.finish())
+            .with_width(text_col_width)
+            .finish();
+
         let row_body = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
@@ -1293,7 +1348,7 @@ impl ChatSidebarView {
                 self.font,
                 TG_SIDEBAR_AVATAR,
             ))
-            .with_child(Container::new(col.finish()).with_margin_left(10.0).finish())
+            .with_child(Container::new(text_col).with_margin_left(10.0).finish())
             .finish();
 
         let row_title = row.title.clone();
@@ -2486,6 +2541,7 @@ mod tests {
             created_at: 0,
             last_message_at: None,
             last_message_preview: None,
+            unread_count: 0,
         }
     }
 
@@ -2761,6 +2817,9 @@ mod tests {
             hidden: ["conv-win".into()].into_iter().collect(),
             wallpapers: Default::default(),
             pinned: Default::default(),
+            media_upload_group: None,
+            media_upload_as_file: None,
+            last_read_at: Default::default(),
         };
         assert!(prefs.is_hidden("conv-win"));
         let node = sample_node("n-win", Some("ep-win"), false);

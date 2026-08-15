@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::ui::panel_primitives::StatusTone;
@@ -55,15 +56,57 @@ pub struct ForwardDraft {
     pub forwarded_from: String,
 }
 
+/// Right-click menu for any chat attachment (image / video / document).
 #[derive(Debug, Clone)]
-pub struct ImageContextMenu {
+pub struct AttachmentContextMenu {
     pub attachment_id: String,
     pub message_id: String,
+    pub kind: String,
     pub local_path: Option<String>,
     pub name: String,
+    pub size: u64,
     pub asset_id: Option<String>,
     pub x: f32,
     pub y: f32,
+}
+
+impl AttachmentContextMenu {
+    pub fn is_image(&self) -> bool {
+        self.kind == "image"
+    }
+}
+
+/// One file in the Telegram-style media upload confirmation dialog.
+#[derive(Debug, Clone)]
+pub struct MediaUploadItem {
+    pub id: String,
+    pub path: PathBuf,
+    pub kind: String,
+    pub name: String,
+    pub size: u64,
+    pub preview_asset_id: Option<String>,
+    pub delete_on_clear: bool,
+}
+
+/// Draft state for the media upload modal (replaces compose staged strip).
+#[derive(Debug, Clone, Default)]
+pub struct MediaUploadDraft {
+    pub conv_id: Option<String>,
+    pub items: Vec<MediaUploadItem>,
+    pub caption: String,
+    pub group_items: bool,
+    pub send_as_files: bool,
+    pub remember: bool,
+    /// Snapshot of `group_items` when the dialog opened (Remember visibility).
+    pub initial_group_items: bool,
+    /// Snapshot of `send_as_files` when the dialog opened (Remember visibility).
+    pub initial_send_as_files: bool,
+    /// Opened via Document picker (or similar) with as-file forced on.
+    pub forced_as_file: bool,
+    /// When set, the image editor overlay is open for this item id.
+    pub editing_item_id: Option<String>,
+    /// Paint mode within the editor (Esc returns to Transform first).
+    pub edit_paint_mode: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,11 +156,14 @@ pub struct ChatShellState {
     /// When set, the open thread scrolls to this message id after load.
     pub pending_jump_message_id: Option<String>,
     pub image_viewer: Option<ImageViewerState>,
-    pub image_context_menu: Option<ImageContextMenu>,
+    pub attachment_context_menu: Option<AttachmentContextMenu>,
     pub reply_draft: Option<ReplyDraft>,
     pub forward_draft: Option<ForwardDraft>,
     /// Bumped when lightbox / reply / forward overlays change so shell re-renders.
     pub overlay_tick: u64,
+    /// Telegram-style upload media confirmation dialog.
+    pub media_upload_open: bool,
+    pub media_upload: MediaUploadDraft,
 }
 
 impl Default for ChatShellState {
@@ -160,10 +206,12 @@ impl Default for ChatShellState {
             pending_outgoing: Vec::new(),
             pending_jump_message_id: None,
             image_viewer: None,
-            image_context_menu: None,
+            attachment_context_menu: None,
             reply_draft: None,
             forward_draft: None,
             overlay_tick: 0,
+            media_upload_open: false,
+            media_upload: MediaUploadDraft::default(),
         }
     }
 }
@@ -190,20 +238,25 @@ impl ChatShellState {
         self.mute_flyout_open = false;
         self.sidebar_menu_open = false;
         self.calls_menu_open = false;
-        if self.image_context_menu.take().is_some() {
+        if self.attachment_context_menu.take().is_some() {
             self.bump_overlay_tick();
         }
     }
 
     pub fn close_image_viewer(&mut self) {
         self.image_viewer = None;
-        self.image_context_menu = None;
+        self.attachment_context_menu = None;
         self.bump_overlay_tick();
     }
 
     pub fn open_image_viewer(&mut self, viewer: ImageViewerState) {
-        self.image_context_menu = None;
+        self.attachment_context_menu = None;
         self.image_viewer = Some(viewer);
+        self.bump_overlay_tick();
+    }
+
+    pub fn open_attachment_menu(&mut self, menu: AttachmentContextMenu) {
+        self.attachment_context_menu = Some(menu);
         self.bump_overlay_tick();
     }
 
@@ -222,12 +275,37 @@ impl ChatShellState {
     pub fn set_forward_draft(&mut self, draft: ForwardDraft) {
         self.forward_draft = Some(draft);
         self.close_image_viewer();
-        self.image_context_menu = None;
+        self.attachment_context_menu = None;
         self.bump_overlay_tick();
     }
 
     pub fn clear_forward_draft(&mut self) {
         self.forward_draft = None;
+        self.bump_overlay_tick();
+    }
+
+    pub fn open_media_upload(&mut self, draft: MediaUploadDraft) {
+        self.close_overlays();
+        self.media_upload = draft;
+        self.media_upload_open = true;
+        self.bump_overlay_tick();
+    }
+
+    pub fn close_media_upload(&mut self) {
+        for item in self.media_upload.items.drain(..) {
+            if item.delete_on_clear {
+                let _ = std::fs::remove_file(&item.path);
+            }
+        }
+        self.media_upload = MediaUploadDraft::default();
+        self.media_upload_open = false;
+        self.bump_overlay_tick();
+    }
+
+    /// Close the dialog without deleting files (used after a successful send).
+    pub fn dismiss_media_upload_after_send(&mut self) {
+        self.media_upload = MediaUploadDraft::default();
+        self.media_upload_open = false;
         self.bump_overlay_tick();
     }
 

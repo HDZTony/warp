@@ -16,7 +16,8 @@ use crate::ui::chat::channel_create_panel::{ChannelCreateEvent, ChannelCreatePan
 use crate::ui::chat::compose::ChatComposeView;
 use crate::ui::chat::contacts_panel::{ContactsPanelEvent, ContactsPanelView};
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
-use crate::ui::chat::image_viewer::{image_context_menu_overlay, image_viewer_overlay};
+use crate::ui::chat::image_viewer::{attachment_context_menu_overlay, image_viewer_overlay};
+use crate::ui::chat::media_upload_modal::MediaUploadModalView;
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
@@ -27,7 +28,7 @@ use crate::ui::chat::thread_search::ChatThreadSearchView;
 use crate::ui::chat::voice_call_ui::{accept, apply_voice_status, decline, voice_error_toast};
 use crate::ui::core_handle::CoreHandle;
 use crate::ui::device_gate_view::{load_device_gate, wrap_with_device_gate, DeviceGateStatus};
-use crate::ui::panel_primitives::{status_line, tab_content_fill, StatusTone};
+use crate::ui::panel_primitives::{chat_thread_tint, status_line, tab_content_fill, StatusTone};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::chat_commands::ChatEventDto;
@@ -73,6 +74,7 @@ pub struct ChatShellView {
     contacts: ViewHandle<ContactsPanelView>,
     channel_create: ViewHandle<ChannelCreatePanelView>,
     calls: ViewHandle<CallsPanelView>,
+    media_upload: ViewHandle<MediaUploadModalView>,
     drop_hover: bool,
     last_overlay_tick: u64,
 }
@@ -106,6 +108,14 @@ impl ChatShellView {
         });
         let calls = ctx.add_typed_action_view(|ctx| {
             CallsPanelView::new(ctx, core.clone(), shell_state.clone())
+        });
+        let media_upload = ctx.add_typed_action_view(|ctx| {
+            MediaUploadModalView::new(
+                ctx,
+                core.clone(),
+                selection.clone(),
+                shell_state.clone(),
+            )
         });
         ctx.subscribe_to_view(&profile, |view, _, event, ctx| match event {
             ChatProfileEvent::BrowseNodeShares(node_id) => {
@@ -248,6 +258,7 @@ impl ChatShellView {
             contacts,
             channel_create,
             calls,
+            media_upload,
             drop_hover: false,
             last_overlay_tick: 0,
         };
@@ -270,6 +281,10 @@ impl ChatShellView {
                     .unwrap_or(0);
                 if tick != view.last_overlay_tick {
                     view.last_overlay_tick = tick;
+                    let media = view.media_upload.clone();
+                    ctx.update_view(&media, |modal, ctx| {
+                        modal.queue_missing_previews(ctx);
+                    });
                     ctx.notify();
                 }
                 view.start_overlay_poll(ctx);
@@ -419,8 +434,9 @@ impl ChatShellView {
                     || state.contacts_open
                     || state.channel_create_open
                     || state.calls_open
+                    || state.media_upload_open
                     || state.image_viewer.is_some()
-                    || state.image_context_menu.is_some()
+                    || state.attachment_context_menu.is_some()
                     || state.forward_draft.is_some()
             })
             .unwrap_or(false)
@@ -458,7 +474,7 @@ impl TypedActionView for ChatShellView {
         match action {
             ChatShellAction::DismissOverlays => {
                 if let Ok(mut state) = self.shell_state.lock() {
-                    if state.image_viewer.is_some() || state.image_context_menu.is_some() {
+                    if state.image_viewer.is_some() || state.attachment_context_menu.is_some() {
                         state.close_image_viewer();
                     } else if state.forward_draft.is_some() {
                         state.clear_forward_draft();
@@ -474,6 +490,18 @@ impl TypedActionView for ChatShellView {
                             state.calls_subview = "overview".into();
                         } else {
                             state.close_calls();
+                        }
+                    } else if state.media_upload_open {
+                        if state.media_upload.editing_item_id.is_some() {
+                            if state.media_upload.edit_paint_mode {
+                                state.media_upload.edit_paint_mode = false;
+                            } else {
+                                state.media_upload.editing_item_id = None;
+                                state.media_upload.edit_paint_mode = false;
+                            }
+                            state.bump_overlay_tick();
+                        } else {
+                            state.close_media_upload();
                         }
                     } else if state.contacts_add_open {
                         state.contacts_add_open = false;
@@ -561,7 +589,7 @@ impl ChatShellView {
                     1.0,
                     EventHandler::new(
                         Container::new(main_col.finish())
-                            .with_background(theme::canvas())
+                            .with_background(chat_thread_tint())
                             .with_border(if self.drop_hover {
                                 Border::all(2.0).with_border_fill(theme::accent_cool())
                             } else {
@@ -614,6 +642,7 @@ impl ChatShellView {
         stack.add_child(ChildView::new(&self.contacts).finish());
         stack.add_child(ChildView::new(&self.channel_create).finish());
         stack.add_child(ChildView::new(&self.calls).finish());
+        stack.add_child(ChildView::new(&self.media_upload).finish());
         if let Ok(state) = self.shell_state.lock() {
             if let Some(viewer) = state.image_viewer.as_ref() {
                 stack.add_child(image_viewer_overlay(
@@ -622,8 +651,8 @@ impl ChatShellView {
                     self.shell_state.clone(),
                 ));
             }
-            if let Some(menu) = state.image_context_menu.as_ref() {
-                stack.add_child(image_context_menu_overlay(
+            if let Some(menu) = state.attachment_context_menu.as_ref() {
+                stack.add_child(attachment_context_menu_overlay(
                     self.font,
                     menu,
                     self.shell_state.clone(),

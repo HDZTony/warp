@@ -1,11 +1,18 @@
 //! Multiline draft layout helpers (`desktop-current.html` composer / chat input).
+//!
+//! Chat compose **display** soft-wraps via Warp `Text` inside a width-constrained
+//! column (`render_compose_field_with_caret`). The `cols`-based helpers below are
+//! for approximate height estimates / tests — not the live wrap source of truth.
 
 pub const LINE_HEIGHT: f32 = 18.0;
 pub const BASE_HEIGHT: f32 = 36.0;
 /// Single-line inner height for chat compose (`.chat-compose-input { min-height: 22px }`).
 pub const COMPOSE_BASE_HEIGHT: f32 = 22.0;
-pub const MAX_LINES: usize = 8;
+/// Align HTML `.chat-compose-input { max-height: 200px }` → 22 + 9×18 = 184, 10 lines = 202 → cap 10.
+pub const MAX_LINES: usize = 10;
 pub const DEFAULT_COLS: usize = 48;
+/// HTML max-height for chat compose input.
+pub const COMPOSE_MAX_HEIGHT: f32 = 200.0;
 
 pub fn visible_line_count(draft: &str, cols: usize) -> usize {
     let cols = cols.max(1);
@@ -32,7 +39,8 @@ pub fn box_height(draft: &str, cols: usize) -> f32 {
 
 pub fn compose_box_height(draft: &str, cols: usize) -> f32 {
     let lines = visible_line_count(draft, cols);
-    COMPOSE_BASE_HEIGHT + (lines.saturating_sub(1) as f32) * LINE_HEIGHT
+    let height = COMPOSE_BASE_HEIGHT + (lines.saturating_sub(1) as f32) * LINE_HEIGHT;
+    height.min(COMPOSE_MAX_HEIGHT)
 }
 
 pub fn display_draft(draft: &str, placeholder: &str) -> String {
@@ -45,7 +53,9 @@ pub fn display_draft(draft: &str, placeholder: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{box_height, compose_box_height, visible_line_count};
+    use super::{
+        box_height, compose_box_height, visible_line_count, COMPOSE_MAX_HEIGHT, MAX_LINES,
+    };
 
     #[test]
     fn empty_is_one_line() {
@@ -63,5 +73,12 @@ mod tests {
     fn wrap_increases_lines() {
         let long = "x".repeat(100);
         assert!(visible_line_count(&long, 40) >= 3);
+    }
+
+    #[test]
+    fn compose_height_caps_at_html_max() {
+        let many = "a\n".repeat(20);
+        assert!(compose_box_height(&many, 40) <= COMPOSE_MAX_HEIGHT + 0.1);
+        assert_eq!(visible_line_count(&many, 40), MAX_LINES);
     }
 }

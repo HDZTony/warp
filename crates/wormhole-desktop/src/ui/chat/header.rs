@@ -19,7 +19,7 @@ use crate::ui::chat::voice_call_ui::{
     video_status_to_header_line, voice_error_toast, voice_status_to_header_line,
 };
 use crate::ui::core_handle::CoreHandle;
-use crate::ui::panel_primitives::{online_dot, tg_avatar, StatusTone, TG_AVATAR_SM_SIZE};
+use crate::ui::panel_primitives::{tg_avatar, StatusTone, TG_HEADER_AVATAR_SIZE};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::call_history::CallHistoryKind;
@@ -59,12 +59,13 @@ fn header_status(voice_phase: &str, presence: &str) -> String {
     }
 }
 
-pub const TG_HEADER_HEIGHT: f32 = 56.0;
-const TG_HEADER_BTN: f32 = 36.0;
+pub const TG_HEADER_HEIGHT: f32 = 54.0;
+const TG_HEADER_BTN: f32 = 40.0;
+const TG_HEADER_MORE_BTN: f32 = 44.0;
 const TG_HEADER_PAD_X: f32 = 16.0;
 const TG_HEADER_PAD_Y: f32 = 8.0;
 const TG_HEADER_INFO_GAP: f32 = 10.0;
-const TG_HEADER_ACTION_GAP: f32 = 2.0;
+const TG_HEADER_ACTION_GAP: f32 = 0.0;
 
 #[derive(Debug, Clone)]
 pub enum ChatHeaderAction {
@@ -840,7 +841,7 @@ impl View for ChatHeaderView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let (search_open, profile_open, menu_open) = self.shell_flags();
+        let (search_open, _profile_open, menu_open) = self.shell_flags();
         let (voice_phase, voice_active) = self
             .shell_state
             .lock()
@@ -858,7 +859,7 @@ impl View for ChatHeaderView {
         let info_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
-            .with_child(tg_avatar(self.avatar_label(), self.font, TG_AVATAR_SM_SIZE))
+            .with_child(tg_avatar(self.avatar_label(), self.font, TG_HEADER_AVATAR_SIZE))
             .with_child(
                 Container::new({
                     let mut text_col = Flex::column().with_main_axis_size(MainAxisSize::Min);
@@ -868,26 +869,14 @@ impl View for ChatHeaderView {
                             .finish(),
                     );
                     let status_color = if self.online {
-                        theme::success()
+                        theme::accent_cool()
                     } else {
                         theme::muted()
                     };
                     text_col.add_child(
                         Container::new(
-                            Flex::row()
-                                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                .with_child(if self.online {
-                                    Container::new(online_dot())
-                                        .with_horizontal_margin(4.0)
-                                        .finish()
-                                } else {
-                                    Flex::row().finish()
-                                })
-                                .with_child(
-                                    ui_text::chat_header_status(self.status.clone(), self.font)
-                                        .with_color(status_color)
-                                        .finish(),
-                                )
+                            ui_text::chat_header_status(self.status.clone(), self.font)
+                                .with_color(status_color)
                                 .finish(),
                         )
                         .with_margin_top(1.0)
@@ -902,7 +891,7 @@ impl View for ChatHeaderView {
 
         let info_clickable = EventHandler::new(
             ConstrainedBox::new(info_row)
-                .with_min_height(TG_AVATAR_SM_SIZE)
+                .with_min_height(TG_HEADER_AVATAR_SIZE)
                 .finish(),
         )
         .with_automation_label("聊天信息")
@@ -919,49 +908,37 @@ impl View for ChatHeaderView {
                 "chat-header-search.svg",
                 search_open,
                 ChatHeaderAction::ToggleThreadSearch,
+                TG_HEADER_BTN,
             ),
             (
                 "chat-header-phone.svg",
                 phone_active,
                 ChatHeaderAction::VoiceCallPrimary,
-            ),
-            (
-                "chat-header-video.svg",
-                phone_active,
-                ChatHeaderAction::VideoCallPrimary,
-            ),
-            (
-                "chat-header-rdp.svg",
-                false,
-                ChatHeaderAction::OpenRemoteDesktop,
-            ),
-            (
-                "chat-header-profile.svg",
-                profile_open,
-                ChatHeaderAction::ToggleProfile,
+                TG_HEADER_BTN,
             ),
             (
                 "chat-header-more.svg",
                 menu_open,
                 ChatHeaderAction::ToggleHeaderMenu,
+                TG_HEADER_MORE_BTN,
             ),
         ];
-        for (index, (icon, active, action)) in buttons.into_iter().enumerate() {
+        for (index, (icon, active, action, btn_size)) in buttons.into_iter().enumerate() {
             actions.add_child(
                 Container::new(
                     ConstrainedBox::new(header_button(
                         icon,
-                        if icon == "chat-header-phone.svg" || icon == "chat-header-video.svg" {
+                        if icon == "chat-header-phone.svg" {
                             phone_icon_color
                         } else {
                             theme::muted()
                         },
                         active,
                         action,
-                        TG_HEADER_BTN,
+                        btn_size,
                     ))
-                    .with_width(TG_HEADER_BTN)
-                    .with_height(TG_HEADER_BTN)
+                    .with_width(btn_size)
+                    .with_height(btn_size)
                     .finish(),
                 )
                 .with_margin_left(if index == 0 {

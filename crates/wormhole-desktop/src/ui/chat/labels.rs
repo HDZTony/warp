@@ -166,6 +166,7 @@ mod tests {
             created_at: 0,
             last_message_at: None,
             last_message_preview: preview.map(str::to_string),
+            unread_count: 0,
         }
     }
 

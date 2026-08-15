@@ -1,4 +1,5 @@
-//! Chat thread background — default deep-space dots or per-conversation wallpaper cover.
+//! Chat thread background — light Telegram-style tint + sparse doodle tile,
+//! or per-conversation wallpaper cover.
 
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
@@ -12,9 +13,11 @@ use warpui::ClipBounds;
 use warpui_core::assets::asset_cache::AssetSource;
 use warpui_core::image_cache::CacheOption;
 
+use crate::ui::panel_primitives::chat_thread_tint;
 use crate::ui::theme;
 
-const DOT_SPACING: f32 = 48.0;
+/// Sparse original doodle tile (not tdesktop wallpaper).
+const TILE: f32 = 64.0;
 
 pub struct ChatThreadBackdrop {
     child: Box<dyn Element>,
@@ -57,6 +60,34 @@ impl ChatThreadBackdrop {
             size: None,
             origin: None,
         })
+    }
+}
+
+fn paint_doodle_tile(origin: Vector2F, tile_origin: Vector2F, ctx: &mut PaintContext) {
+    let ink = theme::with_alpha(theme::chat_date_bg(), 90);
+    let soft = theme::with_alpha(theme::chat_date_bg(), 55);
+    // Three dots + a small arc — original low-contrast pattern.
+    let marks = [
+        (10.0, 14.0, 2.4, ink),
+        (42.0, 38.0, 2.0, soft),
+        (54.0, 12.0, 1.8, soft),
+    ];
+    for (dx, dy, diam, color) in marks {
+        ctx.scene
+            .draw_rect_without_hit_recording(RectF::new(
+                origin + tile_origin + vec2f(dx - diam * 0.5, dy - diam * 0.5),
+                vec2f(diam, diam),
+            ))
+            .with_background(color);
+    }
+    // Tiny chevron / arc approximation (three small dots)
+    for (dx, dy) in [(26.0, 50.0), (30.0, 47.0), (34.0, 50.0)] {
+        ctx.scene
+            .draw_rect_without_hit_recording(RectF::new(
+                origin + tile_origin + vec2f(dx, dy),
+                vec2f(1.4, 1.4),
+            ))
+            .with_background(soft);
     }
 }
 
@@ -103,47 +134,23 @@ impl Element for ChatThreadBackdrop {
 
         if let Some(wallpaper) = self.wallpaper.as_mut() {
             wallpaper.paint(origin, ctx, app);
-            let overlay = theme::with_alpha(theme::canvas(), 168);
+            let overlay = theme::with_alpha(chat_thread_tint(), 168);
             ctx.scene
                 .draw_rect_without_hit_recording(RectF::new(origin, size))
                 .with_background(overlay);
         } else {
             ctx.scene
                 .draw_rect_without_hit_recording(RectF::new(origin, size))
-                .with_background(theme::canvas());
+                .with_background(chat_thread_tint());
 
-            let cool_glow = theme::with_alpha(theme::accent_cool(), 10);
-            let warm_glow = theme::with_alpha(theme::accent(), 8);
-            let glow_w = size.x() * 0.55;
-            let glow_h = size.y() * 0.55;
-            ctx.scene
-                .draw_rect_without_hit_recording(RectF::new(
-                    origin + vec2f(size.x() * 0.08, size.y() * 0.18),
-                    vec2f(glow_w, glow_h),
-                ))
-                .with_background(cool_glow);
-            ctx.scene
-                .draw_rect_without_hit_recording(RectF::new(
-                    origin + vec2f(size.x() * 0.52, size.y() * 0.48),
-                    vec2f(glow_w * 0.85, glow_h * 0.75),
-                ))
-                .with_background(warm_glow);
-
-            let dot = theme::with_alpha(theme::muted(), 90);
             let mut y = 0.0;
             while y <= size.y() {
                 let mut x = 0.0;
                 while x <= size.x() {
-                    ctx.scene
-                        .draw_rect_without_hit_recording(RectF::new(
-                            origin
-                                + vec2f(x + DOT_SPACING * 0.5 - 0.6, y + DOT_SPACING * 0.5 - 0.6),
-                            vec2f(1.2, 1.2),
-                        ))
-                        .with_background(dot);
-                    x += DOT_SPACING;
+                    paint_doodle_tile(origin, vec2f(x, y), ctx);
+                    x += TILE;
                 }
-                y += DOT_SPACING;
+                y += TILE;
             }
         }
 

@@ -161,6 +161,122 @@ pub fn write_clipboard_image_from_path(path: &std::path::Path) -> Result<(), Str
         .map_err(|e| e.to_string())
 }
 
+/// Copy one or more file paths onto the system clipboard so they can be pasted
+/// as files (Explorer / Finder / file managers).
+pub fn write_clipboard_files(paths: &[std::path::PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("没有可复制的文件".into());
+    }
+    for path in paths {
+        if !path.exists() {
+            return Err(format!("文件不存在: {}", path.display()));
+        }
+    }
+    #[cfg(windows)]
+    {
+        return write_clipboard_files_win32(paths);
+    }
+    #[cfg(not(windows))]
+    {
+        // Cross-platform fallback: `file://` URI list as plain text. Native
+        // CF_HDROP / Finder pasteboard file lists need platform APIs; URI text
+        // still lets compose paste and many apps resolve the path.
+        let text = paths
+            .iter()
+            .map(|path| {
+                let absolute = path
+                    .canonicalize()
+                    .unwrap_or_else(|_| path.to_path_buf());
+                format!("file://{}", absolute.display())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_clipboard_text(&text)
+    }
+}
+
+#[cfg(windows)]
+fn write_clipboard_files_win32(paths: &[std::path::PathBuf]) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+
+    /// Win32 DROPFILES header (see shellapi.h). Kept local so we do not pull
+    /// `Win32_UI_Shell` into wormhole-desktop solely for this struct.
+    #[repr(C)]
+    struct DropFiles {
+        p_files: u32,
+        pt_x: i32,
+        pt_y: i32,
+        f_nc: i32,
+        f_wide: i32,
+    }
+
+    // Build double-null-terminated wide path list.
+    let mut wide: Vec<u16> = Vec::new();
+    for path in paths {
+        let absolute = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf());
+        wide.extend(OsStr::new(&absolute).encode_wide());
+        wide.push(0);
+    }
+    wide.push(0);
+
+    let header_size = std::mem::size_of::<DropFiles>();
+    let path_bytes = wide.len() * std::mem::size_of::<u16>();
+    let total = header_size + path_bytes;
+
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("无法打开剪贴板".into());
+        }
+
+        let mut handle: HANDLE = std::ptr::null_mut();
+        let result = (|| {
+            if EmptyClipboard() == 0 {
+                return Err("无法清空剪贴板".into());
+            }
+            handle = GlobalAlloc(GMEM_MOVEABLE, total);
+            if handle.is_null() {
+                return Err("无法分配剪贴板内存".into());
+            }
+            let ptr = GlobalLock(handle) as *mut u8;
+            if ptr.is_null() {
+                return Err("无法锁定剪贴板内存".into());
+            }
+            std::ptr::write_bytes(ptr, 0, total);
+            let dropfiles = ptr as *mut DropFiles;
+            (*dropfiles).p_files = header_size as u32;
+            (*dropfiles).f_wide = 1; // TRUE — Unicode paths
+            let dest = ptr.add(header_size) as *mut u16;
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), dest, wide.len());
+            GlobalUnlock(handle);
+
+            // CF_HDROP is clipboard format 15.
+            const CF_HDROP: u32 = 15;
+            if SetClipboardData(CF_HDROP, handle).is_null() {
+                return Err("无法写入文件剪贴板".into());
+            }
+            handle = std::ptr::null_mut();
+            Ok(())
+        })();
+
+        if !handle.is_null() {
+            use windows_sys::Win32::Foundation::GlobalFree;
+            GlobalFree(handle);
+        }
+        CloseClipboard();
+        result
+    }
+}
+
 pub fn clipboard_image_kind_and_ext(mime: &str) -> (&'static str, &'static str) {
     match mime {
         "image/png" => ("image", "png"),
