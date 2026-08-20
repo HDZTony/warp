@@ -21,7 +21,8 @@ use crate::ui::chat::media_upload_modal::MediaUploadModalView;
 use crate::ui::chat::outgoing_call_panel::{OutgoingCallEvent, OutgoingCallPanelView};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
-    chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
+    chat_event_triggers_refresh, new_shared_shell_state, toast_shows_under_compose,
+    SharedChatShellState,
 };
 use crate::ui::chat::sidebar::{ChatSidebarEvent, ChatSidebarView};
 use crate::ui::chat::thread::ChatThreadView;
@@ -480,7 +481,7 @@ impl ChatShellView {
             .shell_state
             .lock()
             .ok()
-            .filter(|state| !state.toast.is_empty())
+            .filter(|state| !state.toast.is_empty() && toast_shows_under_compose(state.toast_tone))
             .map(|state| (state.toast.clone(), state.toast_tone))?;
         Some(status_line(text, self.font, tone))
     }

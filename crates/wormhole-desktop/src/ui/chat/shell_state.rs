@@ -277,8 +277,22 @@ pub fn new_shared_shell_state() -> SharedChatShellState {
     Arc::new(Mutex::new(ChatShellState::default()))
 }
 
+/// Whether a toast occupies the persistent row under the compose bar.
+///
+/// Only failures belong there. Success / muted confirmations such as
+/// 「已转发」 must not leave a leftover hint under the input.
+pub fn toast_shows_under_compose(tone: StatusTone) -> bool {
+    matches!(tone, StatusTone::Danger | StatusTone::Warn)
+}
+
 impl ChatShellState {
+    /// Surface a compose-footer toast. Non-error tones are ignored and clear
+    /// any previous footer line, so confirmations never stick under the input.
     pub fn show_toast(&mut self, text: impl Into<String>, tone: StatusTone) {
+        if !toast_shows_under_compose(tone) {
+            self.clear_toast();
+            return;
+        }
         self.toast = text.into();
         self.toast_tone = tone;
     }
@@ -602,6 +616,29 @@ pub fn chat_event_triggers_refresh(kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_toast_ignores_success_confirmations() {
+        use crate::ui::panel_primitives::StatusTone;
+
+        let mut state = ChatShellState::default();
+        state.show_toast("已转发", StatusTone::Success);
+        assert!(state.toast.is_empty());
+
+        state.show_toast("boom", StatusTone::Danger);
+        assert_eq!(state.toast, "boom");
+        assert_eq!(state.toast_tone, StatusTone::Danger);
+
+        state.show_toast("已转发", StatusTone::Success);
+        assert!(state.toast.is_empty());
+        assert_eq!(state.toast_tone, StatusTone::Neutral);
+
+        state.show_toast("offline", StatusTone::Warn);
+        assert_eq!(state.toast, "offline");
+        assert!(!toast_shows_under_compose(StatusTone::Muted));
+        assert!(!toast_shows_under_compose(StatusTone::Neutral));
+        assert!(toast_shows_under_compose(StatusTone::Danger));
+    }
 
     #[test]
     fn bump_message_tick_increments() {
