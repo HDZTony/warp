@@ -109,6 +109,50 @@ pub struct MediaUploadDraft {
     pub edit_paint_mode: bool,
 }
 
+/// Telegram-style outgoing call confirmation / ringing overlay.
+#[derive(Debug, Clone)]
+pub enum OutgoingCallUi {
+    Confirming {
+        conv_id: String,
+        peer_title: String,
+        avatar_os: String,
+    },
+    Ringing {
+        conv_id: String,
+        peer_title: String,
+        avatar_os: String,
+        video: bool,
+    },
+}
+
+impl OutgoingCallUi {
+    pub fn conv_id(&self) -> &str {
+        match self {
+            Self::Confirming { conv_id, .. } | Self::Ringing { conv_id, .. } => conv_id,
+        }
+    }
+
+    pub fn peer_title(&self) -> &str {
+        match self {
+            Self::Confirming { peer_title, .. } | Self::Ringing { peer_title, .. } => peer_title,
+        }
+    }
+
+    pub fn avatar_os(&self) -> &str {
+        match self {
+            Self::Confirming { avatar_os, .. } | Self::Ringing { avatar_os, .. } => avatar_os,
+        }
+    }
+
+    pub fn is_ringing(&self) -> bool {
+        matches!(self, Self::Ringing { .. })
+    }
+
+    pub fn is_video_ringing(&self) -> bool {
+        matches!(self, Self::Ringing { video: true, .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatShellState {
     pub thread_search_open: bool,
@@ -148,6 +192,8 @@ pub struct ChatShellState {
     pub voice_call_active: bool,
     /// Peer node opened in the live viewer for the active voice call.
     pub voice_live_peer: Option<String>,
+    /// Telegram-style outgoing confirm / ringing panel (desktop).
+    pub outgoing_call_ui: Option<OutgoingCallUi>,
     pub pending_open: Option<PendingOpenChat>,
     pub selected_summary: Option<PendingOpenChat>,
     /// Last failure from opening a placeholder conversation (shown under compose).
@@ -161,6 +207,11 @@ pub struct ChatShellState {
     pub forward_draft: Option<ForwardDraft>,
     /// Bumped when lightbox / reply / forward overlays change so shell re-renders.
     pub overlay_tick: u64,
+    /// Bumped to request compose input focus (profile 「消息」).
+    pub compose_focus_tick: u64,
+    /// Bumped when history was cleared so the thread drops its memory cache.
+    pub history_cleared_tick: u64,
+    pub history_cleared_conv: Option<String>,
     /// Telegram-style upload media confirmation dialog.
     pub media_upload_open: bool,
     pub media_upload: MediaUploadDraft,
@@ -200,6 +251,7 @@ impl Default for ChatShellState {
             voice_call_phase: "idle".into(),
             voice_call_active: false,
             voice_live_peer: None,
+            outgoing_call_ui: None,
             pending_open: None,
             selected_summary: None,
             open_error: None,
@@ -210,6 +262,9 @@ impl Default for ChatShellState {
             reply_draft: None,
             forward_draft: None,
             overlay_tick: 0,
+            compose_focus_tick: 0,
+            history_cleared_tick: 0,
+            history_cleared_conv: None,
             media_upload_open: false,
             media_upload: MediaUploadDraft::default(),
         }
@@ -311,6 +366,18 @@ impl ChatShellState {
 
     pub fn bump_overlay_tick(&mut self) {
         self.overlay_tick = self.overlay_tick.saturating_add(1);
+    }
+
+    pub fn request_compose_focus(&mut self) {
+        self.profile_open = false;
+        self.compose_focus_tick = self.compose_focus_tick.saturating_add(1);
+        self.bump_overlay_tick();
+    }
+
+    pub fn mark_history_cleared(&mut self, conv_id: &str) {
+        self.history_cleared_conv = Some(conv_id.to_string());
+        self.history_cleared_tick = self.history_cleared_tick.saturating_add(1);
+        self.message_tick = self.message_tick.saturating_add(1);
     }
 
     pub fn close_contacts(&mut self) {
@@ -429,6 +496,52 @@ impl ChatShellState {
         self.voice_call_phase = phase;
     }
 
+    pub fn open_outgoing_call_confirm(
+        &mut self,
+        conv_id: impl Into<String>,
+        peer_title: impl Into<String>,
+        avatar_os: impl Into<String>,
+    ) {
+        self.outgoing_call_ui = Some(OutgoingCallUi::Confirming {
+            conv_id: conv_id.into(),
+            peer_title: peer_title.into(),
+            avatar_os: avatar_os.into(),
+        });
+        self.bump_overlay_tick();
+    }
+
+    pub fn set_outgoing_call_ringing(&mut self, video: bool) {
+        let Some(current) = self.outgoing_call_ui.take() else {
+            return;
+        };
+        let (conv_id, peer_title, avatar_os) = match current {
+            OutgoingCallUi::Confirming {
+                conv_id,
+                peer_title,
+                avatar_os,
+            }
+            | OutgoingCallUi::Ringing {
+                conv_id,
+                peer_title,
+                avatar_os,
+                ..
+            } => (conv_id, peer_title, avatar_os),
+        };
+        self.outgoing_call_ui = Some(OutgoingCallUi::Ringing {
+            conv_id,
+            peer_title,
+            avatar_os,
+            video,
+        });
+        self.bump_overlay_tick();
+    }
+
+    pub fn clear_outgoing_call_ui(&mut self) {
+        if self.outgoing_call_ui.take().is_some() {
+            self.bump_overlay_tick();
+        }
+    }
+
     pub fn set_pending_open(&mut self, title: String, os: String, presence: String) {
         self.open_error = None;
         self.pending_open = Some(PendingOpenChat {
@@ -531,5 +644,38 @@ mod tests {
         state.navigate_thread_search(8);
         assert_eq!(state.thread_search_nav_tick, 1);
         assert_eq!(state.thread_search_nav_delta, 1);
+    }
+
+    #[test]
+    fn outgoing_call_confirm_then_ringing_then_clear() {
+        let mut state = ChatShellState::default();
+        let tick0 = state.overlay_tick;
+        state.open_outgoing_call_confirm("conv-1", "Peer", "macOS");
+        assert!(matches!(
+            state.outgoing_call_ui.as_ref(),
+            Some(OutgoingCallUi::Confirming { conv_id, .. }) if conv_id == "conv-1"
+        ));
+        assert!(state.overlay_tick > tick0);
+
+        state.set_outgoing_call_ringing(false);
+        assert!(matches!(
+            state.outgoing_call_ui.as_ref(),
+            Some(OutgoingCallUi::Ringing { video: false, .. })
+        ));
+        assert!(!state
+            .outgoing_call_ui
+            .as_ref()
+            .unwrap()
+            .is_video_ringing());
+
+        state.set_outgoing_call_ringing(true);
+        assert!(state
+            .outgoing_call_ui
+            .as_ref()
+            .unwrap()
+            .is_video_ringing());
+
+        state.clear_outgoing_call_ui();
+        assert!(state.outgoing_call_ui.is_none());
     }
 }

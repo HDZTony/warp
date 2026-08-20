@@ -80,6 +80,7 @@ pub struct ChatThreadView {
     wallpaper_asset_id: Option<String>,
     wallpaper_loaded: bool,
     last_wallpaper_tick: u64,
+    last_history_cleared_tick: u64,
     attachment_previews: HashMap<String, String>,
     attachment_preview_sizes: HashMap<String, (u32, u32)>,
     attachment_decode_inflight: HashSet<String>,
@@ -306,6 +307,7 @@ impl ChatThreadView {
             wallpaper_asset_id: None,
             wallpaper_loaded: false,
             last_wallpaper_tick: 0,
+            last_history_cleared_tick: 0,
             attachment_previews: HashMap::new(),
             attachment_preview_sizes: HashMap::new(),
             attachment_decode_inflight: HashSet::new(),
@@ -329,19 +331,39 @@ impl ChatThreadView {
 
     fn poll(&mut self, ctx: &mut ViewContext<Self>) {
         let current = self.selection.lock().ok().and_then(|g| g.clone());
-        let (message_tick, selection_tick, wallpaper_tick, search_request_tick, search_nav_tick) =
-            self.shell_state
-                .lock()
-                .map(|state| {
-                    (
-                        state.message_tick,
-                        state.selection_tick,
-                        state.wallpaper_tick,
-                        state.thread_search_request_tick,
-                        state.thread_search_nav_tick,
-                    )
-                })
-                .unwrap_or((0, 0, 0, 0, 0));
+        let (
+            message_tick,
+            selection_tick,
+            wallpaper_tick,
+            search_request_tick,
+            search_nav_tick,
+            history_cleared_tick,
+            history_cleared_conv,
+        ) = self
+            .shell_state
+            .lock()
+            .map(|state| {
+                (
+                    state.message_tick,
+                    state.selection_tick,
+                    state.wallpaper_tick,
+                    state.thread_search_request_tick,
+                    state.thread_search_nav_tick,
+                    state.history_cleared_tick,
+                    state.history_cleared_conv.clone(),
+                )
+            })
+            .unwrap_or((0, 0, 0, 0, 0, 0, None));
+        if history_cleared_tick != self.last_history_cleared_tick {
+            self.last_history_cleared_tick = history_cleared_tick;
+            if let Some(conv_id) = history_cleared_conv.as_ref() {
+                self.message_cache.insert(conv_id.clone(), Vec::new());
+                if self.loaded_for.as_deref() == Some(conv_id.as_str()) {
+                    self.messages.clear();
+                    self.rebuild_bubbles(ctx);
+                }
+            }
+        }
         let wallpaper_changed = wallpaper_tick != self.last_wallpaper_tick;
         if wallpaper_changed {
             self.last_wallpaper_tick = wallpaper_tick;

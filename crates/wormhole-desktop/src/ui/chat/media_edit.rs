@@ -27,16 +27,17 @@ pub const CONTROLS_HEIGHT: f32 = 146.0;
 pub const CONTROLS_BOTTOM_SKIP: f32 = 20.0;
 pub const CONTROLS_CENTER_SKIP: f32 = 6.0;
 pub const BUTTON_BAR_HEIGHT: f32 = 48.0;
-/// Wider than tdesktop 422 so mid icons + TOOL_GAP + edge pad still fit.
-pub const BUTTON_BAR_WIDTH: f32 = 460.0;
+/// tdesktop `photoEditorButtonBarWidth` — mid icons are 48×48 with no extra gap.
+pub const BUTTON_BAR_WIDTH: f32 = 422.0;
 pub const CONTENT_MARGIN: f32 = CONTROLS_BOTTOM_SKIP;
 pub const ICON_BTN: f32 = BUTTON_BAR_HEIGHT;
 pub const HANDLE_HIT: f32 = 18.0;
 pub const CROP_MIN: f32 = 0.05;
 pub const TOOL_BTN: f32 = 36.0;
+/// ColorPicker / shape chips only — Transform mid icons use `ICON_BTN` flush like tdesktop.
 pub const TOOL_GAP: f32 = 12.0;
-/// Horizontal inset inside the pill so Cancel/Done / Undo/Redo are not flush to the curve.
-pub const BUTTON_BAR_EDGE_PAD: f32 = 16.0;
+/// tdesktop `photoEditorButtonBarPadding` horizontal inset inside the pill.
+pub const BUTTON_BAR_EDGE_PAD: f32 = 2.0;
 pub const BRUSH_SIZE_MIN: f32 = 0.004;
 pub const BRUSH_SIZE_MAX: f32 = 0.04;
 /// Discrete steps for brush-size drag (limits full-UI notify rate).
@@ -1128,11 +1129,11 @@ fn svg_icon_btn(
     } else {
         ColorU::new(240, 240, 240, 220)
     };
-    // ConstrainedBox must wrap the whole hit target (not only the glyph inside Align),
-    // otherwise mid-bar icons collapse to ~22px and look cramped.
+    // Glyph ~23–24px centered in 48×48 hit box (tdesktop IconButton).
+    // PNG paths (flip/rotate/paint/stickers/undo) are official Telegram white masks.
     AutomationTarget::new(
         EventHandler::new(
-            ConstrainedBox::new(Align::new(icons::icon(path, 22.0, fg)).finish())
+            ConstrainedBox::new(Align::new(icons::icon(path, 24.0, fg)).finish())
                 .with_width(ICON_BTN)
                 .with_height(ICON_BTN)
                 .finish(),
@@ -1313,41 +1314,32 @@ pub fn transform_controls_bar(
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(svg_icon_btn(
-            "media-edit-flip.svg",
+            "media-edit-flip.png",
             wormhole_i18n::t("chat.media_upload.edit_flip"),
             "chat:media_edit_flip",
             flipped,
             on_flip,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            svg_icon_btn(
-                "media-edit-rotate.svg",
-                wormhole_i18n::t("chat.media_upload.edit_rotate_cw"),
-                "chat:media_edit_rotate_cw",
-                false,
-                on_rotate,
-            ),
+        .with_child(svg_icon_btn(
+            "media-edit-rotate.png",
+            wormhole_i18n::t("chat.media_upload.edit_rotate_cw"),
+            "chat:media_edit_rotate_cw",
+            false,
+            on_rotate,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            svg_icon_btn(
-                "media-edit-paint.svg",
-                wormhole_i18n::t("chat.media_upload.edit_paint"),
-                "chat:media_edit_paint",
-                false,
-                on_paint,
-            ),
+        .with_child(svg_icon_btn(
+            "media-edit-paint.png",
+            wormhole_i18n::t("chat.media_upload.edit_paint"),
+            "chat:media_edit_paint",
+            false,
+            on_paint,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            svg_icon_btn(
-                "media-edit-ratio.svg",
-                wormhole_i18n::t("chat.media_upload.edit_ratio"),
-                "chat:media_edit_ratio",
-                false,
-                on_ratio,
-            ),
+        .with_child(svg_icon_btn(
+            "media-edit-ratio.svg",
+            wormhole_i18n::t("chat.media_upload.edit_ratio"),
+            "chat:media_edit_ratio",
+            false,
+            on_ratio,
         ))
         .finish();
 
@@ -1500,7 +1492,7 @@ pub fn paint_controls_bars(
     let top = Align::new(button_bar(
         vec![
             svg_icon_btn(
-                "media-edit-undo.svg",
+                "media-edit-undo.png",
                 wormhole_i18n::t("chat.media_upload.edit_undo"),
                 "chat:media_edit_undo",
                 false,
@@ -1523,42 +1515,33 @@ pub fn paint_controls_bars(
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(svg_icon_btn(
-            "media-edit-paint.svg",
+            "media-edit-paint.png",
             wormhole_i18n::t("chat.media_upload.edit_paint"),
             "chat:media_edit_paint",
             true,
             on_paint,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            svg_icon_btn(
-                "media-edit-stickers.svg",
-                wormhole_i18n::t("chat.media_upload.edit_sticker"),
-                "chat:media_edit_sticker",
-                false,
-                on_sticker,
-            ),
+        .with_child(svg_icon_btn(
+            "media-edit-stickers.png",
+            wormhole_i18n::t("chat.media_upload.edit_sticker"),
+            "chat:media_edit_sticker",
+            false,
+            on_sticker,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            text_glyph_btn(
-                "A",
-                wormhole_i18n::t("chat.media_upload.edit_text"),
-                "chat:media_edit_text",
-                font,
-                false,
-                on_text,
-            ),
+        .with_child(text_glyph_btn(
+            "A",
+            wormhole_i18n::t("chat.media_upload.edit_text"),
+            "chat:media_edit_text",
+            font,
+            false,
+            on_text,
         ))
-        .with_child(gapped(
-            TOOL_GAP,
-            svg_icon_btn(
-                "media-edit-shapes.svg",
-                wormhole_i18n::t("chat.media_upload.edit_shape"),
-                "chat:media_edit_shape",
-                false,
-                on_shape,
-            ),
+        .with_child(svg_icon_btn(
+            "media-edit-shapes.svg",
+            wormhole_i18n::t("chat.media_upload.edit_shape"),
+            "chat:media_edit_shape",
+            false,
+            on_shape,
         ))
         .finish();
 

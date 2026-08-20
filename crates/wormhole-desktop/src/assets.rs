@@ -84,6 +84,7 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_icon!("chat-header-rdp.svg"),
     bundled_icon!("chat-header-profile.svg"),
     bundled_icon!("chat-header-more.svg"),
+    bundled_icon!("chat-header-info.svg"),
     bundled_icon!("chat-sidebar-search.svg"),
     bundled_icon!("chat-sidebar-menu.svg"),
     bundled_icon!("chat-menu-new-group.svg"),
@@ -117,6 +118,7 @@ static BUNDLED_ASSETS: &[(&str, &[u8])] = &[
     bundled_tool_icon!("media-edit-rotate.png"),
     bundled_tool_icon!("media-edit-paint.png"),
     bundled_tool_icon!("media-edit-stickers.png"),
+    bundled_tool_icon!("media-edit-undo.png"),
 ];
 
 pub struct WormholeAssets;
@@ -212,6 +214,7 @@ mod tests {
             "chat-header-rdp.svg",
             "chat-header-profile.svg",
             "chat-header-more.svg",
+            "chat-header-info.svg",
             "chat-sidebar-search.svg",
             "chat-sidebar-menu.svg",
             "chat-menu-new-group.svg",
@@ -242,6 +245,7 @@ mod tests {
             "chat-header-rdp.svg",
             "chat-header-profile.svg",
             "chat-header-more.svg",
+            "chat-header-info.svg",
             "chat-sidebar-search.svg",
             "chat-sidebar-menu.svg",
             "chat-menu-new-group.svg",

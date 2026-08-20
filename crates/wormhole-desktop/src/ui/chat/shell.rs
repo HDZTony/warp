@@ -18,6 +18,7 @@ use crate::ui::chat::contacts_panel::{ContactsPanelEvent, ContactsPanelView};
 use crate::ui::chat::header::{ChatHeaderEvent, ChatHeaderView, TG_HEADER_HEIGHT};
 use crate::ui::chat::image_viewer::{attachment_context_menu_overlay, image_viewer_overlay};
 use crate::ui::chat::media_upload_modal::MediaUploadModalView;
+use crate::ui::chat::outgoing_call_panel::{OutgoingCallEvent, OutgoingCallPanelView};
 use crate::ui::chat::profile_panel::{ChatProfileEvent, ChatProfilePanelView};
 use crate::ui::chat::shell_state::{
     chat_event_triggers_refresh, new_shared_shell_state, SharedChatShellState,
@@ -75,6 +76,7 @@ pub struct ChatShellView {
     channel_create: ViewHandle<ChannelCreatePanelView>,
     calls: ViewHandle<CallsPanelView>,
     media_upload: ViewHandle<MediaUploadModalView>,
+    outgoing_call: ViewHandle<OutgoingCallPanelView>,
     drop_hover: bool,
     last_overlay_tick: u64,
 }
@@ -117,16 +119,20 @@ impl ChatShellView {
                 shell_state.clone(),
             )
         });
+        let outgoing_call = {
+            let font = crate::ui::fonts::load_ui_font(ctx);
+            let shell_state = shell_state.clone();
+            ctx.add_typed_action_view(move |ctx| {
+                OutgoingCallPanelView::new(ctx, shell_state.clone(), font)
+            })
+        };
         ctx.subscribe_to_view(&profile, |view, _, event, ctx| match event {
-            ChatProfileEvent::BrowseNodeShares(node_id) => {
-                ctx.emit(ChatShellEvent::BrowseNodeShares(node_id.clone()));
-            }
             ChatProfileEvent::OpenRemoteDesktop { peer } => {
                 ctx.emit(ChatShellEvent::OpenRemoteDesktop { peer: peer.clone() });
             }
-            ChatProfileEvent::StartVoiceCall => {
-                let header = view.header.clone();
-                ctx.update_view(&header, |header, ctx| header.trigger_voice_call(ctx));
+            ChatProfileEvent::FocusCompose => {
+                let compose = view.compose.clone();
+                ctx.update_view(&compose, |compose, ctx| compose.focus_input(ctx));
                 ctx.notify();
             }
         });
@@ -238,6 +244,27 @@ impl ChatShellView {
             }
             CallsPanelEvent::Closed => ctx.notify(),
         });
+        let outgoing_header = header.clone();
+        ctx.subscribe_to_view(&outgoing_call, move |_view, _, event, ctx| match event {
+            OutgoingCallEvent::StartVoice => {
+                ctx.update_view(&outgoing_header, |header, ctx| {
+                    header.confirm_outgoing_voice(ctx);
+                });
+                ctx.notify();
+            }
+            OutgoingCallEvent::StartVideo => {
+                ctx.update_view(&outgoing_header, |header, ctx| {
+                    header.confirm_outgoing_video(ctx);
+                });
+                ctx.notify();
+            }
+            OutgoingCallEvent::Cancel => {
+                ctx.update_view(&outgoing_header, |header, ctx| {
+                    header.cancel_outgoing_panel(ctx);
+                });
+                ctx.notify();
+            }
+        });
         let font = crate::ui::fonts::load_ui_font(ctx);
         let event_rx = Arc::new(tokio::sync::Mutex::new(
             core.runtime().ctx.events.subscribe(),
@@ -259,6 +286,7 @@ impl ChatShellView {
             channel_create,
             calls,
             media_upload,
+            outgoing_call,
             drop_hover: false,
             last_overlay_tick: 0,
         };
@@ -284,6 +312,10 @@ impl ChatShellView {
                     let media = view.media_upload.clone();
                     ctx.update_view(&media, |modal, ctx| {
                         modal.queue_missing_previews(ctx);
+                    });
+                    let outgoing = view.outgoing_call.clone();
+                    ctx.update_view(&outgoing, |_panel, ctx| {
+                        ctx.notify();
                     });
                     ctx.notify();
                 }
@@ -435,6 +467,7 @@ impl ChatShellView {
                     || state.channel_create_open
                     || state.calls_open
                     || state.media_upload_open
+                    || state.outgoing_call_ui.is_some()
                     || state.image_viewer.is_some()
                     || state.attachment_context_menu.is_some()
                     || state.forward_draft.is_some()
@@ -474,6 +507,23 @@ impl TypedActionView for ChatShellView {
         match action {
             ChatShellAction::DismissOverlays => {
                 if let Ok(mut state) = self.shell_state.lock() {
+                    if state.outgoing_call_ui.is_some() {
+                        let ringing = state
+                            .outgoing_call_ui
+                            .as_ref()
+                            .is_some_and(|ui| ui.is_ringing());
+                        if ringing {
+                            drop(state);
+                            let header = self.header.clone();
+                            ctx.update_view(&header, |header, ctx| {
+                                header.cancel_outgoing_panel(ctx);
+                            });
+                        } else {
+                            state.clear_outgoing_call_ui();
+                        }
+                        ctx.notify();
+                        return;
+                    }
                     if state.image_viewer.is_some() || state.attachment_context_menu.is_some() {
                         state.close_image_viewer();
                     } else if state.forward_draft.is_some() {
@@ -643,6 +693,7 @@ impl ChatShellView {
         stack.add_child(ChildView::new(&self.channel_create).finish());
         stack.add_child(ChildView::new(&self.calls).finish());
         stack.add_child(ChildView::new(&self.media_upload).finish());
+        stack.add_child(ChildView::new(&self.outgoing_call).finish());
         if let Ok(state) = self.shell_state.lock() {
             if let Some(viewer) = state.image_viewer.as_ref() {
                 stack.add_child(image_viewer_overlay(

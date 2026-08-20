@@ -395,6 +395,13 @@ pub fn apply_voice_status(shell_state: &SharedChatShellState, status: &ChatRtcCa
         if status.phase != "active" {
             state.voice_live_peer = None;
         }
+        // Drop outgoing panel once the call leaves confirming/ringing UI flow.
+        if matches!(
+            status.phase.as_str(),
+            "idle" | "incoming" | "active"
+        ) {
+            state.clear_outgoing_call_ui();
+        }
     }
 }
 

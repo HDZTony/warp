@@ -13,6 +13,7 @@ pub mod labels;
 pub mod layout;
 pub mod media_edit;
 pub mod media_upload_modal;
+pub mod outgoing_call_panel;
 pub mod profile_panel;
 pub mod shell;
 pub mod shell_state;

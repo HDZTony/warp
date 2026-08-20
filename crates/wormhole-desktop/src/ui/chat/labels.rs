@@ -206,6 +206,7 @@ mod tests {
                 handshake_error: None,
                 share_volumes: Vec::new(),
                 has_local_share_replicas: false,
+                last_seen: 0,
             }],
             storage_volumes: Vec::new(),
             normal_replica_target: 0,

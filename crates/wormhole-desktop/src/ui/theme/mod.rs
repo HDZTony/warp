@@ -132,3 +132,19 @@ pub fn chat_date_bg() -> ColorU {
 pub fn chat_bubble_text() -> ColorU {
     generated::chat_bubble_text()
 }
+
+/// Opaque 1:1 call overlay fill (`--void`). Independent of the active chat
+/// theme so Classic Light doodle cannot show through (tdesktop `callBgOpaque`).
+pub fn call_panel_bg() -> ColorU {
+    generated::canvas()
+}
+
+/// Title / cancel-button fill on the always-dark call overlay.
+pub fn call_panel_text() -> ColorU {
+    generated::text()
+}
+
+/// Tip and button captions on the always-dark call overlay.
+pub fn call_panel_muted() -> ColorU {
+    generated::muted()
+}

@@ -827,6 +827,7 @@ mod node_share_browsable_tests {
                 })
                 .collect(),
             has_local_share_replicas: false,
+            last_seen: 0,
         }
     }
 

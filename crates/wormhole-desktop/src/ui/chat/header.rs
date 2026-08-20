@@ -23,9 +23,12 @@ use crate::ui::panel_primitives::{tg_avatar, StatusTone, TG_HEADER_AVATAR_SIZE};
 use crate::ui::theme;
 use crate::ui_text;
 use wormhole_desktop_core::call_history::CallHistoryKind;
-use wormhole_desktop_core::chat_commands::chat_list_conversations;
+use wormhole_desktop_core::chat_commands::{
+    chat_clear_history, chat_list_conversations, ClearChatHistoryParams,
+};
 use wormhole_desktop_core::chat_ui_prefs::{
     clear_chat_wallpaper, install_chat_wallpaper_from_path, load_chat_ui_prefs,
+    set_chat_muted_until, MUTE_FOREVER,
 };
 use wormhole_desktop_core::cluster_commands::cluster_status_hud;
 use wormhole_desktop_core::device_remarks::{display_name_with_remark, load_device_remarks};
@@ -76,8 +79,9 @@ pub enum ChatHeaderAction {
     ToggleMuteFlyout,
     OpenProfile,
     OpenProfileFromInfo,
-    MenuToast(String, StatusTone),
+    MuteFor { seconds: u64 },
     MuteForever,
+    Unmute,
     ClearHistory,
     DeleteChat,
     VoiceCallPrimary,
@@ -111,6 +115,7 @@ pub struct ChatHeaderView {
     has_custom_wallpaper: bool,
     last_voice_conv: Option<String>,
     last_voice_message_tick: u64,
+    muted: bool,
 }
 
 impl ChatHeaderView {
@@ -138,6 +143,7 @@ impl ChatHeaderView {
             has_custom_wallpaper: false,
             last_voice_conv: None,
             last_voice_message_tick: 0,
+            muted: false,
         };
         view.start_poll(ctx);
         view
@@ -320,11 +326,232 @@ impl ChatHeaderView {
     }
 
     pub(crate) fn trigger_voice_call(&mut self, ctx: &mut ViewContext<Self>) {
-        self.spawn_voice_primary(ctx);
+        self.open_or_toggle_outgoing(ctx, false);
     }
 
     pub(crate) fn trigger_video_call(&mut self, ctx: &mut ViewContext<Self>) {
-        self.spawn_video_primary(ctx);
+        self.open_or_toggle_outgoing(ctx, true);
+    }
+
+    /// Open Telegram-style confirm panel when idle; otherwise cancel/end like before.
+    fn open_or_toggle_outgoing(&mut self, ctx: &mut ViewContext<Self>, prefer_video: bool) {
+        let conv_id = match self.selected_conv_id() {
+            Some(id) => id,
+            None => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.show_toast(
+                        wormhole_i18n::t("chat.toast.select_conversation"),
+                        StatusTone::Muted,
+                    );
+                }
+                ctx.notify();
+                return;
+            }
+        };
+        let phase = self
+            .shell_state
+            .lock()
+            .map(|state| state.voice_call_phase.clone())
+            .unwrap_or_else(|_| "idle".into());
+        match phase.as_str() {
+            "idle" => {
+                if let Ok(mut state) = self.shell_state.lock() {
+                    state.close_overlays();
+                    state.open_outgoing_call_confirm(
+                        conv_id,
+                        self.title.clone(),
+                        self.os.clone(),
+                    );
+                }
+                let _ = prefer_video;
+                ctx.notify();
+            }
+            "ringing" => {
+                if prefer_video {
+                    self.spawn_video_primary(ctx);
+                } else {
+                    self.spawn_voice_primary(ctx);
+                }
+            }
+            "active" => {
+                if prefer_video {
+                    self.spawn_video_primary(ctx);
+                } else {
+                    self.spawn_voice_primary(ctx);
+                }
+            }
+            _ => {
+                // incoming: keep existing accept/decline on banner; ignore primary
+                ctx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn confirm_outgoing_voice(&mut self, ctx: &mut ViewContext<Self>) {
+        self.spawn_invite_from_panel(ctx, false);
+    }
+
+    pub(crate) fn confirm_outgoing_video(&mut self, ctx: &mut ViewContext<Self>) {
+        self.spawn_invite_from_panel(ctx, true);
+    }
+
+    pub(crate) fn cancel_outgoing_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        let selected = self.selected_conv_id();
+        let (phase, video, conv_id) = self
+            .shell_state
+            .lock()
+            .map(|state| {
+                let video = state
+                    .outgoing_call_ui
+                    .as_ref()
+                    .is_some_and(|ui| ui.is_video_ringing());
+                let conv = state
+                    .outgoing_call_ui
+                    .as_ref()
+                    .map(|ui| ui.conv_id().to_string())
+                    .or(selected);
+                (state.voice_call_phase.clone(), video, conv)
+            })
+            .unwrap_or_else(|_| ("idle".into(), false, None));
+
+        if phase == "ringing" {
+            if let Some(conv_id) = conv_id {
+                let core = self.core.clone();
+                let shell_state = self.shell_state.clone();
+                let future = async move {
+                    if video {
+                        cancel_video(&core, &conv_id).await
+                    } else {
+                        cancel(&core, &conv_id).await
+                    }
+                };
+                ctx.spawn(future, move |view, output, ctx| {
+                    match output {
+                        Ok(status) => {
+                            apply_voice_status(&shell_state, &status);
+                            view.status = if video {
+                                video_status_to_header_line(&status.phase, view.online)
+                            } else {
+                                voice_status_to_header_line(&status.phase, view.online)
+                            };
+                        }
+                        Err(err) => {
+                            let (text, tone) = if video {
+                                video_error_toast(&err)
+                            } else {
+                                voice_error_toast(&err)
+                            };
+                            if let Ok(mut state) = view.shell_state.lock() {
+                                state.show_toast(text, tone);
+                                state.clear_outgoing_call_ui();
+                            }
+                        }
+                    }
+                    ctx.notify();
+                });
+            }
+        } else if let Ok(mut state) = self.shell_state.lock() {
+            state.clear_outgoing_call_ui();
+        }
+        ctx.notify();
+    }
+
+    fn spawn_invite_from_panel(&mut self, ctx: &mut ViewContext<Self>, video: bool) {
+        let conv_id = self
+            .shell_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .outgoing_call_ui
+                    .as_ref()
+                    .map(|ui| ui.conv_id().to_string())
+            })
+            .or_else(|| self.selected_conv_id());
+        let Some(conv_id) = conv_id else {
+            return;
+        };
+        // Telegram-style: switch to ringing UI immediately while invite is in flight.
+        // Presence may be stale; let core invite fail explicitly rather than blocking the panel.
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.set_outgoing_call_ringing(video);
+            state.set_voice_call_phase("ringing");
+        }
+        self.status = if video {
+            video_status_to_header_line("ringing", self.online)
+        } else {
+            voice_status_to_header_line("ringing", self.online)
+        };
+        let core = self.core.clone();
+        let shell_state = self.shell_state.clone();
+        let request_conv_id = conv_id.clone();
+        let future = async move {
+            if video {
+                invite_video(&core, &request_conv_id).await
+            } else {
+                invite(&core, &request_conv_id).await
+            }
+        };
+        ctx.spawn(future, move |view, output, ctx| match output {
+            Ok(status) => {
+                apply_voice_status(&shell_state, &status);
+                if status.phase == "ringing" {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.set_outgoing_call_ringing(video);
+                    }
+                }
+                view.status = if video {
+                    video_status_to_header_line(&status.phase, view.online)
+                } else {
+                    voice_status_to_header_line(&status.phase, view.online)
+                };
+                if status.phase == "active" && status.peer_live {
+                    let peer = view.peer_endpoint.trim().to_string();
+                    if !peer.is_empty() {
+                        if let Ok(mut state) = view.shell_state.lock() {
+                            state.voice_live_peer = Some(peer.clone());
+                        }
+                        let title = if video {
+                            format!("视频 · {}", view.title)
+                        } else {
+                            format!("语音 · {}", view.title)
+                        };
+                        ctx.emit(ChatHeaderEvent::OpenLiveViewer { peer, title });
+                    }
+                }
+                if video {
+                    view.poll_video_status(&conv_id, ctx);
+                } else {
+                    view.poll_voice_status(&conv_id, ctx);
+                }
+                ctx.notify();
+            }
+            Err(err) => {
+                let (text, tone) = if video {
+                    video_error_toast(&err)
+                } else {
+                    voice_error_toast(&err)
+                };
+                if let Ok(mut state) = view.shell_state.lock() {
+                    state.show_toast(text, tone);
+                    state.set_voice_call_phase("idle");
+                    // Keep Ringing overlay so the user can cancel; invite already failed.
+                    if state.outgoing_call_ui.is_none() {
+                        // Defensive: if cleared elsewhere, reopen confirming.
+                        state.open_outgoing_call_confirm(
+                            &conv_id,
+                            view.title.clone(),
+                            view.os.clone(),
+                        );
+                    } else {
+                        state.bump_overlay_tick();
+                    }
+                }
+                view.status = voice_status_to_header_line("idle", view.online);
+                ctx.notify();
+            }
+        });
+        ctx.notify();
     }
 
     fn spawn_video_primary(&mut self, ctx: &mut ViewContext<Self>) {
@@ -714,17 +941,20 @@ impl ChatHeaderView {
                 let remarks = load_device_remarks(&state.data_dir)
                     .await
                     .unwrap_or_default();
-                (conv_id, conversations, cluster, remarks)
+                let prefs = load_chat_ui_prefs(&state.data_dir).await.unwrap_or_default();
+                let muted = prefs.is_muted(&conv_id);
+                (conv_id, conversations, cluster, remarks, muted)
             },
             |view, output, ctx| {
                 let selected = view.selection.lock().ok().and_then(|g| g.clone());
                 let Some(selected) = selected else {
                     return;
                 };
-                let (conv_id, conversations, cluster, remarks) = output;
+                let (conv_id, conversations, cluster, remarks, muted) = output;
                 if conv_id != selected {
                     return;
                 }
+                view.muted = muted;
                 if view
                     .shell_state
                     .lock()
@@ -817,6 +1047,111 @@ impl ChatHeaderView {
         format!("语音 · {}", self.title)
     }
 
+    fn spawn_set_mute(&mut self, until: Option<u64>, ctx: &mut ViewContext<Self>) {
+        let selected = self.selection.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.header_menu_open = false;
+            state.mute_flyout_open = false;
+        }
+        let Some(conv_id) = selected else {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast(
+                    wormhole_i18n::t("chat.toast.select_conversation"),
+                    StatusTone::Muted,
+                );
+            }
+            ctx.notify();
+            return;
+        };
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let state = runtime.state.clone();
+                set_chat_muted_until(&state.data_dir, &conv_id, until).await
+            },
+            move |view, output, ctx| match output {
+                Ok(_) => {
+                    view.muted = until.is_some();
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        let key = if until.is_some() {
+                            "chat.toast.mute_on"
+                        } else {
+                            "chat.toast.mute_off"
+                        };
+                        state.show_toast(wormhole_i18n::t(key), StatusTone::Success);
+                        state.bump_prefs_tick();
+                    }
+                    ctx.notify();
+                }
+                Err(err) => {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(
+                            wormhole_i18n::t_args(
+                                "chat.toast.mute_update_failed",
+                                &[("err", &err.to_string())],
+                            ),
+                            StatusTone::Danger,
+                        );
+                    }
+                    ctx.notify();
+                }
+            },
+        );
+        ctx.notify();
+    }
+
+    fn spawn_clear_history(&mut self, ctx: &mut ViewContext<Self>) {
+        let selected = self.selection.lock().ok().and_then(|g| g.clone());
+        if let Ok(mut state) = self.shell_state.lock() {
+            state.header_menu_open = false;
+            state.mute_flyout_open = false;
+        }
+        let Some(conv_id) = selected else {
+            if let Ok(mut state) = self.shell_state.lock() {
+                state.show_toast(
+                    wormhole_i18n::t("chat.toast.select_conversation"),
+                    StatusTone::Muted,
+                );
+            }
+            ctx.notify();
+            return;
+        };
+        let core = self.core.clone();
+        ctx.spawn(
+            async move {
+                let runtime = core.runtime();
+                let state = runtime.state.clone();
+                chat_clear_history(&state, ClearChatHistoryParams { conv_id }).await
+            },
+            |view, output, ctx| match output {
+                Ok(conv) => {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(
+                            wormhole_i18n::t("chat.history_cleared"),
+                            StatusTone::Success,
+                        );
+                        state.mark_history_cleared(&conv.id);
+                    }
+                    ctx.notify();
+                }
+                Err(err) => {
+                    if let Ok(mut state) = view.shell_state.lock() {
+                        state.show_toast(
+                            wormhole_i18n::t_args(
+                                "chat.toast.clear_history_failed",
+                                &[("err", &err)],
+                            ),
+                            StatusTone::Danger,
+                        );
+                    }
+                    ctx.notify();
+                }
+            },
+        );
+        ctx.notify();
+    }
+
     fn shell_flags(&self) -> (bool, bool, bool) {
         self.shell_state
             .lock()
@@ -841,7 +1176,7 @@ impl View for ChatHeaderView {
     }
 
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
-        let (search_open, _profile_open, menu_open) = self.shell_flags();
+        let (search_open, profile_open, menu_open) = self.shell_flags();
         let (voice_phase, voice_active) = self
             .shell_state
             .lock()
@@ -855,6 +1190,7 @@ impl View for ChatHeaderView {
             .lock()
             .map(|state| state.mute_flyout_open)
             .unwrap_or(false);
+        let muted = self.muted;
 
         let info_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -914,6 +1250,12 @@ impl View for ChatHeaderView {
                 "chat-header-phone.svg",
                 phone_active,
                 ChatHeaderAction::VoiceCallPrimary,
+                TG_HEADER_BTN,
+            ),
+            (
+                "chat-header-info.svg",
+                profile_open,
+                ChatHeaderAction::ToggleProfile,
                 TG_HEADER_BTN,
             ),
             (
@@ -986,6 +1328,8 @@ impl View for ChatHeaderView {
                     self.font,
                     mute_flyout_open,
                     self.has_custom_wallpaper,
+                    muted,
+                    profile_open,
                 ))
                 .with_margin_top(TG_HEADER_HEIGHT + 6.0)
                 .with_margin_right(TG_HEADER_PAD_X)
@@ -1042,6 +1386,7 @@ impl TypedActionView for ChatHeaderView {
                 if let Ok(mut state) = self.shell_state.lock() {
                     state.profile_open = !state.profile_open;
                     state.close_overlays();
+                    state.bump_overlay_tick();
                 }
                 ctx.notify();
             }
@@ -1050,6 +1395,7 @@ impl TypedActionView for ChatHeaderView {
                     state.profile_open = true;
                     state.header_menu_open = false;
                     state.mute_flyout_open = false;
+                    state.bump_overlay_tick();
                 }
                 ctx.notify();
             }
@@ -1068,72 +1414,21 @@ impl TypedActionView for ChatHeaderView {
                 }
                 ctx.notify();
             }
-            ChatHeaderAction::MenuToast(text, tone) => {
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast(text.clone(), *tone);
-                    state.header_menu_open = false;
-                    state.mute_flyout_open = false;
-                }
-                ctx.notify();
+            ChatHeaderAction::MuteFor { seconds } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.spawn_set_mute(Some(now.saturating_add(*seconds)), ctx);
             }
             ChatHeaderAction::MuteForever => {
-                let selected = self.selection.lock().ok().and_then(|g| g.clone());
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.header_menu_open = false;
-                    state.mute_flyout_open = false;
-                }
-                let Some(conv_id) = selected else {
-                    if let Ok(mut state) = self.shell_state.lock() {
-                        state.show_toast(wormhole_i18n::t("chat.toast.select_conversation"), StatusTone::Muted);
-                    }
-                    ctx.notify();
-                    return;
-                };
-                let core = self.core.clone();
-                ctx.spawn(
-                    async move {
-                        let runtime = core.runtime();
-                        let state = runtime.state.clone();
-                        wormhole_desktop_core::chat_ui_prefs::set_chat_muted(
-                            &state.data_dir,
-                            &conv_id,
-                            true,
-                        )
-                        .await
-                    },
-                    |view, output, ctx| match output {
-                        Ok(_) => {
-                            if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast(wormhole_i18n::t("chat.toast.mute_on"), StatusTone::Success);
-                                state.bump_prefs_tick();
-                            }
-                            view.status = wormhole_i18n::t("chat.muted_status");
-                            view.online = false;
-                            ctx.notify();
-                        }
-                        Err(err) => {
-                            if let Ok(mut state) = view.shell_state.lock() {
-                                state.show_toast(
-                                    wormhole_i18n::t_args(
-                                        "chat.toast.mute_update_failed",
-                                        &[("err", &err.to_string())],
-                                    ),
-                                    StatusTone::Danger,
-                                );
-                            }
-                            ctx.notify();
-                        }
-                    },
-                );
-                ctx.notify();
+                self.spawn_set_mute(Some(MUTE_FOREVER), ctx);
+            }
+            ChatHeaderAction::Unmute => {
+                self.spawn_set_mute(None, ctx);
             }
             ChatHeaderAction::ClearHistory => {
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.show_toast(wormhole_i18n::t("chat.history_cleared"), StatusTone::Muted);
-                    state.header_menu_open = false;
-                    state.message_tick += 1;
-                }
-                ctx.notify();
+                self.spawn_clear_history(ctx);
             }
             ChatHeaderAction::DeleteChat => {
                 let selected = self.selection.lock().ok().and_then(|g| g.clone());
@@ -1195,16 +1490,10 @@ impl TypedActionView for ChatHeaderView {
                 ctx.notify();
             }
             ChatHeaderAction::VoiceCallPrimary => {
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.close_overlays();
-                }
-                self.spawn_voice_primary(ctx);
+                self.trigger_voice_call(ctx);
             }
             ChatHeaderAction::VideoCallPrimary => {
-                if let Ok(mut state) = self.shell_state.lock() {
-                    state.close_overlays();
-                }
-                self.spawn_video_primary(ctx);
+                self.trigger_video_call(ctx);
             }
             ChatHeaderAction::VoiceCallAccept => {
                 self.spawn_voice_accept(ctx);

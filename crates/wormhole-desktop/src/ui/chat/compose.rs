@@ -122,6 +122,14 @@ impl ChatComposeView {
         }
     }
 
+    pub fn focus_input(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.sending {
+            self.input_focused = true;
+            sync_caret_blink(self, ctx);
+            ctx.notify();
+        }
+    }
+
     /// Resolve the active conversation id for send paths. Distinguishes pending open
     /// and open failures from a true "no session selected" state.
     fn require_selected_conversation(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
@@ -726,6 +734,13 @@ impl ChatComposeView {
         .with_id("chat:compose_input")
         .finish();
 
+        let border = if self.input_focused {
+            theme::accent_cool()
+        } else {
+            theme::border()
+        };
+        // Bordered field (6px, not 22/999 pill). Outer bar must wrap with Expanded so
+        // the stroke stretches with the flex row and does not shrink around the caret.
         Container::new(
             Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
@@ -738,6 +753,8 @@ impl ChatComposeView {
         .with_padding_top(8.0)
         .with_padding_bottom(8.0)
         .with_background(ColorU::transparent_black())
+        .with_border(Border::all(1.0).with_border_fill(border))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.0)))
         .finish()
     }
 
@@ -952,13 +969,7 @@ impl TypedActionView for ChatComposeView {
     fn handle_action(&mut self, action: &ChatComposeAction, ctx: &mut ViewContext<Self>) {
         match action {
             ChatComposeAction::Send => self.send(ctx),
-            ChatComposeAction::FocusInput => {
-                if !self.sending {
-                    self.input_focused = true;
-                    sync_caret_blink(self, ctx);
-                    ctx.notify();
-                }
-            }
+            ChatComposeAction::FocusInput => self.focus_input(ctx),
             ChatComposeAction::ToggleFocus => {
                 if !self.sending {
                     self.input_focused = !self.input_focused;
